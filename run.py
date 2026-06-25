@@ -3,14 +3,16 @@
 
     python run.py
 
-Builds (or loads the cached) locomotion library, opens a MuJoCo window, and lets you
-steer the G1 around with WASD in real time. The first launch spends ~20-40 s building
-the feature database (data/motion_lib.npz); later launches start instantly.
+Builds (or loads the cached) motion library, opens a MuJoCo window, and lets you steer the
+G1 around with WASD in real time and pick up / carry / set down a box with B. The first
+launch spends ~20-40 s building the feature database (data/motion_lib.npz); later launches
+start instantly.
 
 Controls
   W / A / S / D ........ move, relative to the camera
   Arrow keys ........... face direction, independent of travel (GenoView-style)
   Shift (hold) ......... walk instead of run (full stick is run pace, GenoView-style)
+  B .................... box action: pick up when near the box, set down while carrying
   J .................... jump (snaps into a jump clip's run-up and rides it through landing)
   Space ................ reset to the start pose
   Left-drag / right-drag / scroll ... orbit / pan / zoom
@@ -37,14 +39,16 @@ def main():
     print(f"  {len(lib['qpos'])} frames, clips: {', '.join(map(str, lib['clip_names']))}")
 
     matcher = MotionMatcher(lib)
-    print(f"  feature DB ready ({len(matcher.valid)} searchable frames)")
+    n_search = sum(re - rs for rs, re, _ in matcher.loco_trees + matcher.carry_trees)
+    print(f"  feature DB ready ({n_search} searchable loco+carry frames, "
+          f"{len(matcher.pick_enter)} pick / {len(matcher.place_enter)} place entries)")
     if args.build_only:
         print("Build complete. Run `python run.py` to control the G1.")
         return
 
-    model = mujoco.MjModel.from_xml_path(C.SCENE_XML)
+    model = mujoco.MjModel.from_xml_path(C.SCENE_BOX_XML)
     data = mujoco.MjData(model)
-    print("Opening viewer -- WASD to move, Shift to run, Esc to quit.")
+    print("Opening viewer -- WASD to move, B to pick up / set down the box, Esc to quit.")
     InteractiveViewer(model, data, matcher).run()
 
 

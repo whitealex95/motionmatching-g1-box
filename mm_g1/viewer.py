@@ -10,8 +10,9 @@ Controls
   W / A / S / D ........ move (forward / left / back / right), relative to the camera
   Arrow keys ........... face direction, independent of travel (GenoView-style)
   Shift (hold) ......... walk instead of run (full stick is run pace, GenoView-style)
+  B .................... box action: pick up when near the box, set down while carrying
   J .................... jump (transitions into a jump clip's run-up, then rides it)
-  Space ................ reset to the start pose at the origin
+  Space ................ reset to the start pose
   T .................... toggle the command trajectory gizmo (GenoView-style)
   Left-drag ............ orbit camera     Right-drag ... pan     Scroll ... zoom
   Esc .................. quit
@@ -81,6 +82,12 @@ class InteractiveViewer:
         glfw.set_cursor_pos_callback(self.window, self._on_cursor)
         glfw.set_scroll_callback(self.window, self._on_scroll)
 
+        # If the scene carries the interactive box (qpos extends past the robot's 36), seed it
+        # at the matcher's spawn so it is visible before the first simulation step.
+        self.has_box = self.model.nq >= 43
+        if self.has_box:
+            self.data.qpos[36:43] = self.matcher.box_qpos()
+
     # --- input callbacks -----------------------------------------------------
     def _on_key(self, window, key, scancode, action, mods):
         self.shift = bool(mods & glfw.MOD_SHIFT)
@@ -93,6 +100,8 @@ class InteractiveViewer:
                 self.show_traj = not self.show_traj
             elif key == glfw.KEY_J:
                 self.matcher.trigger_jump()
+            elif key == glfw.KEY_B:
+                self.matcher.trigger_box()
             elif key in _MOVE_KEYS or key in _FACE_KEYS:
                 self.held.add(key)
         elif action == glfw.RELEASE:
@@ -146,8 +155,10 @@ class InteractiveViewer:
         if glfw.KEY_LEFT in self.held:  face -= rdir
 
         m = np.linalg.norm(move)
-        if m > 1e-6:   # full stick = MAX_SPEED (run pace); Shift scales to a walk (GenoView)
-            move = move / m * (C.MAX_SPEED * (C.WALK_SCALE if self.shift else 1.0))
+        if m > 1e-6:   # full stick = MAX_SPEED; while carrying, the slower CARRY cap (the
+            top = (C.CARRY_MAX_SPEED if self.matcher.state == C.SKILL_CARRY  # box data is slow)
+                   else C.MAX_SPEED)
+            move = move / m * (top * (C.WALK_SCALE if self.shift else 1.0))
         else:
             move = np.zeros(3)
         f = np.linalg.norm(face)
@@ -169,7 +180,9 @@ class InteractiveViewer:
                 vel, face = self._command()
                 self._speed = float(np.linalg.norm(vel))
                 world = self.matcher.step(vel, face)
-                self.data.qpos[:] = world
+                self.data.qpos[0:36] = world
+                if self.has_box:                       # box freejoint rides at qpos[36:43]
+                    self.data.qpos[36:43] = self.matcher.box_qpos()
                 mujoco.mj_forward(self.model, self.data)
                 acc -= C.DT
 
@@ -224,20 +237,28 @@ class InteractiveViewer:
                              np.asarray(p0, float), np.asarray(p1, float))
 
     def _overlay(self, viewport, speed):
-        gait = "JUMP" if self.matcher.jumping else \
-               ("RUN" if speed > C.MAX_SPEED * (1 + C.WALK_SCALE) / 2 else
-                ("WALK" if speed > 1e-3 else "IDLE"))
-        lib, cur = self.matcher.lib, self.matcher.cur
+        m = self.matcher
+        # Box state machine takes precedence in the HUD; otherwise show the loco gait.
+        state = m.state_name()
+        if state == "LOCOMOTION" and not m.jumping:
+            head = ("RUN" if speed > C.MAX_SPEED * (1 + C.WALK_SCALE) / 2 else
+                    ("WALK" if speed > 1e-3 else "IDLE"))
+            if self.has_box:
+                head += "  [B: pick up]" if m.near_box else "  (walk to the box, then B)"
+        else:
+            head = "JUMP" if m.jumping else state
+            if state == "CARRY":
+                head += "  [B: set down]"
+        lib, cur = m.lib, m.cur
         cid = int(lib["clip_id"][cur])
         clip = lib["clip_names"][cid]
-        # Frame within the clip (and the clip index): both jump discontinuously whenever the
-        # matcher transitions to a new frame, so watching them shows exactly when it "jumps".
         fic, length = int(lib["frame_in_clip"][cur]), int(lib["lengths"][cid])
-        title = f"{gait}   {speed:.1f} m/s"
+        title = f"{head}   {speed:.1f} m/s"
         body = (f"clip [{cid}]: {clip}\n"
                 f"frame: {fic}/{length - 1}  (global {cur})\n"
-                f"command gizmo: {'on' if self.show_traj else 'off'} (T)\n"
-                "WASD move | arrows face | Shift walk | J jump | Space reset\n"
+                f"box: {'held' if m.box_held else 'resting'}"
+                f"   command gizmo: {'on' if self.show_traj else 'off'} (T)\n"
+                "WASD move | arrows face | Shift walk | B box | J jump | Space reset\n"
                 "drag orbit | right-drag pan | scroll zoom | Esc quit")
         mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,
                            mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport,
