@@ -3,11 +3,18 @@
 An in-browser, keyboard-controlled motion-matching demo for the Unitree G1, mirroring the
 native `run.py` viewer. The whole motion matcher runs **client-side in JavaScript** — a
 verified 1:1 port of the Python controller (`mm_g1/controller.py`, GenoView / Holden
-"Simple Motion Matching" with the smoothed sim-root + inertialization architecture) — and
-the G1 is drawn as an articulated capsule skeleton with [Three.js](https://threejs.org).
+"Simple Motion Matching" with the smoothed sim-root + inertialization architecture, plus the
+pick/carry/place box state machine) — and the G1 + box are drawn with their full visual
+meshes via [Three.js](https://threejs.org).
 
 **Controls:** `WASD` move (camera-relative) · `Arrow keys` face (independent of travel) ·
-`Shift` walk · `J` jump · `Space` reset · `T` toggle gizmo · drag / scroll to orbit.
+`Shift` walk · `B` box (pick up when near the box, set down while carrying) · `J` jump ·
+`Space` reset · `T` toggle gizmo · drag / scroll to orbit.
+
+**Box skill.** Walk up to the box and press `B` to pick it up; the controller rides a
+pick clip, then searches the carry clips so you can steer the box around (slower — the carry
+data is near-stationary); press `B` again to set it down. The box rides the robot's base
+frame while held and is inertialized through every clip cut, exactly as in the native demo.
 
 ## Run locally
 
@@ -30,26 +37,31 @@ to `https://<user>.github.io/motionmatching-g1/`.
 
 ```
 tools/export_web_data.py   (offline, run with the mujoco env)
-   ├─ docs/data/model.json  kinematic tree (bodies: parent, local pos/quat, joint axis)
-   ├─ docs/data/mesh.json   per-geom body index + rgba + offsets into mesh.bin
-   ├─ docs/data/mesh.bin    full G1 visual meshes, body-local (positions + uint16 indices, ~4.7 MB)
-   ├─ docs/data/mm.json     header: array offsets/shapes + matcher hyperparameters
-   └─ docs/data/mm.bin      the feature DB + per-frame pose/sim-root arrays (~13 MB)
+   ├─ docs/data/model.json   kinematic tree (bodies: parent, local pos/quat, joint axis)
+   ├─ docs/data/mesh.json    per-geom body index + rgba + offsets into mesh.bin
+   ├─ docs/data/mesh.bin     full G1 visual meshes, body-local (positions + uint16 indices, ~4.7 MB)
+   ├─ docs/data/boxmesh.json + boxmesh.bin   the interactive box mesh (body-local, ~0.3 MB)
+   ├─ docs/data/mm.json      header: array offsets/shapes + matcher + box hyperparameters
+   └─ docs/data/mm.bin       per-skill feature DBs (loco/carry/pick/place) + per-frame
+                             pose/sim-root/box arrays + skill entries (~25 MB)
 
 docs/js/  (runtime, in the browser)
    ├─ quat.js   quaternion/vec helpers (port of mm_g1/quat.py)
-   ├─ mm.js     loadDB + MotionMatcher  (port of mm_g1/controller.py + springs.py)
+   ├─ mm.js     loadDB + MotionMatcher  (port of controller.py + springs.py + boxes.py)
    ├─ fk.js     forward kinematics       (the formula verified vs MuJoCo to ~1e-7 m)
-   └─ main.js   Three.js scene, keyboard, fixed-30 Hz loop, capsule-skeleton render
+   └─ main.js   Three.js scene, keyboard, fixed-30 Hz loop, full-mesh render + box
 ```
 
-Each frame the JS matcher searches the feature DB (brute-force nearest-neighbour — trivial
-at this scale), springs the desired trajectory, inertializes the pose transition, integrates
-the smoothed root, and emits a 36-D `qpos`; `fk.js` turns that into world body transforms.
+Each frame the JS matcher runs the box state machine (locomotion / pick / carry / place),
+searches the relevant feature DB (brute-force nearest-neighbour — trivial at this scale),
+springs the desired trajectory, inertializes the pose (and held-box) transition, integrates
+the smoothed root, and emits a 36-D `qpos` + a 7-D box pose; `fk.js` turns the pose into
+world body transforms and the box mesh group is placed directly from its pose.
 
-**Verified:** the JS matcher reproduces the Python controller to `1.7e-7` (max `|qpos|`
-difference over 250 frames of run / turn / stop / jump), and the FK matches MuJoCo to
-`8e-8 m`. See `tools/export_web_data.py` (FK self-check) for the model side.
+**Verified:** the JS matcher reproduces the Python controller to `1.8e-7` (max `|qpos|` and
+`|box pose|` difference over 420 frames of walk → pick → carry → place → walk, i.e. float32
+round-trip precision), and the FK matches MuJoCo to `8e-8 m`. See `tools/export_web_data.py`
+(FK self-check) for the model side.
 
 ### Regenerate the data
 

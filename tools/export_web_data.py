@@ -7,13 +7,16 @@ Run from the repo root with the mujoco env, e.g.:
 Writes:
   docs/data/model.json  -- kinematic tree (bodies: parent, local pos/quat, joint axis/qadr)
                            used by the JS forward-kinematics + skeleton renderer.
+  docs/data/mesh.{json,bin} -- G1 visual meshes (body-local), placed by the JS FK.
+  docs/data/boxmesh.{json,bin} -- the interactive box mesh (body-local), placed by box_qpos.
   docs/data/mm.json     -- header: per-array {dtype, shape, byte offset} into mm.bin, plus
-                           clip metadata, jump entries, and the loco search-clip indices.
+                           clip metadata, jump + pick/place entries, carry segments, the loco
+                           search-clip indices, and the box config the JS state machine needs.
   docs/data/mm.bin      -- all the runtime arrays the JS matcher needs, concatenated.
 
 The JS matcher (docs/js/mm.js) is a 1:1 port of mm_g1/controller.py + features.build_db,
-so we export exactly the arrays build_db() produces. A self-check verifies our pure-numpy
-FK (the same formula the JS uses) matches MuJoCo before writing.
+so we export exactly the per-skill databases + box arrays build_db() produces. A self-check
+verifies our pure-numpy FK (the same formula the JS uses) matches MuJoCo before writing.
 """
 import os
 import sys
@@ -26,6 +29,7 @@ from mm_g1 import config as C
 from mm_g1.data import load_library
 from mm_g1.features import build_db
 from mm_g1.jumps import jump_entries
+from mm_g1 import boxes
 from mm_g1 import quat
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -112,6 +116,44 @@ def export_meshes(m):
           f"{ibase // 3} tris, {len(blob) / 1e6:.1f} MB")
 
 
+def export_box_mesh():
+    """Extract the interactive box's visual mesh (from the G1+box scene) into body-local
+    space and write docs/data/boxmesh.{json,bin}. The box is a free body driven every frame
+    by the matcher's box_qpos, so the JS renderer places this one mesh group directly from
+    that pose -- it is NOT part of the FK body tree (model.json)."""
+    m = mujoco.MjModel.from_xml_path(C.SCENE_BOX_XML)
+    bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "largebox")
+    pos_chunks, idx_chunks, rgba = [], [], [0.82, 0.52, 0.22]
+    vbase = 0
+    for g in range(m.ngeom):
+        if m.geom_bodyid[g] != bid or m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
+            continue
+        mid = int(m.geom_dataid[g])
+        va, nv = int(m.mesh_vertadr[mid]), int(m.mesh_vertnum[mid])
+        fa, nf = int(m.mesh_faceadr[mid]), int(m.mesh_facenum[mid])
+        verts = m.mesh_vert[va:va + nv].astype(np.float64)
+        faces = m.mesh_face[fa:fa + nf].astype(np.int64)
+        assert nv < 65536, f"box mesh has {nv} verts (>uint16)"
+        gp, gq = m.geom_pos[g], m.geom_quat[g]                 # mesh -> body frame
+        vb = gp + quat.mul_vec(np.tile(gq, (nv, 1)), verts)
+        pos_chunks.append(vb.astype(np.float32))
+        idx_chunks.append((faces + vbase).astype(np.uint16))
+        vbase += nv
+        rgba = [float(c) for c in (m.mat_rgba[int(m.geom_matid[g])][:3]
+                                   if m.geom_matid[g] >= 0 else m.geom_rgba[g][:3])]
+
+    positions = np.concatenate(pos_chunks).ravel()
+    indices = np.concatenate(idx_chunks).ravel()
+    blob = positions.tobytes() + indices.tobytes()
+    meta = dict(nverts=int(vbase), nidx=int(len(indices)),
+                idx_byte_offset=positions.nbytes, rgba=rgba)
+    json.dump(meta, open(os.path.join(OUT, "boxmesh.json"), "w"))
+    with open(os.path.join(OUT, "boxmesh.bin"), "wb") as f:
+        f.write(blob)
+    print(f"  boxmesh.json + boxmesh.bin: {vbase} verts, {len(indices) // 3} tris, "
+          f"{len(blob) / 1e6:.1f} MB")
+
+
 def verify_fk(m, bodies, n_tests=5):
     """Confirm our pure-numpy FK matches MuJoCo's, so the JS port renders correctly."""
     data = mujoco.MjData(m)
@@ -139,17 +181,51 @@ def export_mm(lib):
     db = build_db(lib)
     jump_enter, jump_land_of = jump_entries(lib)
     starts, stops = db["starts"], db["stops"]
-    skill = lib["skill"] if "skill" in lib else np.zeros(len(db["X"]), np.int32)
-
-    # Search clips = locomotion clips (skill all 0) long enough for a full horizon.
+    skill = lib["skill"]
+    box_attach = lib["box_attach"]
+    T = len(db["dof"])
     H = int(max(C.HORIZONS))
+
+    # Per-skill feature databases (the JS matcher queries each with its own offset/scale).
+    dbs = db["dbs"]
+    Xloco, Xcarry = dbs["loco"]["X"], dbs["carry"]["X"]
+
+    # Loco search clips = pure-locomotion clips (skill all 0) long enough for a full horizon.
     search_clips = [int(ci) for ci, (rs, re) in enumerate(zip(starts, stops))
                     if not skill[rs:re].any() and re - rs > H]
+    # Contiguous CARRY segments (searched like locomotion, among carry frames only).
+    carry_segs = np.asarray(boxes.carry_segments(lib), np.int32).reshape(-1, 2)
+
+    # Pick / place ENTRY frames + the phase-end frame each ride finishes at. We ship the
+    # entry-frame rows of the pick/place databases (the only rows ever queried) so the JS can
+    # nearest-neighbour the live pose+box query to them.
+    pick_enter, pick_end_of, place_enter, place_end_of = boxes.box_entries(lib)
+    pick_end = np.asarray([pick_end_of[int(f)] for f in pick_enter], np.int32)
+    place_end = np.asarray([place_end_of[int(f)] for f in place_enter], np.int32)
+    pickEnterX = dbs["pick"]["X"][pick_enter] if len(pick_enter) else np.zeros((0, 24), np.float32)
+    placeEnterX = dbs["place"]["X"][place_enter] if len(place_enter) else np.zeros((0, 24), np.float32)
+
+    # Box resting orientation for the interactive spawn (box-in-base at a representative pick
+    # entry == its world orientation when the robot faces +x); mirrors MotionMatcher.
+    box_spawn_rot = (db["boxLocalRot"][int(pick_enter[0])].copy()
+                     if len(pick_enter) else np.array([1.0, 0, 0, 0]))
 
     arrays = {
-        "X": db["X"].astype(np.float32),
-        "Xoffset": db["Xoffset"].astype(np.float32),
-        "Xscale": db["Xscale"].astype(np.float32),
+        # per-skill normalized feature matrices + their query offsets/scales
+        "Xloco": Xloco.astype(np.float32),
+        "Xcarry": Xcarry.astype(np.float32),
+        "locoOffset": dbs["loco"]["offset"].astype(np.float32),
+        "locoScale": dbs["loco"]["scale"].astype(np.float32),
+        "carryOffset": dbs["carry"]["offset"].astype(np.float32),
+        "carryScale": dbs["carry"]["scale"].astype(np.float32),
+        "pickOffset": dbs["pick"]["offset"].astype(np.float32),
+        "pickScale": dbs["pick"]["scale"].astype(np.float32),
+        "placeOffset": dbs["place"]["offset"].astype(np.float32),
+        "placeScale": dbs["place"]["scale"].astype(np.float32),
+        # raw (un-normalized) pose blocks the query is assembled from
+        "rawXpos": db["rawXpos"].astype(np.float32),
+        "rawXvel": db["rawXvel"].astype(np.float32),
+        # pose reconstruction + inertialization
         "dof": db["dof"].astype(np.float32),
         "dofVel": db["dofVel"].astype(np.float32),
         "simPos": db["simPos"].astype(np.float32),
@@ -160,15 +236,31 @@ def export_mm(lib):
         "pelvLocalVel": db["pelvLocalVel"].astype(np.float32),
         "pelvLocalRot": db["pelvLocalRot"].astype(np.float32),
         "pelvLocalAng": db["pelvLocalAng"].astype(np.float32),
+        # box reconstruction + inertialization (box-in-base, like the pelvis)
+        "boxLocalPos": db["boxLocalPos"].astype(np.float32),
+        "boxLocalRot": db["boxLocalRot"].astype(np.float32),
+        "boxLocalPosVel": db["boxLocalPosVel"].astype(np.float32),
+        "boxLocalAng": db["boxLocalAng"].astype(np.float32),
+        "box_attach": box_attach.astype(np.int32),
+        # clip bookkeeping + skill labels
         "starts": starts.astype(np.int32),
         "stops": stops.astype(np.int32),
         "clip_id": lib["clip_id"].astype(np.int32),
         "frame_in_clip": lib["frame_in_clip"].astype(np.int32),
         "lengths": lib["lengths"].astype(np.int32),
         "skill": skill.astype(np.int32),
+        # skill entries / segments
         "jump_enter": np.asarray(jump_enter, np.int32),
         "jump_land": np.asarray([jump_land_of[int(f)] for f in jump_enter], np.int32),
         "search_clips": np.asarray(search_clips, np.int32),
+        "carry_segs": carry_segs,
+        "pick_enter": np.asarray(pick_enter, np.int32),
+        "pick_end": pick_end,
+        "place_enter": np.asarray(place_enter, np.int32),
+        "place_end": place_end,
+        "pickEnterX": pickEnterX.astype(np.float32),
+        "placeEnterX": placeEnterX.astype(np.float32),
+        "box_spawn_rot": box_spawn_rot.astype(np.float32),
     }
 
     blob = bytearray()
@@ -180,13 +272,17 @@ def export_mm(lib):
 
     meta = dict(
         fps=C.FPS, ndof=29, horizons=list(map(int, C.HORIZONS)),
-        max_speed=C.MAX_SPEED, walk_scale=C.WALK_SCALE,
+        max_speed=C.MAX_SPEED, walk_scale=C.WALK_SCALE, carry_max_speed=C.CARRY_MAX_SPEED,
         search_time=C.SEARCH_TIME, current_bias=C.CURRENT_BIAS,
         inert_halflife=C.INERT_HALFLIFE, vel_halflife=C.VEL_HALFLIFE,
-        rot_halflife=C.ROT_HALFLIFE,
+        rot_halflife=C.ROT_HALFLIFE, box_inert_halflife=C.BOX_INERT_HALFLIFE,
         phase_touchdown=C.PHASE_TOUCHDOWN, phase_after=C.PHASE_AFTER,
+        pick_radius=C.PICK_RADIUS, box_spawn_fwd=C.BOX_SPAWN_FWD,
+        box_spawn_lat=C.BOX_SPAWN_LAT, box_rest_z=C.BOX_REST_Z,
+        skill_loco=C.SKILL_LOCO, skill_pick=C.SKILL_PICK,
+        skill_carry=C.SKILL_CARRY, skill_place=C.SKILL_PLACE,
         clip_names=[str(n) for n in lib["clip_names"]],
-        arrays=header, n_frames=int(len(db["X"])))
+        arrays=header, n_frames=T)
     return meta, bytes(blob)
 
 
@@ -199,6 +295,7 @@ def main():
               open(os.path.join(OUT, "model.json"), "w"))
     print(f"  model.json: {len(bodies)} bodies")
     export_meshes(m)
+    export_box_mesh()
 
     lib = load_library()
     meta, blob = export_mm(lib)

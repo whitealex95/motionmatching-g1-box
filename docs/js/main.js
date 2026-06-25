@@ -17,17 +17,18 @@ async function loadJSON(u) { return (await fetch(u)).json(); }
 async function loadBin(u) { return (await fetch(u)).arrayBuffer(); }
 
 async function boot() {
-  setHud('loading G1 model + motion database (~18 MB)...');
-  const [model, meta, bin, meshMeta, meshBin] = await Promise.all([
+  setHud('loading G1 model + motion database (~30 MB)...');
+  const [model, meta, bin, meshMeta, meshBin, boxMeta, boxBin] = await Promise.all([
     loadJSON(`${DATA}/model.json`), loadJSON(`${DATA}/mm.json`), loadBin(`${DATA}/mm.bin`),
     loadJSON(`${DATA}/mesh.json`), loadBin(`${DATA}/mesh.bin`),
+    loadJSON(`${DATA}/boxmesh.json`), loadBin(`${DATA}/boxmesh.bin`),
   ]);
   const A = loadDB(meta, bin);
   const mm = new MotionMatcher(meta, A);
-  start(model.bodies, mm, meshMeta, meshBin);
+  start(model.bodies, mm, meshMeta, meshBin, boxMeta, boxBin);
 }
 
-function start(bodies, mm, meshMeta, meshBuf) {
+function start(bodies, mm, meshMeta, meshBuf, boxMeta, boxBuf) {
   // ---- renderer / scene / camera (z-up) ----
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -92,6 +93,24 @@ function start(bodies, mm, meshMeta, meshBuf) {
   }
   const _yAxis = new THREE.Vector3(0, 1, 0);
 
+  // ---- interactive box: one mesh group placed directly from the matcher's box pose
+  //      (free body, NOT in the FK tree). qpos[36:43] = world position + quaternion (wxyz). ----
+  const boxGroup = new THREE.Group(); scene.add(boxGroup);
+  {
+    const pos = new Float32Array(boxBuf, 0, boxMeta.nverts * 3);
+    const idx = new Uint16Array(boxBuf, boxMeta.idx_byte_offset, boxMeta.nidx);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(boxMeta.rgba[0], boxMeta.rgba[1], boxMeta.rgba[2]),
+      metalness: 0.1, roughness: 0.8, flatShading: true });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    boxGroup.add(mesh);
+  }
+
   // ---- command-trajectory gizmo (red spheres + facing sticks) ----
   const gizmo = new THREE.Group(); scene.add(gizmo);
   const red = new THREE.MeshBasicMaterial({ color: 0xe21818 });
@@ -106,6 +125,7 @@ function start(bodies, mm, meshMeta, meshBuf) {
     const k = e.code;
     if (k === 'Space') { mm.reset(); e.preventDefault(); }
     else if (k === 'KeyJ') mm.triggerJump();
+    else if (k === 'KeyB') mm.triggerBox();
     else if (k === 'KeyT') gizmo.visible = !gizmo.visible;
     else held.add(k);
     if (k.startsWith('Arrow')) e.preventDefault();
@@ -132,12 +152,15 @@ function start(bodies, mm, meshMeta, meshBuf) {
     if (held.has('ArrowDown')) face = acc(face, [-fwd[0], -fwd[1], 0]);
     if (held.has('ArrowRight')) face = acc(face, right);
     if (held.has('ArrowLeft')) face = acc(face, [-right[0], -right[1], 0]);
+    // Full stick = MAX_SPEED, except while CARRYing the box (the carry clips are slow, so we
+    // cap the command at the data's pace); Shift scales either to a walk -- matches viewer.py.
+    const top = (mm.state === mm.CARRY ? mm.CARRY_MAX_SPEED : mm.MAX_SPEED) * (shift ? mm.WALK_SCALE : 1);
     const mN = Math.hypot(move[0], move[1]);
-    if (mN > 1e-6) { const s = mm.MAX_SPEED * (shift ? mm.WALK_SCALE : 1) / mN; move = [move[0] * s, move[1] * s, 0]; }
+    if (mN > 1e-6) { const s = top / mN; move = [move[0] * s, move[1] * s, 0]; }
     else move = [0, 0, 0];
     const fN = Math.hypot(face[0], face[1]);
     face = fN > 1e-6 ? [face[0] / fN, face[1] / fN, 0] : [0, 0, 0];
-    return { move, face, speed: mN > 1e-6 ? mm.MAX_SPEED * (shift ? mm.WALK_SCALE : 1) : 0 };
+    return { move, face, speed: mN > 1e-6 ? top : 0 };
   }
 
   // ---- place the body mesh-groups from FK (wxyz quat -> three xyzw) ----
@@ -148,6 +171,11 @@ function start(bodies, mm, meshMeta, meshBuf) {
       bodyGroups[i].position.set(wp[i][0], wp[i][1], wp[i][2]);
       bodyGroups[i].quaternion.set(wq[i][1], wq[i][2], wq[i][3], wq[i][0]);
     }
+  }
+  // place the interactive box from a box qpos (pos[0:3] + quat wxyz[3:7])
+  function placeBox(bq) {
+    boxGroup.position.set(bq[0], bq[1], bq[2]);
+    boxGroup.quaternion.set(bq[4], bq[5], bq[6], bq[3]);
   }
 
   function drawGizmo() {
@@ -178,9 +206,18 @@ function start(bodies, mm, meshMeta, meshBuf) {
     for (let i = 7; i < 36; i++) _rq[i] = a[i] + (b[i] - a[i]) * t;
     return _rq;
   }
+  const _bq = new Float64Array(7);
+  function interpBox(a, b, t) {                    // box qpos(7): pos lerp, quat slerp
+    for (let i = 0; i < 3; i++) _bq[i] = a[i] + (b[i] - a[i]) * t;
+    _q0.set(a[4], a[5], a[6], a[3]); _q1.set(b[4], b[5], b[6], b[3]);
+    _qi.slerpQuaternions(_q0, _q1, t);
+    _bq[3] = _qi.w; _bq[4] = _qi.x; _bq[5] = _qi.y; _bq[6] = _qi.z;
+    return _bq;
+  }
 
   let acc = 0, last = performance.now() / 1000, lastSpeed = 0;
   let curQ = mm.step([0, 0, 0], [0, 0, 0]), prevQ = curQ;
+  let curB = mm.boxQpos(), prevB = curB;
   let fps = 0, fpsN = 0, fpsT = last;
   function frame() {
     const now = performance.now() / 1000;
@@ -188,10 +225,13 @@ function start(bodies, mm, meshMeta, meshBuf) {
     while (acc >= DT) {
       const c = command(); lastSpeed = c.speed;
       prevQ = curQ; curQ = mm.step(c.move, c.face);
+      prevB = curB; curB = mm.boxQpos();
       acc -= DT;
     }
-    const rq = interp(prevQ, curQ, acc / DT);       // render one step behind, smoothly
+    const f = acc / DT;
+    const rq = interp(prevQ, curQ, f);              // render one step behind, smoothly
     place(rq);
+    placeBox(interpBox(prevB, curB, f));
     drawGizmo();
 
     // follow camera (keep the pelvis centred; user can still orbit/zoom)
@@ -201,13 +241,23 @@ function start(bodies, mm, meshMeta, meshBuf) {
     fpsN++;
     if (now - fpsT >= 0.5) { fps = fpsN / (now - fpsT); fpsN = 0; fpsT = now; }
 
-    const gait = mm.jumping ? 'JUMP' : (lastSpeed > mm.MAX_SPEED * (1 + mm.WALK_SCALE) / 2 ? 'RUN' : (lastSpeed > 1e-3 ? 'WALK' : 'IDLE'));
+    // Box state machine takes precedence in the HUD; otherwise show the loco gait.
+    const state = mm.stateName();
+    let head;
+    if (state === 'LOCOMOTION' && !mm.jumping) {
+      head = lastSpeed > mm.MAX_SPEED * (1 + mm.WALK_SCALE) / 2 ? 'RUN' : (lastSpeed > 1e-3 ? 'WALK' : 'IDLE');
+      head += mm.nearBox ? '  [B: pick up]' : '  (walk to the box, then B)';
+    } else {
+      head = mm.jumping ? 'JUMP' : state;
+      if (state === 'CARRY') head += '  [B: set down]';
+    }
     const cid = mm._clipOf(mm.cur);
     const fic = mm.cur - mm.starts[cid];
-    setHud(`${gait}  ${lastSpeed.toFixed(1)} m/s\nclip [${cid}]: ${mm.clipNames[cid]}\nframe ${fic} (global ${mm.cur})\n` +
+    setHud(`${head}  ${lastSpeed.toFixed(1)} m/s\nclip [${cid}]: ${mm.clipNames[cid]}\nframe ${fic} (global ${mm.cur})\n` +
+      `box: ${mm.boxHeldNow ? 'held' : 'resting'}\n` +
       `\nrender ${fps.toFixed(0)} fps · sim ${(1 / DT).toFixed(0)} Hz (${(DT * 1000).toFixed(1)} ms)\n` +
       `search every ${(mm.SEARCH_TIME * 1000).toFixed(0)} ms\n` +
-      `\nWASD move · arrows face · Shift walk\nJ jump · Space reset · T gizmo · drag/scroll camera`);
+      `\nWASD move · arrows face · Shift walk\nB box · J jump · Space reset · T gizmo · drag/scroll camera`);
 
     renderer.render(scene, camera);
     requestAnimationFrame(frame);
