@@ -1,17 +1,22 @@
-# Interactive Motion Matching for the Unitree G1
+# Interactive Motion Matching for the Unitree G1 — with box pick / carry / place
 
-Steer a **Unitree G1** humanoid around a MuJoCo scene in real time with the keyboard.
-Hold **WASD** and a [motion-matching](https://www.gdcvault.com/play/1023280/Motion-Matching-and-The-Road)
+Steer a **Unitree G1** humanoid around a MuJoCo scene in real time with the keyboard, and
+**pick up, carry, and set down a box** on command. Hold **WASD** and a
+[motion-matching](https://www.gdcvault.com/play/1023280/Motion-Matching-and-The-Road)
 search stitches GMR-retargeted LAFAN1 **walk**, **run** and **push-and-stumble** clips
-into one continuous, responsive gait — no neural network, no training, just nearest-neighbour search over a
-pose/trajectory feature database.
+into one continuous, responsive gait; press **B** next to the box and the controller
+switches to a small **pick → carry → place** state machine driven by
+[OmniRetarget](https://github.com/) robot-object clips — no neural network, no training,
+just nearest-neighbour search over per-skill feature databases.
 
-This repo is **fully self-contained**: the G1 model, the motion data, and the code all
-live in this one folder. Clone it, run `setup.sh`, and go.
+This repo is **fully self-contained**: the G1 model, all motion data, and the code live in
+this one folder. Clone it, run `setup.sh`, and go.
 
 ```
 W / A / S / D    move (relative to the camera)
 Shift (hold)     run instead of walk
+B                box action: pick up when near the box, set down while carrying
+J                jump (rides a jump clip's run-up through landing)
 Space            reset to the start pose
 T                toggle the command trajectory gizmo
 left-drag        orbit camera
@@ -20,10 +25,52 @@ scroll           zoom
 Esc              quit
 ```
 
+A box spawns a short distance in front of the character. **Walk up to it and press B** to
+pick it up; the robot plays a `pick` clip and the box rides along in its hands. You are now
+**carrying** — move around (the box follows), then press **B** again to play a `place` clip
+and set the box back on the floor.
+
 A red **command gizmo** (à la GenoView's `DrawTrajectory`) is drawn on the ground: a
 sphere at each predicted future position with a short stick pointing in the predicted
 facing direction. It shows exactly the trajectory the matcher is being asked to follow —
 press **T** to toggle it.
+
+## Box manipulation (pick / carry / place)
+
+Each [OmniRetarget](https://github.com/) robot-object clip is one continuous *pick → carry
+→ place* sequence (the G1 lifts a large box off the floor, holds it, sets it down).
+`mm_g1/boxes.py` segments every clip into the three phases from the box-height trajectory
+and marks the interval over which the box is **attached** to the robot (lifted clear of the
+floor); before pick contact and after place release the box rests in the world, in between
+it rides the robot's gravity-aligned base frame.
+
+A four-state machine drives it (`mm_g1/controller.py`):
+
+```
+LOCOMOTION --B (near box)--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
+```
+
+- **PICK** and **PLACE** are *ridden* like the jump skill: entered from the start of the
+  phase by a nearest-neighbour match of the live pose **+ box pose**, then played to the
+  phase end with no mid-skill search.
+- **CARRY** is searched every `SEARCH_TIME` like locomotion, but only among `carry` frames,
+  with the box pose added to the query.
+- The **only** database transitions ever made are those in the chain above (so e.g. you can
+  never match from locomotion straight into a carry, or from a pick into a place).
+
+Each searchable database has its **own feature space** (`mm_g1/features.py`), all expressed
+in the smoothed sim-root (gravity-aligned base) frame:
+
+| database | dims | contents                                                       |
+|----------|------|----------------------------------------------------------------|
+| `loco`   | 27   | pose (15) + future trajectory (12)        — unchanged genoview  |
+| `carry`  | 36   | pose + future trajectory + **box** pos/orient/vel (9)          |
+| `pick`/`place` (`pp`) | 24 | pose + **box** pos/orient/vel — **no** future trajectory |
+
+The box block is `[ position (3) · orientation as scaled-angle-axis (3) · linear velocity
+(3) ]` in the base frame. While the box is held it is reconstructed each frame as
+`root ∘ box-in-base` (exactly like the pelvis), so it tracks the character; a short
+inertialization offset captured at grab time hides the pop from its resting spot.
 
 ## Quick start
 
@@ -79,21 +126,25 @@ a lower speed back into the **walk** clip.
 ## Layout
 
 ```
-motionmatchin-g1/
+motionmatching-g1-box/
 ├── run.py                       # entry point: python run.py
 ├── setup.sh                     # venv + install + build cache (self-contained)
 ├── requirements.txt
 ├── mm_g1/
-│   ├── config.py                # paths, FPS, joint layout, feature + speed settings
-│   ├── g1_model.py              # CSV→qpos conversion, quaternion yaw, FK for the feet
-│   ├── data.py                  # build / load + cache the walk+run motion library
-│   ├── features.py              # 27-D motion-matching feature vectors
-│   ├── commands.py              # keyboard input → predicted query trajectory
-│   ├── kinematics.py            # planar root stitching + pose cross-fade
-│   ├── controller.py            # real-time nearest-neighbour matcher: step(speed, heading)
-│   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera
-├── assets/unitree_g1/           # MuJoCo G1 model (g1.xml, scene.xml, STL meshes)
-└── data/gmr_lafan1_g1/          # GMR-retargeted LAFAN1 clips (walk / run / pushAndStumble, .pkl)
+│   ├── config.py                # paths, FPS, joint layout, feature + skill settings
+│   ├── g1_model.py              # qpos conversion, quaternion yaw, FK for the feet, mirror
+│   ├── data.py                  # build / load + cache the loco + jump + box library
+│   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
+│   ├── jumps.py                 # jump-skill (J) entry indexing
+│   ├── features.py              # per-skill feature DBs (loco 27 / carry 36 / pick·place 24)
+│   ├── springs.py               # critically-damped trajectory + inertialization springs
+│   ├── controller.py            # real-time matcher + pick/carry/place state machine
+│   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera, box
+├── assets/unitree_g1/           # MuJoCo G1 model (g1.xml, scene.xml, scene_box.xml, meshes)
+├── assets/largebox/             # the box mesh (largebox.obj)
+├── data/gmr_lafan1_g1/          # GMR-retargeted LAFAN1 clips (walk / run / pushAndStumble, .pkl)
+├── data/g1_jump/                # CAMDM walk→jump→walk clips (.csv)
+└── data/robot_object_g1/        # OmniRetarget robot-object pick/carry/place clips (.npz)
 ```
 
 ## Tuning
@@ -111,7 +162,23 @@ Edit `mm_g1/config.py`:
 - `SEARCH_TAIL` — frames at each clip's end excluded from the *search only* (GenoView's
   `cKDTree(X[rs:re-60])`): the tail still plays but can't be matched into, so the
   character never runs off the end of a clip.
-- `--jump-margin` on `run.py` — hysteresis strength (higher = stickier clips, smoother).
+
+Box-skill knobs (also in `config.py`):
+
+- `BOX_CLIPS` — which robot-object clips to load (`"all"` or an explicit list of stems).
+- `PICK_RADIUS` — how close the root must be to the box for **B** to pick it up.
+- `BOX_SPAWN_FWD` / `BOX_SPAWN_LAT` — where the box spawns, in the robot's start frame.
+- `BOX_CARRY_FRAC`, `BOX_HOLD_DZ`, `BOX_HOLD_SPEED` — phase-segmentation thresholds
+  (`mm_g1/boxes.py`): how high the box must rise to count as *carry* / be *attached*.
+- `BOX_POS_WEIGHT` / `BOX_ROT_WEIGHT` / `BOX_VEL_WEIGHT` — how much the box blocks weigh in
+  the pick/place/carry search vs. the body pose.
+- `BOX_INERT_HALFLIFE` — how quickly the box settles into the hands at grab time.
+
+> **Note on the carry data.** The OmniRetarget carry clips are essentially in-place (the
+> robot holds the box and barely translates), so while *carrying* the character mostly
+> stands/shuffles — WASD has limited effect until you set the box down. This follows the
+> spec faithfully (carry searches only `carry` frames); swap in walking-while-carrying data
+> and the same machinery would steer it.
 
 ## Credits
 

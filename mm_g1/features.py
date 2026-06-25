@@ -94,6 +94,8 @@ def build_db(lib):
     footR = lib["feet_world"][:, 1].astype(np.float64)
     pelvis = qpos[:, 0:3]                                 # floating base == pelvis
     headDirRaw = heading_dir(rootQuat)                   # (T,3)
+    boxPosW = lib["box_pose"][:, 0:3].astype(np.float64)  # world box position
+    boxRotW = lib["box_pose"][:, 3:7].astype(np.float64)  # world box quaternion (wxyz)
 
     # ---- Smoothed simulation root + pelvis-local offset, per range ----
     T = len(qpos)
@@ -119,13 +121,14 @@ def build_db(lib):
     footLvel, footRvel = clipwise_vel(footL), clipwise_vel(footR)
     pelvisVel, simVel = clipwise_vel(pelvis), clipwise_vel(simPos)
     dofVel, pelvLocalVel = clipwise_vel(dof), clipwise_vel(pelvLocalPos)
+    boxVelW = clipwise_vel(boxPosW)                       # world box linear velocity
     yawRate = np.zeros(T)
     pelvLocalAng = np.zeros((T, 3))
     for rs, re in spans:
         yawRate[rs:re] = central_diff(np.unwrap(simTheta[rs:re])[:, None], FPS)[:, 0]
         pelvLocalAng[rs:re] = central_diff_ang(pelvLocalRot[rs:re], FPS)
 
-    # ---- Features in the smoothed sim-root frame ----
+    # ---- Pose + trajectory features in the smoothed sim-root frame ----
     qh_all = yaw_quat(simTheta)
     to_local = lambda v: quat.inv_mul_vec(qh_all, v)
 
@@ -141,18 +144,53 @@ def build_db(lib):
                 qh_all[rs:re], simPos[ft] - simPos[rs:re])[:, 0:2]
             XtrajDir[rs:re, 2 * k:2 * k + 2] = quat.inv_mul_vec(qh_all[rs:re], headDir[ft])[:, 0:2]
 
-    X = np.concatenate([Xpos, Xvel, XtrajPos, XtrajDir], -1)        # (T,27)
-    # Normalize over LOCOMOTION frames only (skill==0), so the search space statistics match
-    # genoview's loco-only database -- jump frames (a triggered-only extra) don't skew them.
-    m = (lib["skill"] == 0) if "skill" in lib else np.ones(T, bool)
-    Xoffset = X[m].mean(0)
-    Xscale = np.concatenate([                                       # one shared std per block
-        np.repeat(Xpos[m].std(0).mean(), Xpos.shape[1]),
-        np.repeat(Xvel[m].std(0).mean(), Xvel.shape[1]),
-        np.repeat(XtrajPos[m].std(0).mean(), XtrajPos.shape[1]),
-        np.repeat(XtrajDir[m].std(0).mean(), XtrajDir.shape[1])])
-    Xscale = np.where(Xscale < 1e-5, 1.0, Xscale)
-    Xn = (X - Xoffset) / Xscale
+    # ---- Box features in the same sim-root (gravity-aligned base) frame ----
+    # Stored relative to the smoothed root exactly like the pelvis, so reconstructing the
+    # box at runtime (root o boxLocal) rides along with the character. boxLocalRot is also
+    # kept as a scaled-angle-axis for the search query (orientation block). boxLocalPosVel /
+    # boxLocalAng are the time-derivatives of the *local* pose (mirroring pelvLocalVel /
+    # pelvLocalAng) -- the velocity terms the box inertialization matches at a cut.
+    boxLocalPos = quat.inv_mul_vec(qh_all, boxPosW - simPos)               # (T,3)
+    boxLocalRot = quat.mul(quat.inv(qh_all), boxRotW)                      # (T,4)
+    boxLocalVel = quat.inv_mul_vec(qh_all, boxVelW)                        # (T,3) world vel (query)
+    boxLocalAA = quat.to_scaled_angle_axis(quat.abs(boxLocalRot))          # (T,3)
+    boxLocalPosVel = clipwise_vel(boxLocalPos)                             # (T,3) d/dt(local pos)
+    boxLocalAng = np.zeros((T, 3))
+    for rs, re in spans:
+        boxLocalAng[rs:re] = central_diff_ang(boxLocalRot[rs:re], FPS)     # (T,3) local ang. vel
+
+    # ---- Three normalized search databases (genoview-style per-block scaling) ----
+    # Each frame belongs to one skill; we normalize each database over its own frames so the
+    # block statistics match what is actually searched. A block's scale is its (shared) std
+    # divided by an optional weight, so a heavier block contributes more to the L2 distance.
+    skill = lib["skill"] if "skill" in lib else np.zeros(T, np.int32)
+    masks = {"loco": skill == C.SKILL_LOCO, "carry": skill == C.SKILL_CARRY,
+             "pick": skill == C.SKILL_PICK, "place": skill == C.SKILL_PLACE}
+
+    def make_db(blocks, mask):
+        """blocks: list of (array (T,d), weight). Returns (Xn, offset, scale) over mask."""
+        if not mask.any():                            # no frames of this skill in the library
+            mask = np.ones(T, bool)
+        X = np.concatenate([b for b, _ in blocks], -1)
+        offset = X[mask].mean(0)
+        scale = np.concatenate([np.repeat(b[mask].std(0).mean() / w, b.shape[1])
+                                for b, w in blocks])
+        scale = np.where(scale < 1e-5, 1.0, scale)
+        return ((X - offset) / scale).astype(np.float32), offset, scale
+
+    Wr, Wv = C.BOX_ROT_WEIGHT, C.BOX_VEL_WEIGHT
+    pose = [(Xpos, 1.0), (Xvel, 1.0)]
+    traj = [(XtrajPos, 1.0), (XtrajDir, 1.0)]
+    box = lambda wp: [(boxLocalPos, wp), (boxLocalAA, Wr), (boxLocalVel, Wv)]
+    # PICK and PLACE share the 24-D (pose + box, no trajectory) feature space but are SEPARATE
+    # databases, so pick can weight the box position more (PICK_BOX_POS_WEIGHT) than place.
+    dbs = {
+        "loco": make_db(pose + traj, masks["loco"]),                        # 27-D (unchanged)
+        "carry": make_db(pose + traj + box(C.BOX_POS_WEIGHT), masks["carry"]),   # 36-D
+        "pick": make_db(pose + box(C.PICK_BOX_POS_WEIGHT), masks["pick"]),       # 24-D
+        "place": make_db(pose + box(C.BOX_POS_WEIGHT), masks["place"]),          # 24-D
+    }
+    dbs = {k: dict(X=Xn, offset=off, scale=sc) for k, (Xn, off, sc) in dbs.items()}
 
     return dict(
         starts=starts, stops=stops, spans=spans,
@@ -160,4 +198,12 @@ def build_db(lib):
         simPos=simPos, simTheta=simTheta, simVel=simVel, yawRate=yawRate,
         pelvLocalPos=pelvLocalPos, pelvLocalVel=pelvLocalVel,
         pelvLocalRot=pelvLocalRot, pelvLocalAng=pelvLocalAng,
-        X=Xn.astype(np.float32), Xoffset=Xoffset, Xscale=Xscale)
+        boxLocalPos=boxLocalPos, boxLocalRot=boxLocalRot,
+        boxLocalPosVel=boxLocalPosVel, boxLocalAng=boxLocalAng,
+        # raw (un-normalized) blocks so the controller can assemble a cross-database query
+        # (pose from the current frame, trajectory from the command, box from the live box).
+        rawXpos=Xpos, rawXvel=Xvel, rawTrajPos=XtrajPos, rawTrajDir=XtrajDir,
+        rawBoxPos=boxLocalPos, rawBoxAA=boxLocalAA, rawBoxVel=boxLocalVel,
+        dbs=dbs,
+        # back-compat aliases: the locomotion database is the default "X".
+        X=dbs["loco"]["X"], Xoffset=dbs["loco"]["offset"], Xscale=dbs["loco"]["scale"])
