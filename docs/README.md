@@ -31,7 +31,7 @@ under `docs/vendor/`, so no CDN or network is needed at runtime.)
 
 This is the `gh-pages` branch. In the repo: **Settings → Pages → Build and deployment →
 Source: “Deploy from a branch” → Branch: `gh-pages`, folder: `/docs`**. The site publishes
-to `https://<user>.github.io/motionmatching-g1/`.
+to `https://whitealex95.github.io/motionmatching-g1-box/`.
 
 ## How it works
 
