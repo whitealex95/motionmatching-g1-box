@@ -11,6 +11,9 @@ JUMP_DATA_DIR = os.path.join(ROOT, "data", "g1_jump")     # CAMDM walk->jump->wa
 BOX_DATA_DIR = os.path.join(ROOT, "data", "robot_object_g1")  # OmniRetarget pick/carry/place .npz
 SCENE_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene.xml")       # G1 only (FK + loco)
 SCENE_BOX_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene_box.xml")  # G1 + box (interactive)
+# Same scene with the printed 'MEDICINE' carton in place of the plain box (run.py --medicine,
+# and the /medicine build of the web demo). Purely a visual swap: same box volume, same motion.
+SCENE_BOX_MEDICINE_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene_box_medicine.xml")
 LIB_PATH = os.path.join(ROOT, "data", "motion_lib.npz")   # built on first run, then cached
 
 FPS = 30

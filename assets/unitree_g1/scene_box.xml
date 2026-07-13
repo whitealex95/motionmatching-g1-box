@@ -2,8 +2,7 @@
   <!-- G1 + large box scene for the interactive pick/carry/place demo (kinematic playback).
        The box is a free body, so its qpos lands right after the robot's 36 (pelvis free
        joint + 29 joints): qpos[36:39] box position, qpos[39:43] box quaternion (wxyz).
-       The mesh path is relative to g1.xml's meshdir (assets/unitree_g1/assets); the texture
-       path is relative to this file (no texturedir is set). -->
+       The mesh path is relative to g1.xml's meshdir (assets/unitree_g1/assets). -->
   <include file="g1.xml"/>
 
   <statistic center="0 0 0.8" extent="1.6"/>
@@ -20,16 +19,7 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.34 0.31 0.28"
              rgb2="0.22 0.20 0.18" markrgb="0.72 0.69 0.64" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.1"/>
-    <!-- 'MEDICINE' cardboard carton (tools/make_medicine_box.py): same bounding box as the
-         original largebox.obj, so the pick/carry/place clips still grip it identically. Its
-         UVs index a 3x2 atlas of the six faces, hence texuniform="false". -->
-    <texture name="medicinebox_tex" type="2d" file="../largebox/medicinebox.png"/>
-    <!-- rgba multiplies the texture: at 1.0 the headlight + overhead directional light sum to
-         >1 on the upward-facing lid and burn the kraft out to white, so the print stops
-         reading from above. 0.7 keeps the lid as cardboard without darkening the scene. -->
-    <material name="medicinebox" texture="medicinebox_tex" texuniform="false"
-              rgba="0.7 0.7 0.7 1" specular="0.05" shininess="0.05" reflectance="0"/>
-    <mesh name="largebox_mesh" file="../../largebox/medicinebox.obj"/>
+    <mesh name="largebox_mesh" file="../../largebox/largebox.obj"/>
   </asset>
 
   <worldbody>
@@ -40,7 +30,7 @@
     <body name="largebox" pos="1.6 0 0.19">
       <freejoint name="box_joint"/>
       <geom type="mesh" mesh="largebox_mesh" contype="0" conaffinity="0"
-            material="medicinebox"/>
+            rgba="0.82 0.52 0.22 1"/>
     </body>
   </worldbody>
 </mujoco>
