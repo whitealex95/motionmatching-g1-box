@@ -55,8 +55,8 @@ CLIP_TRIM = {
 
 # Bump when the library build (clips, trims, mirror, labels) changes incompatibly, so a
 # stale data/motion_lib.npz cache is rebuilt automatically. v2: GenoView-matched trims.
-# v3: robot-object pick/carry/place skill + box features.
-LIB_VERSION = 3
+# v3: robot-object pick/carry/place skill + box features. v4: box orientation N-fold augmentation.
+LIB_VERSION = 4
 
 # GenoView trims the last HORIZONS[-1] frames of each clip from the SEARCH only
 # (cKDTree(X[rs:re-30])): the tail still plays out, but a match never lands there, so a
@@ -107,6 +107,14 @@ PHASE_AFTER = 18         # landing absorption / recovery walk -- the only place 
 # PICK and PLACE are ridden through like the jump (no search mid-skill); CARRY is searched
 # the same way as locomotion but only among CARRY frames, with box features added.
 BOX_CLIPS = "all"        # "all" -> every .npz in BOX_DATA_DIR, or an explicit list of stems
+
+# Rotational augmentation of the box clips. Each pick/carry/place clip is replicated
+# BOX_ROT_FOLDS times with the box's ORIENTATION yawed about its own centre by whole turns / N
+# (0, 90, 180, 270 deg at N=4). Only the box quaternion is rotated -- its centre position and
+# the entire robot motion are identical across folds -- so the pick/carry/place search covers
+# the (near-square) box at any facing and you can lift it whichever way it is turned. Valid
+# because the box has ~4-fold rotational symmetry about its vertical axis; 1 == no augmentation.
+BOX_ROT_FOLDS = 4
 
 # Per-frame skill codes (lib["skill"]). 0 keeps locomotion exactly as before; any non-zero
 # code keeps that frame out of the locomotion search/normalization. JUMP is the legacy J

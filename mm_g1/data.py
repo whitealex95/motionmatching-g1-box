@@ -12,9 +12,11 @@ import numpy as np
 
 from . import config as C
 from . import boxes
+from . import quat
 from .g1_model import G1Model, csv_to_qpos, quat_wxyz_yaw
 
 IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
+UP = np.array([0.0, 0.0, 1.0])
 
 
 def _label_jump(model, q):
@@ -96,6 +98,19 @@ def _load_box_npz(name, data_dir=C.BOX_DATA_DIR):
     return q[:, 0:36].copy(), q[:, 36:43].copy()
 
 
+def _yaw_box_pose(box_pose, angle):
+    """Copy of a box trajectory (T,7)=[pos, quat wxyz] with only its ORIENTATION yawed by
+    `angle` about the world vertical through the box's own centre. The centre position (and
+    hence the robot's grip / reach) is untouched: pre-multiplying by a world-Z yaw spins the box
+    in place. Because that yaw commutes with the root-frame yaw used in features.build_db, the
+    resulting box search feature is an exact `angle` rotation of the original's in the base frame
+    -- giving the near-square box rotational-symmetry coverage (pick/carry/place it at any facing)."""
+    dq = quat.from_angle_axis(np.asarray(angle), UP)          # world-vertical yaw (wxyz)
+    out = box_pose.copy()
+    out[:, 3:7] = quat.mul(dq, box_pose[:, 3:7])
+    return out
+
+
 def build_library(clips=None, out=C.LIB_PATH):
     """Concatenate clips into one array; precompute heading and FK foot positions."""
     clips = clips or C.CLIPS
@@ -105,10 +120,11 @@ def build_library(clips=None, out=C.LIB_PATH):
 
     model = G1Model()
     # Locomotion + jump clips are each (GenoView-style) added twice: normal + L/R MIRRORED,
-    # for symmetric left/right coverage. The robot-object (box) clips are added once -- they
-    # carry a paired box trajectory that a sagittal mirror would also have to reflect, and
-    # the 27 clips already give ample pick/carry/place coverage. Each concrete entry is
-    # (name, robot_qpos, kind, box_pose) where box_pose is None for non-box clips.
+    # for symmetric left/right coverage. The robot-object (box) clips are NOT sagittally mirrored
+    # (a mirror would also have to reflect the paired box trajectory), but each IS replicated
+    # BOX_ROT_FOLDS times with the box's orientation yawed about its own centre (0/90/180/270 deg
+    # at N=4) so the box can be picked/carried/placed at any facing (see _yaw_box_pose). Each
+    # concrete entry is (name, robot_qpos, kind, box_pose) where box_pose is None for non-box clips.
     jump_clips = [c for c in C.JUMP_CLIPS
                   if os.path.exists(os.path.join(C.JUMP_DATA_DIR, c + ".csv"))]
     box_clips = _box_clip_names()
@@ -123,9 +139,13 @@ def build_library(clips=None, out=C.LIB_PATH):
         loaded.append((name, q, "jump", None))
         if C.MIRROR:
             loaded.append((name + "_mirror", model.mirror_qpos(q), "jump", None))
+    folds = max(1, C.BOX_ROT_FOLDS)
     for name in box_clips:                            # OmniRetarget pick/carry/place clips
         robot_q, box_pose = _load_box_npz(name)
-        loaded.append((name, robot_q, "box", box_pose))
+        for k in range(folds):                        # N-fold box-orientation augmentation
+            bp = box_pose if k == 0 else _yaw_box_pose(box_pose, k * 2.0 * np.pi / folds)
+            tag = name if k == 0 else f"{name}_rot{k}"
+            loaded.append((tag, robot_q, "box", bp))
 
     qpos, clip_id, frame_in_clip, lengths, names = [], [], [], [], []
     skill, phase, box_pose_all, box_attach = [], [], [], []
