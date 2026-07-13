@@ -103,9 +103,19 @@ function start(bodies, mm, meshMeta, meshBuf, boxMeta, boxBuf) {
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.computeVertexNormals();
+    // rgba is the material tint (it multiplies the texture, exactly as in the MuJoCo scene).
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(boxMeta.rgba[0], boxMeta.rgba[1], boxMeta.rgba[2]),
       metalness: 0.1, roughness: 0.8, flatShading: true });
+    if (boxMeta.uv_byte_offset >= 0 && boxMeta.texture) {   // printed carton (see boxmesh.png)
+      const uv = new Float32Array(boxBuf, boxMeta.uv_byte_offset, boxMeta.nverts * 2);
+      geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      const tex = new THREE.TextureLoader().load(`${DATA}/${boxMeta.texture}`);
+      tex.colorSpace = THREE.SRGBColorSpace;                // else the kraft reads washed out
+      tex.anisotropy = 8;                                   // keep the print legible at grazing angles
+      mat.map = tex;
+      mat.needsUpdate = true;
+    }
     const mesh = new THREE.Mesh(geo, mat);
     mesh.castShadow = true; mesh.receiveShadow = true;
     boxGroup.add(mesh);

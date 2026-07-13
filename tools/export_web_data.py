@@ -23,6 +23,7 @@ import sys
 import json
 import numpy as np
 import mujoco
+from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root
 from mm_g1 import config as C
@@ -116,15 +117,32 @@ def export_meshes(m):
           f"{ibase // 3} tris, {len(blob) / 1e6:.1f} MB")
 
 
+def export_box_texture(m, matid):
+    """Write the box material's texture to docs/data/boxmesh.png, straight out of the compiled
+    model -- so the browser gets exactly the pixels MuJoCo renders, with no asset path to keep
+    in sync. Returns True if the material carries one."""
+    texids = [int(t) for t in np.atleast_1d(m.mat_texid[matid]) if t >= 0]
+    if not texids:
+        return False
+    t = texids[0]
+    w, h, nc, adr = (int(m.tex_width[t]), int(m.tex_height[t]),
+                     int(m.tex_nchannel[t]), int(m.tex_adr[t]))
+    px = m.tex_data[adr:adr + w * h * nc].reshape(h, w, nc)
+    Image.fromarray(px[:, :, :3]).save(os.path.join(OUT, "boxmesh.png"))
+    print(f"  boxmesh.png: {w}x{h}")
+    return True
+
+
 def export_box_mesh():
     """Extract the interactive box's visual mesh (from the G1+box scene) into body-local
-    space and write docs/data/boxmesh.{json,bin}. The box is a free body driven every frame
-    by the matcher's box_qpos, so the JS renderer places this one mesh group directly from
-    that pose -- it is NOT part of the FK body tree (model.json)."""
+    space and write docs/data/boxmesh.{json,bin} (+ boxmesh.png if the box is textured). The
+    box is a free body driven every frame by the matcher's box_qpos, so the JS renderer places
+    this one mesh group directly from that pose -- it is NOT part of the FK body tree
+    (model.json)."""
     m = mujoco.MjModel.from_xml_path(C.SCENE_BOX_XML)
     bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "largebox")
-    pos_chunks, idx_chunks, rgba = [], [], [0.82, 0.52, 0.22]
-    vbase = 0
+    pos_chunks, uv_chunks, idx_chunks, rgba = [], [], [], [0.82, 0.52, 0.22]
+    vbase, textured = 0, False
     for g in range(m.ngeom):
         if m.geom_bodyid[g] != bid or m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
             continue
@@ -138,20 +156,39 @@ def export_box_mesh():
         vb = gp + quat.mul_vec(np.tile(gq, (nv, 1)), verts)
         pos_chunks.append(vb.astype(np.float32))
         idx_chunks.append((faces + vbase).astype(np.uint16))
+
+        # Texcoords. MuJoCo stores v in IMAGE space (v=0 at the top row), the flip of the OBJ
+        # convention it loaded them from; three.js (texture.flipY defaults to true) wants the
+        # OBJ convention back, so undo the flip here or the print comes out upside down.
+        ta, tn = int(m.mesh_texcoordadr[mid]), int(m.mesh_texcoordnum[mid])
+        if ta >= 0 and tn == nv:
+            uv = m.mesh_texcoord[ta:ta + tn].astype(np.float32).copy()
+            uv[:, 1] = 1.0 - uv[:, 1]
+            uv_chunks.append(uv)
+
+        matid = int(m.geom_matid[g])
+        if matid >= 0:
+            rgba = [float(c) for c in m.mat_rgba[matid][:3]]
+            textured |= export_box_texture(m, matid)
+        else:
+            rgba = [float(c) for c in m.geom_rgba[g][:3]]
         vbase += nv
-        rgba = [float(c) for c in (m.mat_rgba[int(m.geom_matid[g])][:3]
-                                   if m.geom_matid[g] >= 0 else m.geom_rgba[g][:3])]
 
     positions = np.concatenate(pos_chunks).ravel()
     indices = np.concatenate(idx_chunks).ravel()
-    blob = positions.tobytes() + indices.tobytes()
-    meta = dict(nverts=int(vbase), nidx=int(len(indices)),
-                idx_byte_offset=positions.nbytes, rgba=rgba)
+    has_uv = textured and len(uv_chunks) and sum(len(u) for u in uv_chunks) == vbase
+    uvs = np.concatenate(uv_chunks).ravel() if has_uv else np.zeros(0, np.float32)
+
+    blob = positions.tobytes() + uvs.tobytes() + indices.tobytes()
+    meta = dict(nverts=int(vbase), nidx=int(len(indices)), rgba=rgba,
+                uv_byte_offset=(positions.nbytes if has_uv else -1),
+                idx_byte_offset=positions.nbytes + uvs.nbytes,
+                texture=("boxmesh.png" if has_uv else None))
     json.dump(meta, open(os.path.join(OUT, "boxmesh.json"), "w"))
     with open(os.path.join(OUT, "boxmesh.bin"), "wb") as f:
         f.write(blob)
     print(f"  boxmesh.json + boxmesh.bin: {vbase} verts, {len(indices) // 3} tris, "
-          f"{len(blob) / 1e6:.1f} MB")
+          f"{'uv-mapped, ' if has_uv else ''}{len(blob) / 1e6:.1f} MB")
 
 
 def verify_fk(m, bodies, n_tests=5):
