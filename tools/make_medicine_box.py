@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Generate the 'MEDICINE' cardboard carton that replaces largebox.obj in the viewer scene.
+"""Generate the 'MEDICINE' cardboard carton used by the box demo's medicine variant.
+
+It stands in for largebox.obj in scene_box_medicine.xml (`python run.py --medicine`, and the
+/medicine build of the web demo). The default scene keeps the plain scanned box.
 
 Run from the repo root with any env that has numpy + scipy + pillow, e.g.:
     ~/miniconda3/envs/deploy_mujoco/bin/python tools/make_medicine_box.py

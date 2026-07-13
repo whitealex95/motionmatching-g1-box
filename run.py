@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Interactive, keyboard-controlled motion matching for the Unitree G1.
 
-    python run.py
+    python run.py                # the plain box
+    python run.py --medicine     # the printed 'MEDICINE' carton (same box, different skin)
 
 Builds (or loads the cached) motion library, opens a MuJoCo window, and lets you steer the
 G1 around with WASD in real time and pick up / carry / set down a box with B. The first
@@ -32,6 +33,9 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build-only", action="store_true",
                     help="build/refresh the motion library cache and exit (no window)")
+    ap.add_argument("--medicine", action="store_true",
+                    help="carry the printed 'MEDICINE' carton instead of the plain box "
+                         "(visual swap only -- same box volume, same motion)")
     args = ap.parse_args()
 
     print("Loading motion library (first run builds the feature cache)...")
@@ -46,7 +50,8 @@ def main():
         print("Build complete. Run `python run.py` to control the G1.")
         return
 
-    model = mujoco.MjModel.from_xml_path(C.SCENE_BOX_XML)
+    scene = C.SCENE_BOX_MEDICINE_XML if args.medicine else C.SCENE_BOX_XML
+    model = mujoco.MjModel.from_xml_path(scene)
     data = mujoco.MjData(model)
     print("Opening viewer -- WASD to move, B to pick up / set down the box, Esc to quit.")
     InteractiveViewer(model, data, matcher).run()
