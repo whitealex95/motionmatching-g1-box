@@ -9,7 +9,13 @@ import { fk } from './fk.js';
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);   // MuJoCo is z-up; render in world coords directly
 
-const DATA = './data';
+// Page config, set by the host index.html (see medicine/index.html). Both pages run this same
+// script off the same motion database and differ ONLY in which box skin they load -- the box
+// mesh is purely visual, so the /medicine build costs one extra mesh + texture, not a copy of
+// the 35 MB database.
+const CFG = window.DEMO_CONFIG || {};
+const DATA = CFG.data || './data';
+const BOX = CFG.box || 'boxmesh';
 const hud = document.getElementById('hud');
 const setHud = (t) => { hud.textContent = t; };
 
@@ -21,7 +27,7 @@ async function boot() {
   const [model, meta, bin, meshMeta, meshBin, boxMeta, boxBin] = await Promise.all([
     loadJSON(`${DATA}/model.json`), loadJSON(`${DATA}/mm.json`), loadBin(`${DATA}/mm.bin`),
     loadJSON(`${DATA}/mesh.json`), loadBin(`${DATA}/mesh.bin`),
-    loadJSON(`${DATA}/boxmesh.json`), loadBin(`${DATA}/boxmesh.bin`),
+    loadJSON(`${DATA}/${BOX}.json`), loadBin(`${DATA}/${BOX}.bin`),
   ]);
   const A = loadDB(meta, bin);
   const mm = new MotionMatcher(meta, A);

@@ -117,8 +117,8 @@ def export_meshes(m):
           f"{ibase // 3} tris, {len(blob) / 1e6:.1f} MB")
 
 
-def export_box_texture(m, matid):
-    """Write the box material's texture to docs/data/boxmesh.png, straight out of the compiled
+def export_box_texture(m, matid, stem):
+    """Write the box material's texture to docs/data/<stem>.png, straight out of the compiled
     model -- so the browser gets exactly the pixels MuJoCo renders, with no asset path to keep
     in sync. Returns True if the material carries one."""
     texids = [int(t) for t in np.atleast_1d(m.mat_texid[matid]) if t >= 0]
@@ -128,18 +128,21 @@ def export_box_texture(m, matid):
     w, h, nc, adr = (int(m.tex_width[t]), int(m.tex_height[t]),
                      int(m.tex_nchannel[t]), int(m.tex_adr[t]))
     px = m.tex_data[adr:adr + w * h * nc].reshape(h, w, nc)
-    Image.fromarray(px[:, :, :3]).save(os.path.join(OUT, "boxmesh.png"))
-    print(f"  boxmesh.png: {w}x{h}")
+    Image.fromarray(px[:, :, :3]).save(os.path.join(OUT, stem + ".png"))
+    print(f"  {stem}.png: {w}x{h}")
     return True
 
 
-def export_box_mesh():
-    """Extract the interactive box's visual mesh (from the G1+box scene) into body-local
-    space and write docs/data/boxmesh.{json,bin} (+ boxmesh.png if the box is textured). The
-    box is a free body driven every frame by the matcher's box_qpos, so the JS renderer places
-    this one mesh group directly from that pose -- it is NOT part of the FK body tree
-    (model.json)."""
-    m = mujoco.MjModel.from_xml_path(C.SCENE_BOX_XML)
+def export_box_mesh(scene_xml=C.SCENE_BOX_XML, stem="boxmesh"):
+    """Extract the interactive box's visual mesh (from a G1+box scene) into body-local space
+    and write docs/data/<stem>.{json,bin} (+ <stem>.png if the box is textured). The box is a
+    free body driven every frame by the matcher's box_qpos, so the JS renderer places this one
+    mesh group directly from that pose -- it is NOT part of the FK body tree (model.json).
+
+    Called once per box skin: the plain box (index.html) and the printed MEDICINE carton
+    (medicine/index.html). Both skins share one motion database -- the box mesh is purely
+    visual, so only these few kB differ between the two pages."""
+    m = mujoco.MjModel.from_xml_path(scene_xml)
     bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "largebox")
     pos_chunks, uv_chunks, idx_chunks, rgba = [], [], [], [0.82, 0.52, 0.22]
     vbase, textured = 0, False
@@ -169,7 +172,7 @@ def export_box_mesh():
         matid = int(m.geom_matid[g])
         if matid >= 0:
             rgba = [float(c) for c in m.mat_rgba[matid][:3]]
-            textured |= export_box_texture(m, matid)
+            textured |= export_box_texture(m, matid, stem)
         else:
             rgba = [float(c) for c in m.geom_rgba[g][:3]]
         vbase += nv
@@ -183,11 +186,11 @@ def export_box_mesh():
     meta = dict(nverts=int(vbase), nidx=int(len(indices)), rgba=rgba,
                 uv_byte_offset=(positions.nbytes if has_uv else -1),
                 idx_byte_offset=positions.nbytes + uvs.nbytes,
-                texture=("boxmesh.png" if has_uv else None))
-    json.dump(meta, open(os.path.join(OUT, "boxmesh.json"), "w"))
-    with open(os.path.join(OUT, "boxmesh.bin"), "wb") as f:
+                texture=(stem + ".png" if has_uv else None))
+    json.dump(meta, open(os.path.join(OUT, stem + ".json"), "w"))
+    with open(os.path.join(OUT, stem + ".bin"), "wb") as f:
         f.write(blob)
-    print(f"  boxmesh.json + boxmesh.bin: {vbase} verts, {len(indices) // 3} tris, "
+    print(f"  {stem}.json + {stem}.bin: {vbase} verts, {len(indices) // 3} tris, "
           f"{'uv-mapped, ' if has_uv else ''}{len(blob) / 1e6:.1f} MB")
 
 
@@ -332,7 +335,8 @@ def main():
               open(os.path.join(OUT, "model.json"), "w"))
     print(f"  model.json: {len(bodies)} bodies")
     export_meshes(m)
-    export_box_mesh()
+    export_box_mesh(C.SCENE_BOX_XML, "boxmesh")                   # index.html: the plain box
+    export_box_mesh(C.SCENE_BOX_MEDICINE_XML, "boxmesh_medicine")  # medicine/: the carton
 
     lib = load_library()
     meta, blob = export_mm(lib)
