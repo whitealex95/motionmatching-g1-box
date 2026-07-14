@@ -139,7 +139,7 @@ class InteractiveViewer:
         """Camera-relative WASD -> desired velocity; arrow keys -> an independent facing
         direction (genoview's left/right stick). Returns (desiredVel[3] m/s, desiredFace[3]
         unit; facing is zero when no arrow is held, so the controller faces the travel dir)."""
-        fwd = math.radians(self.cam.azimuth + 180.0)   # ground heading "into the screen"
+        fwd = math.radians(self.cam.azimuth)   # MuJoCo cam.forward heading = azimuth ("into the screen")
         right = fwd - math.pi / 2.0
         fdir = np.array([math.cos(fwd), math.sin(fwd), 0.0])
         rdir = np.array([math.cos(right), math.sin(right), 0.0])
