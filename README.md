@@ -138,7 +138,10 @@ motionmatching-g1-box/
 │   ├── springs.py               # critically-damped trajectory + inertialization springs
 │   ├── controller.py            # real-time matcher + pick/carry/place state machine
 │   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera, box
+├── sonic_g1_box/                # the motion-matched motion tracked by SONIC in physics
+├── tools/sonic_tracking/        # SONIC ONNX policy port + G1 deploy constants
 ├── assets/unitree_g1/           # MuJoCo G1 model (g1.xml, scene.xml, scene_box.xml, meshes)
+├── assets/sonic/                # SONIC policy weights + NVIDIA 29-DoF G1 scene
 ├── assets/largebox/             # the box mesh (largebox.obj)
 ├── data/gmr_lafan1_g1/          # GMR-retargeted LAFAN1 clips (walk / run / pushAndStumble, .pkl)
 └── data/robot_object_g1/        # OmniRetarget robot-object pick/carry/place clips (.npz)
