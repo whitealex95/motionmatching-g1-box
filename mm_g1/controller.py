@@ -7,7 +7,7 @@ state machine driven by the B trigger:
 
     LOCOMOTION --B (near box)--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
 
-PICK and PLACE are *ridden* like the jump (no search mid-skill, entered from their start by a
+PICK and PLACE are *ridden* (no search mid-skill, entered from their start by a
 nearest-neighbour match of the live pose + box pose). CARRY is searched every SEARCH_TIME like
 locomotion, but only among CARRY frames and with the box pose added to the query. The only
 database transitions ever made are exactly those in the chain above (req. 13):
@@ -31,7 +31,6 @@ from . import config as C
 from . import quat
 from . import boxes
 from .features import build_db, yaw_quat, FORWARD, HORIZONS, FPS
-from .jumps import jump_entries
 from .springs import (DecaySpringDamperPosition, DecaySpringDamperRotation,
                       TrajectorySpringPosition, TrajectorySpringRotation)
 
@@ -54,7 +53,6 @@ class MotionMatcher:
         self.boxLocalPosVel, self.boxLocalAng = db["boxLocalPosVel"], db["boxLocalAng"]
         # Per-skill normalized feature matrices + raw blocks for cross-database queries.
         self.Xloco, self.Xcarry = db["dbs"]["loco"]["X"], db["dbs"]["carry"]["X"]
-        self.X = self.Xloco                                  # back-compat (jump entry uses it)
         self.rawXpos, self.rawXvel = db["rawXpos"], db["rawXvel"]
         self.clip_id = lib["clip_id"]
         self.skill = lib["skill"]
@@ -65,7 +63,7 @@ class MotionMatcher:
         # ---- Locomotion KD-trees: one per locomotion clip (skill==0 everywhere) ----
         self.loco_trees = []                                 # (rs, re, tree)
         for rs, re in zip(self.starts, self.stops):
-            if self.skill[rs:re].any() or re - rs <= TAIL:   # skip jump/box clips & tiny clips
+            if self.skill[rs:re].any() or re - rs <= TAIL:   # skip box clips & tiny clips
                 continue
             self.loco_trees.append((int(rs), int(re), cKDTree(self.Xloco[rs:re - TAIL])))
 
@@ -79,9 +77,6 @@ class MotionMatcher:
         # ---- Pick / place ENTRY frames (nearest-neighbour matched, then ridden) ----
         self.pick_enter, self.pick_end_of, self.place_enter, self.place_end_of = \
             boxes.box_entries(lib)
-
-        # Legacy J jump entries (unchanged).
-        self.jump_enter, self.jump_land_of = jump_entries(lib)
 
         # Box resting orientation for the interactive spawn: the box pose in the base frame at
         # a representative pick entry == its world pose when the robot faces +x (yaw 0).
@@ -107,8 +102,6 @@ class MotionMatcher:
         self.offPP = np.zeros(3); self.offPPVel = np.zeros(3)
         self.offPR = IDENTITY.copy(); self.offPAng = np.zeros(3)
         self.searchTimer = 0.0
-        self.jump_pending = False
-        self.jump_locked = 0
         self.box_pending = False
         self.box_locked = 0
         # Box world pose: a reachable distance in front of the robot's start facing, at its
@@ -135,10 +128,6 @@ class MotionMatcher:
         return self.animFrame
 
     @property
-    def jumping(self):
-        return self.jump_locked > 0
-
-    @property
     def near_box(self):
         """True when the root is within PICK_RADIUS of the box (planar)."""
         return float(np.linalg.norm(self.rootPos[:2] - self.boxPos[:2])) < C.PICK_RADIUS
@@ -148,15 +137,10 @@ class MotionMatcher:
                 C.SKILL_CARRY: "CARRY", C.SKILL_PLACE: "PLACE"}[self.state]
 
     # --- triggers ------------------------------------------------------------
-    def trigger_jump(self):
-        """Request a jump (J). Honoured next step if idle (not jumping / not handling a box)."""
-        if self.jump_locked == 0 and self.box_locked == 0 and self.state == C.SKILL_LOCO:
-            self.jump_pending = True
-
     def trigger_box(self):
         """Request the box action (B): pick up if near a box in locomotion, or place if
         carrying. Honoured on the next step; a no-op while a skill is already being ridden."""
-        if self.box_locked == 0 and self.jump_locked == 0:
+        if self.box_locked == 0:
             self.box_pending = True
 
     # --- inertialized cut ----------------------------------------------------
@@ -190,13 +174,12 @@ class MotionMatcher:
         box world pose is exposed as self.boxPos / self.boxRot for the viewer to draw."""
         desiredVel = np.asarray(desiredVel, float)
         self._predict_trajectory(desiredVel, desiredFace)
-        self._maybe_enter_jump()
         self._maybe_trigger_box()
         return self._query_from_trajectory(desiredVel)
 
     def _maybe_trigger_box(self):
         """Honour a pending B: locomotion + near box -> enter PICK; carry -> enter PLACE."""
-        if not self.box_pending or self.box_locked > 0 or self.jump_locked > 0:
+        if not self.box_pending or self.box_locked > 0:
             self.box_pending = False
             return
         self.box_pending = False
@@ -234,25 +217,6 @@ class MotionMatcher:
             self._inertialize_into(f, lo, hi)
             self.state = C.SKILL_LOCO
         self.searchTimer = C.SEARCH_TIME
-
-    # --- jump skill (legacy J) -----------------------------------------------
-    def _best_jump_entry(self):
-        if len(self.jump_enter) == 0:
-            return None
-        d = np.linalg.norm(self.X[self.jump_enter] - self.X[self.animFrame], axis=1)
-        return int(self.jump_enter[d.argmin()])
-
-    def _maybe_enter_jump(self):
-        if self.jump_pending and self.jump_locked == 0 and self.box_locked == 0:
-            self.jump_pending = False
-            entry = self._best_jump_entry()
-            if entry is not None:
-                lo, hi = self._clip_bounds(entry)
-                self._inertialize_into(entry, lo, hi)
-                land = self.jump_land_of[entry]
-                after_end = min(land + 1 + C.PHASE_TOUCHDOWN + C.PHASE_AFTER, hi - 1)
-                self.jump_locked = max(1, after_end - entry)
-                self.searchTimer = C.SEARCH_TIME
 
     # --- predict the desired trajectory (query) ------------------------------
     def _predict_trajectory(self, desiredVel, desiredFace):
@@ -337,8 +301,8 @@ class MotionMatcher:
 
     # --- match + advance + reconstruct ---------------------------------------
     def _query_from_trajectory(self, desiredVel=None):
-        # ---- Search (skipped while riding a jump or a pick/place skill) ----
-        if self.jump_locked == 0 and self.box_locked == 0 and self.searchTimer <= 0.0:
+        # ---- Search (skipped while riding a pick/place skill) ----
+        if self.box_locked == 0 and self.searchTimer <= 0.0:
             if self.state == C.SKILL_CARRY:
                 self._search_carry()
             else:
@@ -348,11 +312,7 @@ class MotionMatcher:
         # ---- Advance the playhead within its current bounds ----
         self.animFrame = int(np.clip(self.animFrame + 1, self.lo, self.hi - 1))
         self.searchTimer -= DT
-        if self.jump_locked > 0:
-            self.jump_locked -= 1
-            if self.jump_locked == 0:
-                self.searchTimer = 0.0
-        elif self.box_locked > 0:
+        if self.box_locked > 0:
             self.box_locked -= 1
             if self.box_locked == 0:
                 self._finish_ride()

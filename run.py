@@ -14,7 +14,6 @@ Controls
   Arrow keys ........... face direction, independent of travel (GenoView-style)
   Shift (hold) ......... walk instead of run (full stick is run pace, GenoView-style)
   B .................... box action: pick up when near the box, set down while carrying
-  J .................... jump (snaps into a jump clip's run-up and rides it through landing)
   Space ................ reset to the start pose
   Left-drag / right-drag / scroll ... orbit / pan / zoom
   Esc .................. quit

@@ -11,7 +11,6 @@ Controls
   Arrow keys ........... face direction, independent of travel (GenoView-style)
   Shift (hold) ......... walk instead of run (full stick is run pace, GenoView-style)
   B .................... box action: pick up when near the box, set down while carrying
-  J .................... jump (transitions into a jump clip's run-up, then rides it)
   Space ................ reset to the start pose
   T .................... toggle the command trajectory gizmo (GenoView-style)
   Left-drag ............ orbit camera     Right-drag ... pan     Scroll ... zoom
@@ -98,8 +97,6 @@ class InteractiveViewer:
                 self.matcher.reset()
             elif key == glfw.KEY_T:
                 self.show_traj = not self.show_traj
-            elif key == glfw.KEY_J:
-                self.matcher.trigger_jump()
             elif key == glfw.KEY_B:
                 self.matcher.trigger_box()
             elif key in _MOVE_KEYS or key in _FACE_KEYS:
@@ -240,13 +237,13 @@ class InteractiveViewer:
         m = self.matcher
         # Box state machine takes precedence in the HUD; otherwise show the loco gait.
         state = m.state_name()
-        if state == "LOCOMOTION" and not m.jumping:
+        if state == "LOCOMOTION":
             head = ("RUN" if speed > C.MAX_SPEED * (1 + C.WALK_SCALE) / 2 else
                     ("WALK" if speed > 1e-3 else "IDLE"))
             if self.has_box:
                 head += "  [B: pick up]" if m.near_box else "  (walk to the box, then B)"
         else:
-            head = "JUMP" if m.jumping else state
+            head = state
             if state == "CARRY":
                 head += "  [B: set down]"
         lib, cur = m.lib, m.cur
@@ -258,7 +255,7 @@ class InteractiveViewer:
                 f"frame: {fic}/{length - 1}  (global {cur})\n"
                 f"box: {'held' if m.box_held else 'resting'}"
                 f"   command gizmo: {'on' if self.show_traj else 'off'} (T)\n"
-                "WASD move | arrows face | Shift walk | B box | J jump | Space reset\n"
+                "WASD move | arrows face | Shift walk | B box | Space reset\n"
                 "drag orbit | right-drag pan | scroll zoom | Esc quit")
         mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,
                            mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport,

@@ -16,7 +16,6 @@ this one folder. Clone it, run `setup.sh`, and go.
 W / A / S / D    move (relative to the camera)
 Shift (hold)     run instead of walk
 B                box action: pick up when near the box, set down while carrying
-J                jump (rides a jump clip's run-up through landing)
 Space            reset to the start pose
 T                toggle the command trajectory gizmo
 left-drag        orbit camera
@@ -50,7 +49,7 @@ A four-state machine drives it (`mm_g1/controller.py`):
 LOCOMOTION --B (near box)--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
 ```
 
-- **PICK** and **PLACE** are *ridden* like the jump skill: entered from the start of the
+- **PICK** and **PLACE** are *ridden*: entered from the start of the
   phase by a nearest-neighbour match of the live pose **+ box pose**, then played to the
   phase end with no mid-skill search.
 - **CARRY** is searched every `SEARCH_TIME` like locomotion, but only among `carry` frames,
@@ -133,9 +132,8 @@ motionmatching-g1-box/
 ├── mm_g1/
 │   ├── config.py                # paths, FPS, joint layout, feature + skill settings
 │   ├── g1_model.py              # qpos conversion, quaternion yaw, FK for the feet, mirror
-│   ├── data.py                  # build / load + cache the loco + jump + box library
+│   ├── data.py                  # build / load + cache the loco + box library
 │   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
-│   ├── jumps.py                 # jump-skill (J) entry indexing
 │   ├── features.py              # per-skill feature DBs (loco 27 / carry 36 / pick·place 24)
 │   ├── springs.py               # critically-damped trajectory + inertialization springs
 │   ├── controller.py            # real-time matcher + pick/carry/place state machine
@@ -143,7 +141,6 @@ motionmatching-g1-box/
 ├── assets/unitree_g1/           # MuJoCo G1 model (g1.xml, scene.xml, scene_box.xml, meshes)
 ├── assets/largebox/             # the box mesh (largebox.obj)
 ├── data/gmr_lafan1_g1/          # GMR-retargeted LAFAN1 clips (walk / run / pushAndStumble, .pkl)
-├── data/g1_jump/                # CAMDM walk→jump→walk clips (.csv)
 └── data/robot_object_g1/        # OmniRetarget robot-object pick/carry/place clips (.npz)
 ```
 

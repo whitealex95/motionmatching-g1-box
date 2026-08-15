@@ -6,7 +6,7 @@ the contiguous interval over which the box is *attached* to the robot (lifted cl
 floor / being handled) -- before pick contact and after place release the box rests in the
 world, in between it rides the robot's base frame.
 
-`box_entries` (used by the controller, mirroring jumps.jump_entries) returns the candidate
+`box_entries` (used by the controller) returns the candidate
 ENTRY frames -- the first few frames of each pick / place phase, the reach-down / set-down
 approach -- so a skill is entered from its start (nearest-neighbour matched to the live pose
 + box pose) and then ridden to the phase end.
@@ -71,7 +71,7 @@ def segment_phases(box_pos):
 def box_entries(lib):
     """Candidate pick / place ENTRY frames + their phase-end frames (global indices).
 
-    Mirrors jumps.jump_entries: returns (pick_enter, pick_end_of, place_enter, place_end_of)
+    Returns (pick_enter, pick_end_of, place_enter, place_end_of)
     where *_enter are arrays of global frame indices at the start of each phase and *_end_of
     maps each entry frame to the last frame of its phase (where the ride finishes).
     """

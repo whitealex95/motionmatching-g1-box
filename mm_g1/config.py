@@ -7,7 +7,6 @@ import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(ROOT, "data", "gmr_lafan1_g1")   # GMR-retargeted LAFAN1 .pkl clips
-JUMP_DATA_DIR = os.path.join(ROOT, "data", "g1_jump")     # CAMDM walk->jump->walk .csv clips
 BOX_DATA_DIR = os.path.join(ROOT, "data", "robot_object_g1")  # OmniRetarget pick/carry/place .npz
 SCENE_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene.xml")       # G1 only (FK + loco)
 SCENE_BOX_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene_box.xml")  # G1 + box (interactive)
@@ -59,7 +58,8 @@ CLIP_TRIM = {
 # Bump when the library build (clips, trims, mirror, labels) changes incompatibly, so a
 # stale data/motion_lib.npz cache is rebuilt automatically. v2: GenoView-matched trims.
 # v3: robot-object pick/carry/place skill + box features. v4: box orientation N-fold augmentation.
-LIB_VERSION = 4
+# v5: jump skill removed.
+LIB_VERSION = 5
 
 # GenoView trims the last HORIZONS[-1] frames of each clip from the SEARCH only
 # (cKDTree(X[rs:re-30])): the tail still plays out, but a match never lands there, so a
@@ -84,21 +84,6 @@ WALK_SCALE = 0.4
 # the data's ~p95 lets WASD nudge the carry as fast as the clips actually move, no faster.
 CARRY_MAX_SPEED = 0.75
 
-# --- Jump skill (triggered with J) ----------------------------------------------
-# CAMDM walk->jump->walk clips (in JUMP_DATA_DIR, 30 fps CSVs, same 36-D layout). They
-# are appended to the library and phase-labeled; a jump is ENTERED only from its run-up
-# (the `ready` phase) and ridden through landing, never matched into during locomotion.
-JUMP_CLIPS = ["walk_jump_walk", "walk_jump_walk2", "walk_jump_stop"]
-JUMP_FOOT_THR = 0.13     # m: both feet above this == airborne (flight detection)
-
-# Five phases carved around each detected flight (frame counts @30fps). A jump is entered
-# only in `ready` (the run-up before push-off) and exited only after `after` (recovery).
-JUMP_PHASES = ["walk", "ready", "takeoff", "flight", "touchdown", "after"]
-PHASE_READY = 12         # run-up before push-off -- the only place a jump can be entered
-PHASE_TAKEOFF = 10       # ground push-off / loading just before lift-off
-PHASE_TOUCHDOWN = 6      # landing impact, just after the feet hit
-PHASE_AFTER = 18         # landing absorption / recovery walk -- the only place to exit
-
 # --- Box manipulation skill (pick / carry / place; triggered with B) -------------
 # OmniRetarget robot-object .npz clips (in BOX_DATA_DIR, 30 fps). Each clip is one full
 # pick -> carry -> place sequence: the G1 lifts a large box off the floor, holds it, and
@@ -107,7 +92,7 @@ PHASE_AFTER = 18         # landing absorption / recovery walk -- the only place 
 #
 # We segment every clip into the three phases and drive them from a small state machine:
 #   LOCOMOTION --B (near box)--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
-# PICK and PLACE are ridden through like the jump (no search mid-skill); CARRY is searched
+# PICK and PLACE are ridden through (no search mid-skill); CARRY is searched
 # the same way as locomotion but only among CARRY frames, with box features added.
 BOX_CLIPS = "all"        # "all" -> every .npz in BOX_DATA_DIR, or an explicit list of stems
 
@@ -120,9 +105,8 @@ BOX_CLIPS = "all"        # "all" -> every .npz in BOX_DATA_DIR, or an explicit l
 BOX_ROT_FOLDS = 4
 
 # Per-frame skill codes (lib["skill"]). 0 keeps locomotion exactly as before; any non-zero
-# code keeps that frame out of the locomotion search/normalization. JUMP is the legacy J
-# skill (kept distinct from the box codes so both can coexist in one library).
-SKILL_LOCO, SKILL_PICK, SKILL_CARRY, SKILL_PLACE, SKILL_JUMP = 0, 1, 2, 3, 4
+# code keeps that frame out of the locomotion search/normalization.
+SKILL_LOCO, SKILL_PICK, SKILL_CARRY, SKILL_PLACE = 0, 1, 2, 3
 
 # Phase segmentation thresholds (box height relative to its resting height on the floor).
 BOX_REST_FRAMES = 5      # frames averaged at clip start to estimate the resting box height
@@ -135,7 +119,7 @@ BOX_HOLD_SPEED = 0.05    # m/s box speed to count as being handled
 
 # Entry windows: a PICK/PLACE is entered only in the first few frames of its phase (the
 # reach-down / set-down approach), nearest-neighbour matched to the live pose + box pose,
-# then ridden to the phase end -- mirrors the jump's `ready` entry.
+# then ridden to the phase end.
 PICK_ENTRY = 8           # candidate entry frames at the start of each PICK phase
 PLACE_ENTRY = 8          # candidate entry frames at the start of each PLACE phase
 

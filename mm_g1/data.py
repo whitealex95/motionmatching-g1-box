@@ -19,48 +19,6 @@ IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
 UP = np.array([0.0, 0.0, 1.0])
 
 
-def _label_jump(model, q):
-    """Per-frame skill (0 walk, SKILL_JUMP) + 5-phase label + jump indices for one jump clip.
-
-    Flight = both feet above C.JUMP_FOOT_THR. Around each flight we carve five phases:
-      ready [enter here] | takeoff (push-off) | flight | touchdown | after [exit here].
-    skill=SKILL_JUMP over the whole ready..after span so locomotion never targets jump frames
-    (a jump is entered only via the `ready` run-up). Returns (skill, phase, jumps) where
-    each jump is (entry, takeoff, land, continues) as clip-local frame indices.
-    """
-    READY, TAKEOFF, FLIGHT, TOUCHDOWN, AFTER = 1, 2, 3, 4, 5
-    feet = model.fk_feet(q)
-    footz = feet[:, :, 2].min(1)
-    air = footz > C.JUMP_FOOT_THR
-    idx = np.where(air)[0]
-    n = len(q)
-    skill = np.zeros(n, np.int32)
-    phase = np.zeros(n, np.int32)                    # 0 = walk
-    jumps = []
-    for s in np.split(idx, np.where(np.diff(idx) > 3)[0] + 1) if len(idx) else []:
-        if len(s) < 3:
-            continue
-        t, l = int(s[0]), int(s[-1])                 # take-off (flight start), land (flight end)
-        r0 = max(0, t - C.PHASE_TAKEOFF - C.PHASE_READY)        # ready start = jump entry
-        a1 = min(n, l + 1 + C.PHASE_TOUCHDOWN + C.PHASE_AFTER)  # after end
-        phase[r0:t - C.PHASE_TAKEOFF] = READY
-        phase[t - C.PHASE_TAKEOFF:t] = TAKEOFF
-        phase[t:l + 1] = FLIGHT
-        phase[l + 1:l + 1 + C.PHASE_TOUCHDOWN] = TOUCHDOWN
-        phase[l + 1 + C.PHASE_TOUCHDOWN:a1] = AFTER
-        skill[r0:a1] = C.SKILL_JUMP
-        w0, w1 = min(l + 40, n - 1), min(l + 60, n - 1)        # settled post-landing
-        continues = w1 > w0 and np.linalg.norm(q[w1, 0:2] - q[w0, 0:2]) / ((w1 - w0) * C.DT) > 0.5
-        jumps.append((r0, t, l, bool(continues)))
-    return skill, phase, jumps
-
-
-def _load_jump_csv(name, data_dir=C.JUMP_DATA_DIR):
-    """Load a CAMDM walk->jump->walk CSV (row = [pos, quat_xyzw, 29 joints]) -> (T,36) wxyz."""
-    rows = np.genfromtxt(os.path.join(data_dir, name + ".csv"), delimiter=",")
-    return csv_to_qpos(rows)
-
-
 def _gmr_rows(name, data_dir):
     """GMR pickle {root_pos (T,3), root_rot (T,4) xyzw, dof_pos (T,29)} -> (T,36) rows in
     the project's [xyz, quat_xyzw, 29 joints] layout (same as the old CSVs)."""
@@ -119,14 +77,12 @@ def build_library(clips=None, out=C.LIB_PATH):
         raise FileNotFoundError(f"No clips found in {C.DATA_DIR}")
 
     model = G1Model()
-    # Locomotion + jump clips are each (GenoView-style) added twice: normal + L/R MIRRORED,
+    # Locomotion clips are each (GenoView-style) added twice: normal + L/R MIRRORED,
     # for symmetric left/right coverage. The robot-object (box) clips are NOT sagittally mirrored
     # (a mirror would also have to reflect the paired box trajectory), but each IS replicated
     # BOX_ROT_FOLDS times with the box's orientation yawed about its own centre (0/90/180/270 deg
     # at N=4) so the box can be picked/carried/placed at any facing (see _yaw_box_pose). Each
     # concrete entry is (name, robot_qpos, kind, box_pose) where box_pose is None for non-box clips.
-    jump_clips = [c for c in C.JUMP_CLIPS
-                  if os.path.exists(os.path.join(C.JUMP_DATA_DIR, c + ".csv"))]
     box_clips = _box_clip_names()
     loaded = []
     for name in clips:                               # locomotion (walk / run / stumble)
@@ -134,11 +90,6 @@ def build_library(clips=None, out=C.LIB_PATH):
         loaded.append((name, q, "loco", None))
         if C.MIRROR:
             loaded.append((name + "_mirror", model.mirror_qpos(q), "loco", None))
-    for name in jump_clips:                           # CAMDM jump clips
-        q = _load_jump_csv(name)
-        loaded.append((name, q, "jump", None))
-        if C.MIRROR:
-            loaded.append((name + "_mirror", model.mirror_qpos(q), "jump", None))
     folds = max(1, C.BOX_ROT_FOLDS)
     for name in box_clips:                            # OmniRetarget pick/carry/place clips
         robot_q, box_pose = _load_box_npz(name)
@@ -148,33 +99,23 @@ def build_library(clips=None, out=C.LIB_PATH):
             loaded.append((tag, robot_q, "box", bp))
 
     qpos, clip_id, frame_in_clip, lengths, names = [], [], [], [], []
-    skill, phase, box_pose_all, box_attach = [], [], [], []
-    j_entry, j_takeoff, j_land, j_cont = [], [], [], []
+    skill, box_pose_all, box_attach = [], [], []
     n_box = 0
-    off = 0
     for cid, (name, q, kind, bpose) in enumerate(loaded):
         n = len(q)
-        if kind == "jump":
-            sk, ph, jumps = _label_jump(model, q)
-            bp, at = np.tile(np.r_[0, 0, 0, IDENTITY_QUAT], (n, 1)), np.zeros(n, bool)
-        elif kind == "box":
+        if kind == "box":
             sk, at, _info = boxes.segment_phases(bpose[:, 0:3])
-            ph, jumps, bp = np.zeros(n, np.int32), [], bpose
+            bp = bpose
             n_box += 1
         else:                                        # locomotion
-            sk, ph, jumps = np.zeros(n, np.int32), np.zeros(n, np.int32), []
+            sk = np.zeros(n, np.int32)
             bp, at = np.tile(np.r_[0, 0, 0, IDENTITY_QUAT], (n, 1)), np.zeros(n, bool)
-        qpos.append(q); skill.append(sk); phase.append(ph)
+        qpos.append(q); skill.append(sk)
         box_pose_all.append(bp); box_attach.append(at)
         clip_id.append(np.full(n, cid))
         frame_in_clip.append(np.arange(n))
         lengths.append(n); names.append(name)
-        for e, t, l, cont in jumps:                  # store as GLOBAL frame indices
-            j_entry.append(off + e); j_takeoff.append(off + t)
-            j_land.append(off + l); j_cont.append(cont)
-        off += n
-        tag = (f", {len(jumps)} jump(s)" if kind == "jump"
-               else (f", {kind}" if kind == "box" else ""))
+        tag = f", {kind}" if kind == "box" else ""
         print(f"  [{cid}] {name}: {n} frames{tag}")
 
     qpos = np.concatenate(qpos)
@@ -191,17 +132,12 @@ def build_library(clips=None, out=C.LIB_PATH):
         lengths=np.array(lengths, np.int32),
         clip_names=np.array(names),
         skill=np.concatenate(skill).astype(np.int32),
-        phase=np.concatenate(phase).astype(np.int32),
         box_pose=np.concatenate(box_pose_all).astype(np.float32),
         box_attach=np.concatenate(box_attach),
-        jump_entry=np.array(j_entry, np.int32),
-        jump_takeoff=np.array(j_takeoff, np.int32),
-        jump_land=np.array(j_land, np.int32),
-        jump_continues=np.array(j_cont, bool),
         lib_version=np.array(C.LIB_VERSION),
     )
     print(f"Saved library: {qpos.shape[0]} frames, {len(loaded)} clips "
-          f"({len(j_entry)} jumps, {n_box} box) -> {out}")
+          f"({n_box} box) -> {out}")
     return out
 
 
