@@ -6,3 +6,7 @@ __pycache__/
 
 # Built motion-matching cache (regenerated from the CSVs on first run)
 data/motion_lib.npz
+
+# default (unnamed) output of scenebot_g1_box/run_mm_pickup.py; curated
+# renders are committed under explicit names
+scenebot_g1_box/out/scenebot_mm_pickup.mp4
