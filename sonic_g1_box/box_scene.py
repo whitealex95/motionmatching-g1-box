@@ -34,15 +34,20 @@ GHOST_CENTER, GHOST_MAT, GHOST_HALF = _carton_obb()
 def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720):
     spec = mujoco.MjSpec.from_file(scene_xml_path)
 
-    # SONIC's rubber hands are visual-only: bolt a contact pad onto each wrist.
-    for side, ysgn in (('left', 1.0), ('right', -1.0)):
-        wrist = spec.body(f'{side}_wrist_yaw_link')
-        wrist.add_geom(name=f'{side}_palm_col', type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-                       fromto=[0.04, ysgn * 0.007, 0.0, 0.135, ysgn * 0.007, 0.0],
-                       size=[0.022, 0.0, 0.0], rgba=[0.7, 0.7, 0.7, 1.0],
-                       friction=PALM_FRICTION)
-        wrist.add_site(name=f'{side}_palm', pos=[0.10, ysgn * 0.007, 0.0],
-                       size=[0.012] * 3, rgba=[0.1, 0.9, 0.1, 0.35])
+    # SONIC's rubber hands are visual-only: bolt a contact pad onto each
+    # wrist. Robots that already have palm sites (SceneBot's flat-hand G1)
+    # keep their own hand collision.
+    if not any(s.name == 'left_palm' for s in spec.sites):
+        for side, ysgn in (('left', 1.0), ('right', -1.0)):
+            wrist = spec.body(f'{side}_wrist_yaw_link')
+            wrist.add_geom(name=f'{side}_palm_col',
+                           type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+                           fromto=[0.04, ysgn * 0.007, 0.0,
+                                   0.135, ysgn * 0.007, 0.0],
+                           size=[0.022, 0.0, 0.0], rgba=[0.7, 0.7, 0.7, 1.0],
+                           friction=PALM_FRICTION)
+            wrist.add_site(name=f'{side}_palm', pos=[0.10, ysgn * 0.007, 0.0],
+                           size=[0.012] * 3, rgba=[0.1, 0.9, 0.1, 0.35])
 
     tex = spec.add_texture()
     tex.name = 'box_tex'
