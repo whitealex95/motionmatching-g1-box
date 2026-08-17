@@ -31,7 +31,8 @@ def _carton_obb():
 GHOST_CENTER, GHOST_MAT, GHOST_HALF = _carton_obb()
 
 
-def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720):
+def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
+                box_scale=1.0):
     spec = mujoco.MjSpec.from_file(scene_xml_path)
 
     # SONIC's rubber hands are visual-only: bolt a contact pad onto each
@@ -57,7 +58,11 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720):
     mat.name = 'box_mat'
     mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = 'box_tex'
     mat.texuniform = False
-    spec.add_mesh(name='box_mesh', file=BOX_MESH)
+    # box_scale shrinks/grows only the physical carton (about the mesh
+    # origin ~= its centre; UVs ride along, so the texture is unchanged).
+    # The clips' box pose and the reference-box ghost stay data-sized.
+    mesh = spec.add_mesh(name='box_mesh', file=BOX_MESH)
+    mesh.scale = [float(box_scale)] * 3
 
     box = spec.worldbody.add_body(name='largebox', pos=[1.6, 0.0, 0.19])
     box.add_joint(name='box_joint', type=mujoco.mjtJoint.mjJNT_FREE)
