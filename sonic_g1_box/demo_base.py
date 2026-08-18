@@ -52,9 +52,12 @@ class Demo:
 
     def __init__(self, args):
         self.args = args
+        scene_xml = P.G1_SCENE_XML if args.robot == 'sonic' else os.path.join(
+            ROOT, 'assets', 'scenebot', 'scene_robot_only.xml')
         self.model, self.ids = box_scene.build_model(
-            P.G1_SCENE_XML, self.MODE, box_mass=args.box_mass,
-            off_w=args.width, off_h=args.height)
+            scene_xml, self.MODE, box_mass=args.box_mass,
+            off_w=args.width, off_h=args.height,
+            box_scale=args.box_scale)
         self.model.opt.timestep = P.SIM_DT
         self.data = mujoco.MjData(self.model)
         m = self.model
@@ -520,9 +523,15 @@ def build_argparser(video_name):
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
     ap.add_argument('--ref-mode', choices=RM.MODES, default='snap-all')
+    ap.add_argument('--robot', choices=['sonic', 'scenebot'], default='sonic',
+                    help="G1 model: NVIDIA's 29-DoF scene or SceneBot's "
+                         'flat-hand G1 (assets/scenebot)')
     ap.add_argument('--anchor-gain', type=float, default=0.20)
     ap.add_argument('--replan-gain', type=float, default=0.738)
     ap.add_argument('--box-mass', type=float, default=0.5)
+    ap.add_argument('--box-scale', type=float, default=1.0,
+                    help='scale the physical carton mesh only (reference '
+                         'motion unchanged)')
     ap.add_argument('--carry-seconds', type=float, default=3.0,
                     help='how long to hold the box before setting it down')
     ap.add_argument('--video', default=os.path.join(HERE, 'out', video_name))

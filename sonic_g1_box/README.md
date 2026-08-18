@@ -34,6 +34,14 @@ Measured (defaults, headless, 0.5 kg box everywhere): kinematic succeeds in
 ~13 s; weld in ~12 s; grasp (arm-gain 6, squeeze 0.4) slips and retries but
 succeeds in ~24 s.
 
+`--robot scenebot` swaps in the SceneBot flat-hand G1
+(assets/scenebot/scene_robot_only.xml) instead of the NVIDIA model.
+Kinematic (12 s) and weld (35 s, extra retries) still succeed; the
+frictional grasp does NOT — the flat palm pads protrude ~1.4 cm less than
+the bolted-on capsule pads and need face-parallel wrist alignment that
+SONIC's arm tracking doesn't deliver, so the box slips on every attempt
+(swept squeeze 0.4-0.7, arm-gain 6-8, `--box-scale` 0.85-1.0).
+
 A grip check closes the loop between the kinematic reference and physics:
 the matcher's box is clip-driven once its data marks it held, so if the
 reference box has lifted (at the tracked frame) while the physical box

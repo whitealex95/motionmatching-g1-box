@@ -37,6 +37,35 @@ Exit 0 only if the box was lifted (> 0.4 m), placed back flat at rest
 height, and the robot walked away without falling. Measured: full sequence
 in ~24 s sim / ~5 s wall, box carried at 0.87 m.
 
+## run_sequence.py — the demo page's Enter sequence
+
+Replays the web demo's automatic example sequence Q-L-L-E-W-N-G-W-Z-P on
+their original pedestal scene: spin left, sit on the bench, stand up, spin
+right, walk, step onto the 0.36 m pedestal, grab the box off it, carry it
+across the top (upper body frozen), step down still carrying, put it on
+the floor. Token semantics match the demo's example runner (wait for graph
+idle + 0.4 s settle, then tap; Q/E queue +/-180 deg of reference yaw at
+60 deg/s; L toggles sit/stand). The reference stream is open loop, so this
+reproduces the web demo's reference trajectory exactly.
+
+```bash
+~/miniconda3/envs/mm-g1-sonic/bin/python run_sequence.py    # -> out/scenebot_sequence.mp4
+```
+
+Measured: the full sequence succeeds first try in ~40 s sim (sat at root
+z 0.57, pedestal at 1.16, box lifted to 1.27 m, placed flat on the floor,
+no falls).
+
+All three runners overlay the live contact prompt (`contact_viz.py`): one
+sphere per prompted link (feet, palms, pelvis), GREEN = terrain contact,
+MAGENTA = object contact. The 10 mask slots are (link, scene-type) pairs
+per the paper — K = {L/R foot, L/R wrist, pelvis} x {terrain, object},
+even slot terrain, odd slot object — so the overlay shows exactly what
+the policy's contact observation says each tick: green pelvis while
+seated, single green feet during the pedestal climb, magenta wrists while
+reaching and carrying, and nothing on the feet during plain walking
+(zeroed on purpose).
+
 ## run_mm_pickup.py — this repo's motion-matched pickup
 
 The `mm_g1` matcher's box pick/carry/place reference (OmniRetarget carton
