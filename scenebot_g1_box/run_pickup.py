@@ -195,6 +195,9 @@ def build_model(args):
         rest_z, max_half = hx, hx
     geom.mass = float(args.box_mass)
     model = spec.compile()
+    if getattr(args, 'save_mjcf', None):
+        with open(args.save_mjcf, 'w') as f:
+            f.write(spec.to_xml())
     return model, rest_z, max_half
 
 
@@ -252,6 +255,7 @@ class Demo:
         self.lift_seen = False
         self.dropped = False
         self.max_xy_err = 0.0
+        self._last_frame = None
         self.fallen, self.fall_time = False, None
         self.ref_qpos = ref_qpos36(self.pkt['joint_pos_isaac'],
                                    self.pkt['root_pos_w'],
@@ -389,7 +393,57 @@ class Demo:
         self._draw_ghost(self.renderer.scene)
         contact_viz.draw(self.renderer.scene, self.data,
                          self.contact_sites, self.policy.contact_mask)
-        self.writer.append_data(self.renderer.render())
+        frame = self._annotate(self.renderer.render())
+        self._last_frame = frame
+        self.writer.append_data(frame)
+
+    def _caption(self):
+        a = self.args
+        if a.box_type == 'box':
+            dims = ' x '.join(f'{2 * v:.2f}' for v in a.box_size)
+        elif a.box_type == 'cylinder':
+            dims = f'r {a.box_size[0]:.2f}, h {2 * a.box_size[2]:.2f}'
+        else:
+            dims = f'r {a.box_size[0]:.2f}'
+        return f'{a.box_type} {dims} m · {a.box_mass:g} kg'
+
+    def _annotate(self, frame):
+        from PIL import Image, ImageDraw, ImageFont
+        im = Image.fromarray(frame)
+        draw = ImageDraw.Draw(im, 'RGBA')
+        font = ImageFont.load_default(size=max(13, im.height // 26))
+        text = self._caption()
+        box = draw.textbbox((0, 0), text, font=font)
+        pad = 6
+        draw.rectangle([8, im.height - box[3] - 2 * pad - 8,
+                        8 + box[2] + 2 * pad, im.height - 8],
+                       fill=(252, 252, 251, 200))
+        draw.text((8 + pad, im.height - box[3] - pad - 8), text,
+                  fill=(11, 11, 11, 255), font=font)
+        return np.asarray(im)
+
+    def _append_endcard(self, ok, reason, seconds=2.5):
+        from PIL import Image, ImageDraw, ImageFont
+        im = Image.fromarray(self._last_frame).convert('RGB')
+        im = Image.blend(im, Image.new('RGB', im.size, (20, 20, 20)), 0.55)
+        draw = ImageDraw.Draw(im)
+        big = ImageFont.load_default(size=im.height // 6)
+        small = ImageFont.load_default(size=max(14, im.height // 20))
+        verdict = 'SUCCESS' if ok else 'FAIL'
+        color = (16, 170, 16) if ok else (215, 60, 60)
+        vb = draw.textbbox((0, 0), verdict, font=big)
+        draw.text(((im.width - vb[2]) // 2, im.height // 2 - vb[3]),
+                  verdict, fill=color, font=big)
+        lines = [reason, self._caption()]
+        y = im.height // 2 + 12
+        for line in lines:
+            lb = draw.textbbox((0, 0), line, font=small)
+            draw.text(((im.width - lb[2]) // 2, y), line,
+                      fill=(240, 240, 238), font=small)
+            y += lb[3] + 8
+        card = np.asarray(im)
+        for _ in range(int(seconds * POLICY_FPS)):
+            self.writer.append_data(card)
 
     def run(self):
         a = self.args
@@ -421,12 +475,6 @@ class Demo:
         return self.finish(wall)
 
     def finish(self, wall):
-        if self.writer is not None:
-            self.writer.close()
-        if self.viewer is not None:
-            self.viewer.close()
-        if self.renderer is not None:
-            self.renderer.close()
         d = self.data
         box_z = float(d.qpos[self.bq + 2])
         # placed = back at floor level (any resting face) and not riding
@@ -437,6 +485,26 @@ class Demo:
         ok = (self.lift_seen and self.commander.picked
               and self.commander.placed and placed_now
               and not self.dropped and not self.fallen and away > 0.8)
+        if ok:
+            reason = f'picked, carried to {self.max_box_z:.2f} m, placed'
+        elif self.fallen:
+            reason = 'robot fell'
+        elif not self.lift_seen:
+            reason = f'never lifted (max box z {self.max_box_z:.2f} m)'
+        elif self.dropped:
+            reason = 'dropped mid-carry'
+        elif not placed_now:
+            reason = f'not placed (box z {box_z:.2f} m)'
+        else:
+            reason = 'sequence incomplete'
+        if self.writer is not None and self._last_frame is not None:
+            self._append_endcard(ok, reason)
+        if self.writer is not None:
+            self.writer.close()
+        if self.viewer is not None:
+            self.viewer.close()
+        if self.renderer is not None:
+            self.renderer.close()
         print(f'[scenebot-pickup] {"SUCCESS" if ok else "INCOMPLETE"} -- '
               f'{self.t:.1f} s sim, {time.time() - wall:.0f} s wall, '
               f'lifted={self.lift_seen} (max z {self.max_box_z:.2f} m), '
@@ -480,6 +548,9 @@ def main():
                     help='half extents (m); cylinder uses [radius, -, half '
                          'height], sphere uses [radius, -, -]')
     ap.add_argument('--box-mass', type=float, default=0.1)
+    ap.add_argument('--save-mjcf', default=None,
+                    help='write the compiled scene MJCF (with the box '
+                         'dimensions) to this path')
     ap.add_argument('--video',
                     default=os.path.join(HERE, 'out', 'scenebot_pickup.mp4'))
     args = ap.parse_args()
