@@ -161,7 +161,8 @@ def dry_run(args, bundle):
     return commander.pick_idle_pose
 
 
-def box_spawn_from_pick_pose(bundle, pick_pos, pick_quat_wxyz):
+def box_spawn_from_pick_pose(bundle, pick_pos, pick_quat_wxyz,
+                             rest_z=BOX_REST_Z):
     """Align pickup-clip frame 0 to the idle pose; the box goes where the
     clip's hands close, dropped to rest height on the floor."""
     clip = bundle.clip(11)
@@ -173,13 +174,34 @@ def box_spawn_from_pick_pose(bundle, pick_pos, pick_quat_wxyz):
     clip_yaw = yaw_from_wxyz(clip.body_quat[0, 0])
     box_yaw = dyaw + clip_yaw
     box_quat = np.array([np.cos(box_yaw / 2), 0.0, 0.0, np.sin(box_yaw / 2)])
-    return np.array([spot[0], spot[1], BOX_REST_Z]), box_quat, f
+    return np.array([spot[0], spot[1], rest_z]), box_quat, f
+
+
+def build_model(args):
+    """The floor scene with the box geom re-shaped per --box-* args."""
+    spec = mujoco.MjSpec.from_file(P.SCENE_FLOOR_XML)
+    geom = next(g for g in spec.geoms if g.name == 'free_box_geom')
+    hx, hy, hz = [float(v) for v in args.box_size]
+    if args.box_type == 'box':
+        geom.size = [hx, hy, hz]
+        rest_z, max_half = hz, max(hx, hy, hz)
+    elif args.box_type == 'cylinder':
+        geom.type = mujoco.mjtGeom.mjGEOM_CYLINDER
+        geom.size = [hx, hz, 0.0]            # radius, half height
+        rest_z, max_half = hz, max(hx, hz)
+    else:                                    # sphere
+        geom.type = mujoco.mjtGeom.mjGEOM_SPHERE
+        geom.size = [hx, 0.0, 0.0]
+        rest_z, max_half = hx, hx
+    geom.mass = float(args.box_mass)
+    model = spec.compile()
+    return model, rest_z, max_half
 
 
 class Demo:
     def __init__(self, args):
         self.args = args
-        self.model = mujoco.MjModel.from_xml_path(P.SCENE_FLOOR_XML)
+        self.model, self.box_rest_z, self.box_max_half = build_model(args)
         self.model.opt.timestep = P.SIM_DT
         self.data = mujoco.MjData(self.model)
         m = self.model
@@ -209,7 +231,8 @@ class Demo:
 
         pick_pos, pick_quat = dry_run(args, self.bundle)
         self.box_spawn, self.box_spawn_quat, grab_f = \
-            box_spawn_from_pick_pose(self.bundle, pick_pos, pick_quat)
+            box_spawn_from_pick_pose(self.bundle, pick_pos, pick_quat,
+                                     self.box_rest_z)
         print(f'[setup] reference pick pose xy=({pick_pos[0]:.2f}, '
               f'{pick_pos[1]:.2f}) yaw={np.degrees(yaw_from_wxyz(pick_quat)):.0f} deg; '
               f'box spawned at ({self.box_spawn[0]:.2f}, '
@@ -227,6 +250,8 @@ class Demo:
         self.t = 0.0
         self.max_box_z = 0.0
         self.lift_seen = False
+        self.dropped = False
+        self.max_xy_err = 0.0
         self.fallen, self.fall_time = False, None
         self.ref_qpos = ref_qpos36(self.pkt['joint_pos_isaac'],
                                    self.pkt['root_pos_w'],
@@ -289,8 +314,16 @@ class Demo:
 
         box_z = float(d.qpos[self.bq + 2])
         self.max_box_z = max(self.max_box_z, box_z)
-        if box_z > BOX_REST_Z + 0.25:
+        if box_z > self.box_rest_z + 0.25:
             self.lift_seen = True
+        if (self.lift_seen and self.freeze.active
+                and box_z < self.box_rest_z + 0.05):
+            if not self.dropped:
+                print(f'[{self.t:6.2f}s] BOX DROPPED mid-carry')
+            self.dropped = True
+        xy_err = float(np.linalg.norm(
+            d.qpos[self.rq:self.rq + 2] - self.pkt['root_pos_w'][0:2]))
+        self.max_xy_err = max(self.max_xy_err, xy_err)
 
     def _check_fall(self):
         # The squat pickup pitches the torso close to horizontal on purpose,
@@ -396,24 +429,33 @@ class Demo:
             self.renderer.close()
         d = self.data
         box_z = float(d.qpos[self.bq + 2])
-        mat = np.empty(9)
-        mujoco.mju_quat2Mat(mat, np.asarray(d.qpos[self.bq + 3:self.bq + 7],
-                                            float))
-        # flat on a 0.15-half-extent face: box x and z faces both rest at
-        # z=0.15, so either counts as a stable placement
-        upright = abs(mat[8]) > 0.85 or abs(mat[6]) > 0.85
-        placed_now = abs(box_z - BOX_REST_Z) < 0.06 and upright
+        # placed = back at floor level (any resting face) and not riding
+        # the robot; the exact face is shape-dependent, so judge by height
+        placed_now = box_z < self.box_max_half + 0.08
         away = float(np.linalg.norm(d.qpos[self.rq:self.rq + 2]
                                     - d.qpos[self.bq:self.bq + 2]))
         ok = (self.lift_seen and self.commander.picked
               and self.commander.placed and placed_now
-              and not self.fallen and away > 0.8)
+              and not self.dropped and not self.fallen and away > 0.8)
         print(f'[scenebot-pickup] {"SUCCESS" if ok else "INCOMPLETE"} -- '
               f'{self.t:.1f} s sim, {time.time() - wall:.0f} s wall, '
               f'lifted={self.lift_seen} (max z {self.max_box_z:.2f} m), '
-              f'placed={placed_now} (z {box_z:.2f}, upright={upright}), '
+              f'dropped={self.dropped}, placed={placed_now} (z {box_z:.2f}), '
               f'fallen={self.fallen}, robot-box dist {away:.2f} m, '
               f'phase={self.commander.phase}')
+        print('[stress-json] ' + json.dumps({
+            'box_type': self.args.box_type,
+            'box_size': [float(v) for v in self.args.box_size],
+            'box_mass': float(self.args.box_mass),
+            'success': bool(ok), 'lifted': bool(self.lift_seen),
+            'dropped': bool(self.dropped), 'placed': bool(placed_now),
+            'fallen': bool(self.fallen),
+            'picked_cmd': bool(self.commander.picked),
+            'placed_cmd': bool(self.commander.placed),
+            'max_box_z': round(self.max_box_z, 3),
+            'final_box_z': round(box_z, 3),
+            'max_xy_err': round(self.max_xy_err, 3),
+            'away': round(away, 2), 'sim_s': round(self.t, 1)}))
         if self.writer is not None:
             print(f'[scenebot-pickup] wrote {self.args.video_path}')
         return 0 if ok else 1
@@ -431,6 +473,13 @@ def main():
     ap.add_argument('--hold-seconds', type=float, default=1.0)
     ap.add_argument('--carry-seconds', type=float, default=2.5)
     ap.add_argument('--retreat-seconds', type=float, default=2.5)
+    ap.add_argument('--box-type', choices=['box', 'cylinder', 'sphere'],
+                    default='box')
+    ap.add_argument('--box-size', type=float, nargs=3,
+                    default=[0.15, 0.10, 0.15],
+                    help='half extents (m); cylinder uses [radius, -, half '
+                         'height], sphere uses [radius, -, -]')
+    ap.add_argument('--box-mass', type=float, default=0.1)
     ap.add_argument('--video',
                     default=os.path.join(HERE, 'out', 'scenebot_pickup.mp4'))
     args = ap.parse_args()
