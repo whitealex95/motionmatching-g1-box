@@ -43,6 +43,8 @@ from scenebot_tracking.rotations import (quat_conj_xyzw, quat_rotate_xyzw,
                                          quat_rotate_xyzw as rot_xyzw,
                                          yaw_from_wxyz)
 
+import contact_viz
+
 POLICY_FPS = 1.0 / P.CONTROL_DT
 BOX_HALF_Z = 0.15
 BOX_REST_Z = BOX_HALF_Z
@@ -237,6 +239,7 @@ class Demo:
             if mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, b)
             != 'free_box']
 
+        self.contact_sites = contact_viz.resolve_sites(self.model)
         self._open_outputs()
         self.viewer = None
         if args.viewer:
@@ -351,6 +354,8 @@ class Demo:
         self.cam.lookat[:] = self.look
         self.renderer.update_scene(self.data, camera=self.cam)
         self._draw_ghost(self.renderer.scene)
+        contact_viz.draw(self.renderer.scene, self.data,
+                         self.contact_sites, self.policy.contact_mask)
         self.writer.append_data(self.renderer.render())
 
     def run(self):
@@ -368,6 +373,8 @@ class Demo:
                 if scn is not None:
                     scn.ngeom = 0
                     self._draw_ghost(scn)
+                    contact_viz.draw(scn, self.data, self.contact_sites,
+                                     self.policy.contact_mask)
                 self.viewer.sync()
             if self.fallen and (self.t - self.fall_time) > 2.0:
                 break

@@ -64,6 +64,7 @@ from mm_g1.data import load_library
 from mm_g1.controller import MotionMatcher
 
 import box_scene
+import contact_viz
 import ref_modes as RM
 from mm_stream import MMMotion, MM_FPS, POLICY_FPS
 
@@ -271,6 +272,7 @@ class Demo:
             if mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, b)
             != 'largebox']
 
+        self.contact_sites = contact_viz.resolve_sites(self.model)
         self._open_outputs()
         self.viewer = None
         if args.viewer:
@@ -593,6 +595,8 @@ class Demo:
         self.cam.lookat[:] = self.look
         self.renderer.update_scene(self.data, camera=self.cam)
         self._draw_ghost(self.renderer.scene)
+        contact_viz.draw(self.renderer.scene, self.data,
+                         self.contact_sites, self.policy.contact_mask)
         self.writer.append_data(self.renderer.render())
 
     def _robot_box_dist(self):
@@ -614,6 +618,8 @@ class Demo:
                 if scn is not None:
                     scn.ngeom = 0
                     self._draw_ghost(scn)
+                    contact_viz.draw(scn, self.data, self.contact_sites,
+                                     self.policy.contact_mask)
                 self.viewer.sync()
             if self.fallen and (self.t - self.fall_time) > 2.0:
                 break
