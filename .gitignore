@@ -10,3 +10,6 @@ data/motion_lib.npz
 # default (unnamed) output of scenebot_g1_box/run_mm_pickup.py; curated
 # renders are committed under explicit names
 scenebot_g1_box/out/scenebot_mm_pickup.mp4
+
+# stress-test videos stay on disk only (44 x ~7 MB); report/plots/metrics are committed
+scenebot_g1_box/out/stress/*.mp4
