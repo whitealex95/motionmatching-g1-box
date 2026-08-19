@@ -422,29 +422,6 @@ class Demo:
                   fill=(11, 11, 11, 255), font=font)
         return np.asarray(im)
 
-    def _append_endcard(self, ok, reason, seconds=2.5):
-        from PIL import Image, ImageDraw, ImageFont
-        im = Image.fromarray(self._last_frame).convert('RGB')
-        im = Image.blend(im, Image.new('RGB', im.size, (20, 20, 20)), 0.55)
-        draw = ImageDraw.Draw(im)
-        big = ImageFont.load_default(size=im.height // 6)
-        small = ImageFont.load_default(size=max(14, im.height // 20))
-        verdict = 'SUCCESS' if ok else 'FAIL'
-        color = (16, 170, 16) if ok else (215, 60, 60)
-        vb = draw.textbbox((0, 0), verdict, font=big)
-        draw.text(((im.width - vb[2]) // 2, im.height // 2 - vb[3]),
-                  verdict, fill=color, font=big)
-        lines = [reason, self._caption()]
-        y = im.height // 2 + 12
-        for line in lines:
-            lb = draw.textbbox((0, 0), line, font=small)
-            draw.text(((im.width - lb[2]) // 2, y), line,
-                      fill=(240, 240, 238), font=small)
-            y += lb[3] + 8
-        card = np.asarray(im)
-        for _ in range(int(seconds * POLICY_FPS)):
-            self.writer.append_data(card)
-
     def run(self):
         a = self.args
         wall = time.time()
@@ -485,20 +462,6 @@ class Demo:
         ok = (self.lift_seen and self.commander.picked
               and self.commander.placed and placed_now
               and not self.dropped and not self.fallen and away > 0.8)
-        if ok:
-            reason = f'picked, carried to {self.max_box_z:.2f} m, placed'
-        elif self.fallen:
-            reason = 'robot fell'
-        elif not self.lift_seen:
-            reason = f'never lifted (max box z {self.max_box_z:.2f} m)'
-        elif self.dropped:
-            reason = 'dropped mid-carry'
-        elif not placed_now:
-            reason = f'not placed (box z {box_z:.2f} m)'
-        else:
-            reason = 'sequence incomplete'
-        if self.writer is not None and self._last_frame is not None:
-            self._append_endcard(ok, reason)
         if self.writer is not None:
             self.writer.close()
         if self.viewer is not None:

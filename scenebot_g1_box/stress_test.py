@@ -78,6 +78,10 @@ def main():
             rec = run_one(name, btype, size, mass)
             rec.update(group=group, name=name)
             cache[key] = rec
+            verdict = 'SUCCESS' if rec['success'] else 'FAIL'
+            final = os.path.join(OUT, f'{name}_{verdict}.mp4')
+            os.replace(os.path.join(OUT, name + '.mp4'), final)
+            rec['video'] = os.path.basename(final)
         results.append(rec)
         print(f'[{i + 1:2d}/{len(todo)}] {name:16s} '
               f'{"SUCCESS" if rec["success"] else "fail":8s} '

@@ -68,6 +68,11 @@ def main():
             rec = run_one(name, size)
             rec.update(group=group, name=name)
             cache[key] = rec
+            # verdict goes in the filename
+            verdict = 'SUCCESS' if rec['success'] else 'FAIL'
+            final = os.path.join(OUT, f'{name}_{verdict}.mp4')
+            os.replace(os.path.join(OUT, name + '.mp4'), final)
+            rec['video'] = os.path.basename(final)
         results.append(rec)
         dims = ' x '.join(f'{2 * v:.2f}' for v in size)
         print(f'[{i + 1:2d}/{len(todo)}] {name:9s} ({dims} m) '

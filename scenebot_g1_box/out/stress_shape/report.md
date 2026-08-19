@@ -9,11 +9,12 @@ one deterministic attempt): uniform scaling 0.5×–1.4×, and one axis at a
 time scaled 0.3×–2.0× with the other two at baseline.
 
 Every run keeps three artifacts in this directory:
-- `<name>.mp4` — video with the **box dimensions captioned on every
-  frame** and a **SUCCESS/FAIL end card** (verdict + reason + dims),
+- `<name>_SUCCESS.mp4` / `<name>_FAIL.mp4` — the **verdict is in the
+  filename**; the video itself carries only the box dimensions and mass
+  captioned on every frame,
 - `<name>.xml` — the compiled scene MJCF, so the box geometry of record
   is in the file (`free_box_geom` size/mass),
-- a row in `results.json`.
+- a row in `results.json` (with the video filename).
 
 ## Result: 22/28 carry; grip width is the axis that bites
 
