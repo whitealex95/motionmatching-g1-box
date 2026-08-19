@@ -20,7 +20,8 @@
   "away": 2.24,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_0.5"
+  "name": "uni_0.5",
+  "video": "uni_0.5_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -43,7 +44,8 @@
   "away": 2.07,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_0.6"
+  "name": "uni_0.6",
+  "video": "uni_0.6_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -66,7 +68,8 @@
   "away": 1.98,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_0.7"
+  "name": "uni_0.7",
+  "video": "uni_0.7_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -89,7 +92,8 @@
   "away": 1.97,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_0.8"
+  "name": "uni_0.8",
+  "video": "uni_0.8_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -112,7 +116,8 @@
   "away": 2.05,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_0.9"
+  "name": "uni_0.9",
+  "video": "uni_0.9_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -135,7 +140,8 @@
   "away": 2.15,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_1"
+  "name": "uni_1",
+  "video": "uni_1_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -158,7 +164,8 @@
   "away": 1.99,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_1.1"
+  "name": "uni_1.1",
+  "video": "uni_1.1_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -181,7 +188,8 @@
   "away": 2.29,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_1.2"
+  "name": "uni_1.2",
+  "video": "uni_1.2_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -204,7 +212,8 @@
   "away": 1.83,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_1.3"
+  "name": "uni_1.3",
+  "video": "uni_1.3_FAIL.mp4"
  },
  {
   "box_type": "box",
@@ -227,7 +236,8 @@
   "away": 2.01,
   "sim_s": 23.8,
   "group": "uniform",
-  "name": "uni_1.4"
+  "name": "uni_1.4",
+  "video": "uni_1.4_FAIL.mp4"
  },
  {
   "box_type": "box",
@@ -250,7 +260,8 @@
   "away": 2.34,
   "sim_s": 23.8,
   "group": "axis_x",
-  "name": "x_0.3"
+  "name": "x_0.3",
+  "video": "x_0.3_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -273,7 +284,8 @@
   "away": 2.07,
   "sim_s": 23.8,
   "group": "axis_x",
-  "name": "x_0.5"
+  "name": "x_0.5",
+  "video": "x_0.5_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -296,7 +308,8 @@
   "away": 2.15,
   "sim_s": 23.8,
   "group": "axis_x",
-  "name": "x_0.75"
+  "name": "x_0.75",
+  "video": "x_0.75_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -319,7 +332,8 @@
   "away": 2.03,
   "sim_s": 23.8,
   "group": "axis_x",
-  "name": "x_1.25"
+  "name": "x_1.25",
+  "video": "x_1.25_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -342,7 +356,8 @@
   "away": 2.18,
   "sim_s": 23.8,
   "group": "axis_x",
-  "name": "x_1.5"
+  "name": "x_1.5",
+  "video": "x_1.5_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -365,7 +380,8 @@
   "away": 1.92,
   "sim_s": 23.8,
   "group": "axis_x",
-  "name": "x_2"
+  "name": "x_2",
+  "video": "x_2_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -388,7 +404,8 @@
   "away": 2.15,
   "sim_s": 23.8,
   "group": "axis_y",
-  "name": "y_0.3"
+  "name": "y_0.3",
+  "video": "y_0.3_FAIL.mp4"
  },
  {
   "box_type": "box",
@@ -411,7 +428,8 @@
   "away": 2.07,
   "sim_s": 23.8,
   "group": "axis_y",
-  "name": "y_0.5"
+  "name": "y_0.5",
+  "video": "y_0.5_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -434,7 +452,8 @@
   "away": 2.01,
   "sim_s": 23.8,
   "group": "axis_y",
-  "name": "y_0.75"
+  "name": "y_0.75",
+  "video": "y_0.75_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -457,7 +476,8 @@
   "away": 2.25,
   "sim_s": 23.8,
   "group": "axis_y",
-  "name": "y_1.25"
+  "name": "y_1.25",
+  "video": "y_1.25_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -480,7 +500,8 @@
   "away": 1.41,
   "sim_s": 11.7,
   "group": "axis_y",
-  "name": "y_1.5"
+  "name": "y_1.5",
+  "video": "y_1.5_FAIL.mp4"
  },
  {
   "box_type": "box",
@@ -503,7 +524,8 @@
   "away": 1.6,
   "sim_s": 11.9,
   "group": "axis_y",
-  "name": "y_2"
+  "name": "y_2",
+  "video": "y_2_FAIL.mp4"
  },
  {
   "box_type": "box",
@@ -526,7 +548,8 @@
   "away": 2.0,
   "sim_s": 23.8,
   "group": "axis_z",
-  "name": "z_0.3"
+  "name": "z_0.3",
+  "video": "z_0.3_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -549,7 +572,8 @@
   "away": 1.92,
   "sim_s": 23.8,
   "group": "axis_z",
-  "name": "z_0.5"
+  "name": "z_0.5",
+  "video": "z_0.5_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -572,7 +596,8 @@
   "away": 2.0,
   "sim_s": 23.8,
   "group": "axis_z",
-  "name": "z_0.75"
+  "name": "z_0.75",
+  "video": "z_0.75_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -595,7 +620,8 @@
   "away": 2.26,
   "sim_s": 23.8,
   "group": "axis_z",
-  "name": "z_1.25"
+  "name": "z_1.25",
+  "video": "z_1.25_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -618,7 +644,8 @@
   "away": 1.94,
   "sim_s": 23.8,
   "group": "axis_z",
-  "name": "z_1.5"
+  "name": "z_1.5",
+  "video": "z_1.5_SUCCESS.mp4"
  },
  {
   "box_type": "box",
@@ -641,6 +668,7 @@
   "away": 0.85,
   "sim_s": 23.5,
   "group": "axis_z",
-  "name": "z_2"
+  "name": "z_2",
+  "video": "z_2_FAIL.mp4"
  }
 ]
