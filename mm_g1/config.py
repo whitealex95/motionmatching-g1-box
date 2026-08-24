@@ -58,8 +58,8 @@ CLIP_TRIM = {
 # Bump when the library build (clips, trims, mirror, labels) changes incompatibly, so a
 # stale data/motion_lib.npz cache is rebuilt automatically. v2: GenoView-matched trims.
 # v3: robot-object pick/carry/place skill + box features. v4: box orientation N-fold augmentation.
-# v5: jump skill removed.
-LIB_VERSION = 5
+# v5: jump skill removed. v6: 7 low-quality box clips excluded (BOX_CLIPS_EXCLUDE).
+LIB_VERSION = 6
 
 # GenoView trims the last HORIZONS[-1] frames of each clip from the SEARCH only
 # (cKDTree(X[rs:re-30])): the tail still plays out, but a match never lands there, so a
@@ -95,6 +95,17 @@ CARRY_MAX_SPEED = 0.75
 # PICK and PLACE are ridden through (no search mid-skill); CARRY is searched
 # the same way as locomotion but only among CARRY frames, with box features added.
 BOX_CLIPS = "all"        # "all" -> every .npz in BOX_DATA_DIR, or an explicit list of stems
+
+# Clips rejected after visual review of the kinematic playback (low retarget quality).
+BOX_CLIPS_EXCLUDE = [
+    "sub12_largebox_077_original_mujoco",
+    "sub16_largebox_047_original_mujoco",
+    "sub16_largebox_048_original_mujoco",
+    "sub3_largebox_003_original_mujoco",
+    "sub8_largebox_006_original_mujoco",
+    "sub8_largebox_045_original_mujoco",
+    "sub8_largebox_047_original_mujoco",
+]
 
 # Rotational augmentation of the box clips. Each pick/carry/place clip is replicated
 # BOX_ROT_FOLDS times with the box's ORIENTATION yawed about its own centre by whole turns / N
