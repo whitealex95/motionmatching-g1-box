@@ -93,7 +93,6 @@ motionmatching-g1-shelf).
 |---|---|---|
 | `kinematic` (default) | no collision, teleported to the reference | SUCCESS — full sequence in ~25 s sim, max xy err 0.38 m, no fall |
 | `grasp` | free box, hand friction only | SUCCESS with NO extra knobs (`--arm-gain 1 --squeeze 0`) — the clip's hand spacing fits its own box, friction-only pick to 0.93 m, place flat, walk away |
-| `weld` | free box, welded to the pelvis while held | untested on this branch |
 
 ```bash
 ~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_pickup.py                # kinematic
@@ -104,7 +103,31 @@ motionmatching-g1-shelf).
 --arm-gain 4` because the OmniRetarget palms hover 4-8 cm off the box faces;
 see the git history of this README for that sweep.)
 
-### Grip closed loop (weld/grasp with a ref mode)
+### stress_single.py — dynamic-box envelope of the single pick
+
+Sweeps the PHYSICAL box's size and mass through the full grasp sequence
+(36 runs; the reference motion and reference box stay data-sized). Metrics
+in `out/stress_single/results.json`, one 640x360 video per run with the
+verdict in the filename, figures + table from `stress_single_plots.py`.
+Success = picked, carried, set down FLAT at rest height, no fall, walked
+away. Measured envelope (base 0.30 x 0.20 x 0.30 m, 0.1 kg):
+
+- **scale**: 0.8-1.0x succeed (and 1.4x, jaggedly); 0.5-0.6x are below the
+  hands' closing width, 1.2x and 1.6x never grip
+- **mass**: 0.1-3 kg carried -- the box rides lower in the hands as it gets
+  heavier (max box z 0.93 -> 0.66 m); 5 kg cannot be lifted
+- **grip width** (y, the hands close on +-y): 0.15-0.40 m fine; 0.10 m
+  lifts but slips out mid-carry
+- **height**: 0.2-0.3 m fine; 0.1 m slips out mid-carry, 0.5 m lifts but
+  tips at set-down (rests higher than the reference box), 0.7 m never grips
+- **depth** (x, toward the robot): only the data's 0.30 m works
+- **size x mass**: 0.8x and 1.0x boxes carry up to 2-3 kg; 1.2x mostly
+  fails at any mass
+
+Contact-rich and jagged like the earlier sweeps: neighbouring configs can
+flip the outcome (1.2x fails while 1.4x succeeds).
+
+### Grip closed loop (grasp with a ref mode)
 
 Ported from `sonic_g1_box/demo_base.py`: while the box is loose, the
 physical box pose is copied into the matcher's belief every tick, so a
@@ -130,8 +153,8 @@ the commander steers by the PHYSICAL robot instead. Measured (0.5 kg box):
 
 | ref-mode | result |
 |---|---|
-| `none` (default) | kinematic box SUCCESS with transient lag up to ~0.6 m; weld is marginal (flips between success and a fall across small changes) — use snap-xy for weld |
-| `snap-xy` | SUCCESS both box modes; best overall — weld max error drops 0.51 -> 0.14 m, squat preserved |
+| `none` (default) | kinematic box SUCCESS with transient lag up to ~0.6 m |
+| `snap-xy` | SUCCESS; best overall — tightest tracking with the squat preserved |
 | `snap-xyyaw` | no fall, tight tracking (0.13 m), but the squat comes out shallow (borderline) |
 | `snap-all` | tracks in 0.12 m but re-seeds the joint offsets from the lagging robot, which dilutes the squat away — the pickup degrades to a pantomime |
 | `anchor`, `anchor-replan` | robot falls (tested gains 0.1 / 0.2, 0.738) — the continuous drift correction fights this policy |
@@ -154,5 +177,5 @@ frictional grasp fails here while SONIC's `run_grasp` succeeds with
 squeeze — no ref mode changes that, since the failure is in the arms, not
 the root).
 
-The amber stick figure is the reference the policy is tracking; in weld
+The amber stick figure is the reference the policy is tracking; in grasp
 mode the amber box outline is the reference box.

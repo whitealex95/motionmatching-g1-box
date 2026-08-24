@@ -1,5 +1,5 @@
 """SONIC 29-DoF G1 scene + the box, assembled in code (modes: kinematic /
-weld / grasp).
+grasp).
 
 The carton mesh sits tilted inside its own local frame on purpose -- the
 OmniRetarget clips' box quaternion is calibrated to the scanned box's frame
@@ -87,18 +87,6 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
                      conaffinity=1 if collide else 0)
         ghost = (np.zeros(3), np.eye(3), np.array(box_half, float))
 
-    if mode == 'weld':
-        eq = spec.add_equality()
-        eq.type = mujoco.mjtEq.mjEQ_WELD
-        eq.name = 'box_weld'
-        eq.objtype = mujoco.mjtObj.mjOBJ_BODY
-        eq.name1 = 'pelvis'
-        eq.name2 = 'largebox'
-        eq.active = False
-        # eq data = anchor(3) + relpose(7) + torquescale; the MjsEquality
-        # default carries a (0,1,0) anchor which must be cleared for a weld
-        eq.data = np.r_[np.zeros(10), 1.0]
-
     model = spec.compile()
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, off_w)
     model.vis.global_.offheight = max(model.vis.global_.offheight, off_h)
@@ -108,7 +96,6 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
         box_dof_at=model.joint('box_joint').dofadr[0],
         box_body=model.body('largebox').id,
         palm_sites=[model.site('left_palm').id, model.site('right_palm').id],
-        weld_eq=model.equality('box_weld').id if mode == 'weld' else None,
         ghost=ghost,                      # (centre, axes, half extents) in box frame
     )
     return model, ids

@@ -16,27 +16,26 @@ down, and walks away. It steers by the physical robot; `--ref-mode` (default
 Exit code 0 only if the box was lifted, placed back upright at its resting
 height, and the robot walked away without falling.
 
-Three variants, one file each:
+Two variants, one file each (weld was removed — only kinematic tracking and
+the frictional grasp remain):
 
 | variant | file | box handling |
 |---|---|---|
 | (a) kinematic | `run_kinematic.py` | no collision, box teleported to the reference pose |
-| (b) weld | `run_weld.py` | free body; weld to the pelvis at the reference box-in-pelvis pose while held, released at place |
-| (c) grasp | `run_grasp.py` | free body; friction only, `--squeeze` biases the shoulder rolls inward while held (contact-rich and jagged: small parameter changes flip the outcome) |
+| (b) grasp | `run_grasp.py` | free body; friction only, `--squeeze` biases the shoulder rolls inward while held (contact-rich and jagged: small parameter changes flip the outcome) |
 
 ```bash
 ~/miniconda3/envs/mm-g1-sonic/bin/python run_kinematic.py           # -> out/*.mp4
-~/miniconda3/envs/mm-g1-sonic/bin/python run_weld.py --viewer       # watch live
 ~/miniconda3/envs/mm-g1-sonic/bin/python run_grasp.py --no-video
 ```
 
 Measured (defaults, headless, 0.5 kg box everywhere): kinematic succeeds in
-~13 s; weld in ~12 s; grasp (arm-gain 6, squeeze 0.4) slips and retries but
-succeeds in ~24 s.
+~13 s; grasp (arm-gain 6, squeeze 0.4) slips and retries but succeeds in
+~24 s.
 
 `--robot scenebot` swaps in the SceneBot flat-hand G1
 (assets/scenebot/scene_robot_only.xml) instead of the NVIDIA model.
-Kinematic (12 s) and weld (35 s, extra retries) still succeed; the
+Kinematic (12 s) still succeeds; the
 frictional grasp does NOT — the flat palm pads protrude ~1.4 cm less than
 the bolted-on capsule pads and need face-parallel wrist alignment that
 SONIC's arm tracking doesn't deliver, so the box slips on every attempt
@@ -55,5 +54,5 @@ The carton sits tilted inside its local frame on purpose — the clips' box
 quaternion is calibrated to the scanned box's frame (tools/make_medicine_box.py).
 
 The amber stick figure is the reference frame the policy is tracking; in the
-weld/grasp variants the amber box outline is the reference box, so tracking
+grasp variant the amber box outline is the reference box, so tracking
 error and slip are visible.
