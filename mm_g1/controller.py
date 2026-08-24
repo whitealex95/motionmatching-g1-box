@@ -130,6 +130,7 @@ class MotionMatcher:
         self.move_timer = 0.0
         self.move_settle_t = 0.0
         self.on_rail = False
+        self._move_box_xy = np.zeros(2)
         self.stance_xy = np.zeros(2)
         self.stance_yaw = 0.0
         self.route_wp = np.zeros(2)
@@ -212,9 +213,12 @@ class MotionMatcher:
         self._maybe_trigger_box()
 
         # Move-to-pick drives itself: the player command is replaced by the walk
-        # toward the stance planned from the live box pose.
+        # toward the stance planned from the live box pose. If the box moves
+        # mid-approach (kicked, or fed from a live physical box), replan.
         if self.state == STATE_MOVE:
             self.move_timer += DT
+            if float(np.linalg.norm(self.boxPos[0:2] - self._move_box_xy)) > 0.10:
+                self._start_move()
             desiredVel, desiredFace = self._steer_to_stance()
             if self._at_stance():
                 self._enter_skill(self.pick_enter, self.pick_end_of,
@@ -262,6 +266,7 @@ class MotionMatcher:
             if best is None or d < best[0]:
                 best = (d, sxy, sy, wp)
         _, self.stance_xy, self.stance_yaw, self.route_wp = best
+        self._move_box_xy = self.boxPos[0:2].copy()
         self.state = STATE_MOVE
         self.move_timer = 0.0
         self.move_settle_t = 0.0
