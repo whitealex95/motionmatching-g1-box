@@ -13,6 +13,7 @@ SCENE_BOX_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene_box.xml")  # G
 # Same scene with the printed 'MEDICINE' carton in place of the plain box (run.py --medicine,
 # and the /medicine build of the web demo). Purely a visual swap: same box volume, same motion.
 SCENE_BOX_MEDICINE_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene_box_medicine.xml")
+SCENE_BOX_SCENEBOT_XML = os.path.join(ROOT, "assets", "unitree_g1", "scene_box_scenebot.xml")
 LIB_PATH = os.path.join(ROOT, "data", "motion_lib.npz")   # built on first run, then cached
 
 FPS = 30
@@ -59,7 +60,9 @@ CLIP_TRIM = {
 # stale data/motion_lib.npz cache is rebuilt automatically. v2: GenoView-matched trims.
 # v3: robot-object pick/carry/place skill + box features. v4: box orientation N-fold augmentation.
 # v5: jump skill removed. v6: 7 low-quality box clips excluded (BOX_CLIPS_EXCLUDE).
-LIB_VERSION = 6
+# v7: single SceneBot pick/drop (clip 11 half-speed + reversed), baked contact labels,
+#     OmniRetarget clips reduced to carry-only, SceneBot 0.3x0.2x0.3 box.
+LIB_VERSION = 7
 
 # GenoView trims the last HORIZONS[-1] frames of each clip from the SEARCH only
 # (cKDTree(X[rs:re-30])): the tail still plays out, but a match never lands there, so a
@@ -116,8 +119,50 @@ BOX_CLIPS_EXCLUDE = [
 BOX_ROT_FOLDS = 4
 
 # Per-frame skill codes (lib["skill"]). 0 keeps locomotion exactly as before; any non-zero
-# code keeps that frame out of the locomotion search/normalization.
+# code keeps that frame out of the locomotion search/normalization. DISABLED frames belong
+# to no database at all (the OmniRetarget pick/place phases when SCENEBOT_PICK is on).
 SKILL_LOCO, SKILL_PICK, SKILL_CARRY, SKILL_PLACE = 0, 1, 2, 3
+SKILL_DISABLED = 4
+
+# --- The single SceneBot pick / drop (this branch) -------------------------------
+# The pick and place skills come from ONE motion: the SceneBot web demo's squat pickup
+# (clip 11 of assets/scenebot/clips.bin, frames 0..120 at 50 Hz). The demo plays it at
+# half speed forward for the pickup and at full speed backward for the put-down; both
+# playbacks are baked as-played into the library at FPS, with the demo's per-frame
+# contact labels (mm_g1/scenebot_pick.py). The OmniRetarget clips then contribute ONLY
+# their carry frames (their own pick/place phases are marked SKILL_DISABLED).
+SCENEBOT_PICK = True
+SCENEBOT_CLIP = 11
+SCENEBOT_FRAMES = (0, 120)
+SCENEBOT_FPS = 50
+SCENEBOT_PICK_SPEED = 0.5      # the demo's pickupForwardStepScale
+SCENEBOT_PLACE_SPEED = 1.0     # reverse playback runs at full speed in the demo
+# The SceneBot box (0.3 x 0.2 x 0.3 m) is only 2-fold rotationally symmetric about
+# vertical, so the baked pick/drop is replicated at 0 and 180 deg of box yaw only.
+# (The approach heuristic aligns the stance to the live box yaw, so 2 folds suffice.)
+SCENEBOT_ROT_FOLDS = 2
+BOX_HALF = (0.15, 0.10, 0.15)  # SceneBot free_box half extents
+
+# --- Approach heuristics (move-to-pick, ported from motionmatching-g1-shelf) -----
+# B plans a walking route to the pick stance computed from the LIVE box pose (the
+# stance-to-box offset recorded in the baked pick clip, inverted): straight to a way-in
+# point behind the stance, a rounded corner, then in along the stance heading, aiming
+# past it so the walk never decays into the slow-walk dead zone. On the final leg the
+# root is pinned to the rail; the pick entry fires at the stance-plane crossing.
+MOVE_WAYIN = 0.6         # way-in point this far behind the stance (m)
+MOVE_OVERSHOOT = 0.35    # route/tap target past the stance (m), keeps the walk alive
+# Unlike the shelf demo (which cuts into its clip at the stance crossing, still
+# walking), the pick here starts only after the reference has STOPPED at the
+# stance: the tracking policy cannot stop instantly, and the SceneBot demo's own
+# sequence also settles before the squat. The walk decelerates toward the
+# stance, holds inside the arrive radius, and the entry waits for the root to
+# settle below the arrive speed.
+MOVE_ARRIVE_NEAR = 0.12  # hold-still radius around the stance (m)
+MOVE_ARRIVE_YAW = 0.6    # yaw tolerance at the stance (rad)
+MOVE_ARRIVE_SPEED = 0.25  # root speed below this counts as settled (m/s)
+MOVE_TIMEOUT = 8.0       # per-leg give-up (s)
+SNAP_RADIUS = 4.0        # rail pin active inside this radius
+SNAP_HALFLIFE = 1.0      # rail pin half-life (s)
 
 # Phase segmentation thresholds (box height relative to its resting height on the floor).
 BOX_REST_FRAMES = 5      # frames averaged at clip start to estimate the resting box height
@@ -148,11 +193,13 @@ BOX_POS_WEIGHT = 2.0
 # poses are homogeneous, so this barely affects the gait match.
 BOX_ROT_WEIGHT = 2.0
 BOX_VEL_WEIGHT = 0.5
-# PICK has its own (separate) database, so it can weight the box position more than carry/place
-# do: when you press B, the entry should be chosen mostly by which pick clip's box sits where
-# YOUR box actually is relative to the robot (correct reach), even if its body pose matches a
-# little worse -- the pose pop is inertialized away, but a bad box position is visible.
+# PICK has its own (separate) database, so it can weight the box position AND orientation more
+# than carry/place do: when you press B, the entry should be chosen mostly by where the box
+# sits (and which way it faces) relative to the robot, even if the body pose matches a little
+# worse -- the pose pop is inertialized away, but a bad box placement is visible. With the
+# single SceneBot pick these weights select the entry frame and the box-yaw fold.
 PICK_BOX_POS_WEIGHT = 5.0
+PICK_BOX_ROT_WEIGHT = 5.0
 BOX_INERT_HALFLIFE = 0.1  # box pose-transition (attach) inertialization half-life
 
 # Where the box spawns, expressed in the robot's start frame (so it is always a reachable
@@ -160,4 +207,4 @@ BOX_INERT_HALFLIFE = 0.1  # box pose-transition (attach) inertialization half-li
 # resting orientation is taken from the data so the pick entry lines up (see controller).
 BOX_SPAWN_FWD = 1.6      # metres in front of the robot's start facing
 BOX_SPAWN_LAT = 0.0      # metres to the robot's left (+) / right (-)
-BOX_REST_Z = 0.19
+BOX_REST_Z = BOX_HALF[2]  # the SceneBot box rests on the floor at its half height

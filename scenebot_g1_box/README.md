@@ -68,68 +68,41 @@ reaching and carrying, and nothing on the feet during plain walking
 
 ## run_mm_pickup.py — this repo's motion-matched pickup
 
-The `mm_g1` matcher's box pick/carry/place reference (OmniRetarget carton
-clips, streamed by `sonic_g1_box/mm_stream.py`) tracked by the SceneBot
-policy instead of SONIC. Each 50 Hz frame becomes a SceneBot packet: leg
-joint targets, VR 3-point targets via FK on the SceneBot G1, anchor = the
-reference root, and a synthesized contact label (feet during pick/place,
-wrists while reaching or holding). The commander steers the matcher by the
-reference root; the policy follows through the anchor-error observation.
+The `mm_g1` matcher's box reference (streamed by `sonic_g1_box/mm_stream.py`)
+tracked by the SceneBot policy. On this branch the pick and the drop are the
+policy's OWN squat pickup — clip 11 baked at the demo's playback rates
+(half-speed forward, full-speed reversed; see the top-level README) — so the
+old half-rate tracking adaptation is off, and the physical box is SceneBot's
+0.3 x 0.2 x 0.3 m free box (0.1 kg). Only the carry frames (OmniRetarget)
+remain out of the training distribution.
 
-This reference is OUT of the SceneBot policy's training distribution. Two
-adaptations make it work, both borrowed from how SceneBot treats its own
-skill: the deep-squat portion is tracked at half rate (their demo plays its
-pickup clip at `pickupForwardStepScale = 0.5`), applied only while the
-reference is near-stationary, and the commander pauses after the place
-before walking away.
+Each 50 Hz frame becomes a SceneBot packet: leg joint targets, VR 3-point
+targets via FK on the SceneBot G1, anchor = the reference root, and the
+contact label INHERITED from the library (`lib['contact']`): the demo's own
+per-frame labels on the pick/drop frames — feet through the squat, wrists
+anticipatory from the start of the reach (clip frame 40, ~1.5 s before
+touch) — and wrists-while-attached on the carry frames. The synthesized
+FK-based labels remain as a fallback for libraries without baked labels.
 
-| mode | box | result |
+The commander no longer scripts the walk to the box: it presses B once
+settled and the matcher's own MOVE-TO-PICK state plans the route, walks it,
+settles at the stance, and enters the pick (approach heuristics from
+motionmatching-g1-shelf).
+
+| mode | box | result (this branch) |
 |---|---|---|
-| `kinematic` (default) | no collision, teleported to the reference | SUCCESS — full sequence, no fall; transient lag up to ~0.75 m where the lift translates fast |
-| `weld` | free carton, welded to the pelvis at the reference box-in-pelvis pose while held | SUCCESS — 0.5 kg carton genuinely loads the robot (lifted to ~1.0 m), max error 0.47 m |
-| `grasp` | free carton, hand friction + `--squeeze` | works only with the recipe below — at data size the arms do not hug the 0.34 m carton tightly enough on this out-of-distribution reference, and raising arm gains topples the robot |
+| `kinematic` (default) | no collision, teleported to the reference | SUCCESS — full sequence in ~25 s sim, max xy err 0.38 m, no fall |
+| `grasp` | free box, hand friction only | SUCCESS with NO extra knobs (`--arm-gain 1 --squeeze 0`) — the clip's hand spacing fits its own box, friction-only pick to 0.93 m, place flat, walk away |
+| `weld` | free box, welded to the pelvis while held | untested on this branch |
 
 ```bash
 ~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_pickup.py                # kinematic
-~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_pickup.py --mode weld
-~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_pickup.py --mode weld --ref-mode snap-xy
-~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_pickup.py --mode grasp --ref-mode snap-xy \
-    --box-scale 0.85 --squeeze 0.5 --arm-gain 4     # the working grasp recipe
+~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_pickup.py --mode grasp --arm-gain 1 --squeeze 0
 ```
 
-### --box-scale: why the grasp needs a smaller box
-
-In the OmniRetarget data the palms never touch the box: at hold they sit
-4-8 cm per side OUTSIDE the faces (wrist gap 0.42-0.50 m for a 0.32-0.34 m
-box), so tracking alone can never squeeze it and the squeeze bias must
-close the whole gap. `--box-scale` scales only the physical carton mesh
-(texture and reference motion unchanged). Swept with snap-xy at 0.5 kg:
-
-- data size (1.0) and slightly larger (1.1-1.2): partial grips that
-  destabilize the squeezing arms — the robot falls mid-lift
-- smaller (0.8-0.9) at the default squeeze 0.4: hands close cleanly but
-  never reach the box — a stable pantomime
-- with the anticipatory contact labels (below), the whole block
-  `--box-scale {0.85, 0.9} --squeeze {0.5..0.6} --arm-gain 4` succeeds on
-  the first grip — friction-only pick, carry to ~0.85 m, place, walk away
-  (max xy err 0.15-0.24 m); 0.8 is too small (the reach gap gets too wide)
-
-Less jagged than it was, but still contact-rich: distant parameter
-combinations flip the outcome.
-
-### Contact labels: baked per frame from the reference kinematics
-
-SceneBot's own clips ship per-frame contact labels; OMOMO/OmniRetarget data
-has none (the npz files are just qpos + fps), so the labels here are a pure
-function of each reference frame: feet from FK foot-site heights (prompted
-only during pick/place, mirroring the demo's zeroed walking feet), wrists
-prompted when the reference intends hand contact (pick/place or held) AND
-the palm is within 0.30 m reach of the box surface. The reach radius
-matters: SceneBot's own wrist labels rise at the START of the reach
-(frame 40/120, ~1.6 s before touch), and prompting the wrists that early
-is what lets the policy prepare the hands — a touch-distance threshold
-(0.09 m) made every first grip fail, and a stale prompt after a grip abort
-toppled the robot (the intent gate drops it instantly).
+(The old carton-based grasp needed `--box-scale 0.85 --squeeze 0.5
+--arm-gain 4` because the OmniRetarget palms hover 4-8 cm off the box faces;
+see the git history of this README for that sweep.)
 
 ### Grip closed loop (weld/grasp with a ref mode)
 

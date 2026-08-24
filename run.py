@@ -49,7 +49,8 @@ def main():
         print("Build complete. Run `python run.py` to control the G1.")
         return
 
-    scene = C.SCENE_BOX_MEDICINE_XML if args.medicine else C.SCENE_BOX_XML
+    scene = (C.SCENE_BOX_SCENEBOT_XML if C.SCENEBOT_PICK else
+             C.SCENE_BOX_MEDICINE_XML if args.medicine else C.SCENE_BOX_XML)
     model = mujoco.MjModel.from_xml_path(scene)
     data = mujoco.MjData(model)
     print("Opening viewer -- WASD to move, B to pick up / set down the box, Esc to quit.")

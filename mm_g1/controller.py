@@ -37,6 +37,17 @@ from .springs import (DecaySpringDamperPosition, DecaySpringDamperRotation,
 DT = C.DT
 NDOF = 29
 IDENTITY = np.array([1.0, 0.0, 0.0, 0.0])
+STATE_MOVE = 100                     # controller-only; frames are LOCO/PICK/CARRY/PLACE
+
+
+def wrap_angle(a):
+    """Wrap to (-pi, pi]."""
+    return (a + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _yaw(q_wxyz):
+    w, x, y, z = q_wxyz
+    return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
 
 
 class MotionMatcher:
@@ -82,6 +93,17 @@ class MotionMatcher:
         # a representative pick entry == its world pose when the robot faces +x (yaw 0).
         self.box_spawn_rot = (self.boxLocalRot[self.pick_enter[0]].copy()
                               if len(self.pick_enter) else IDENTITY.copy())
+
+        # The recorded stance-to-box relation at the pick entry (fold 0), inverted at
+        # every B press to place the move-to-pick stance relative to the LIVE box.
+        if len(self.pick_enter):
+            e0 = int(self.pick_enter[0])
+            bl = self.boxLocalPos[e0]                # box in the entry's sim-root frame
+            self.stance_box_off = np.array([float(bl[0]), float(bl[1])])
+            self.stance_box_yaw = _yaw(self.boxLocalRot[e0])
+        else:
+            self.stance_box_off = np.array([C.BOX_SPAWN_FWD, 0.0])
+            self.stance_box_yaw = 0.0
         self.reset(start_frame)
 
     # --- state ---------------------------------------------------------------
@@ -104,6 +126,16 @@ class MotionMatcher:
         self.searchTimer = 0.0
         self.box_pending = False
         self.box_locked = 0
+        # Move-to-pick (approach) state.
+        self.move_timer = 0.0
+        self.move_settle_t = 0.0
+        self.on_rail = False
+        self.stance_xy = np.zeros(2)
+        self.stance_yaw = 0.0
+        self.route_wp = np.zeros(2)
+        self.route_pts = []
+        self.cmdVel = np.zeros(3)
+        self.cmdFace = np.zeros(3)
         # Box world pose: a reachable distance in front of the robot's start facing, at its
         # resting height, oriented as it rests in the data (box_spawn_rot is in the base frame,
         # so composing with the start root gives the matching world orientation).
@@ -134,12 +166,17 @@ class MotionMatcher:
 
     def state_name(self):
         return {C.SKILL_LOCO: "LOCOMOTION", C.SKILL_PICK: "PICK",
-                C.SKILL_CARRY: "CARRY", C.SKILL_PLACE: "PLACE"}[self.state]
+                C.SKILL_CARRY: "CARRY", C.SKILL_PLACE: "PLACE",
+                STATE_MOVE: "MOVE-TO-PICK"}[self.state]
 
     # --- triggers ------------------------------------------------------------
     def trigger_box(self):
-        """Request the box action (B): pick up if near a box in locomotion, or place if
-        carrying. Honoured on the next step; a no-op while a skill is already being ridden."""
+        """Request the box action (B): walk to the box and pick it up from locomotion, or
+        place it while carrying. Pressing B during the walk cancels it. Honoured on the
+        next step; a no-op while a pick/place is being ridden."""
+        if self.state == STATE_MOVE:
+            self.state = C.SKILL_LOCO
+            return
         if self.box_locked == 0:
             self.box_pending = True
 
@@ -172,21 +209,197 @@ class MotionMatcher:
         """Advance one frame. desiredVel is the desired velocity [x,y,0] (WASD), desiredFace an
         independent facing [x,y,0] (arrows; zero = face travel). Returns world qpos (36,); the
         box world pose is exposed as self.boxPos / self.boxRot for the viewer to draw."""
-        desiredVel = np.asarray(desiredVel, float)
-        self._predict_trajectory(desiredVel, desiredFace)
         self._maybe_trigger_box()
+
+        # Move-to-pick drives itself: the player command is replaced by the walk
+        # toward the stance planned from the live box pose.
+        if self.state == STATE_MOVE:
+            self.move_timer += DT
+            desiredVel, desiredFace = self._steer_to_stance()
+            if self._at_stance():
+                self._enter_skill(self.pick_enter, self.pick_end_of,
+                                  C.SKILL_PICK, "pick")
+                desiredVel = np.zeros(3)
+                desiredFace = np.zeros(3)
+            elif self.move_timer > C.MOVE_TIMEOUT:
+                self.state = C.SKILL_LOCO
+
+        desiredVel = np.asarray(desiredVel, float)
+        self.cmdVel = desiredVel.copy()
+        self.cmdFace = np.asarray(desiredFace, float).copy()
+        self._predict_trajectory(desiredVel, desiredFace)
+        if self.state == STATE_MOVE and np.linalg.norm(self.cmdVel) > 1e-6:
+            self._path_taps()          # holding at the stance keeps the spring taps
         return self._query_from_trajectory(desiredVel)
 
     def _maybe_trigger_box(self):
-        """Honour a pending B: locomotion + near box -> enter PICK; carry -> enter PLACE."""
+        """Honour a pending B: locomotion -> walk to the pick stance; carry -> enter PLACE."""
         if not self.box_pending or self.box_locked > 0:
             self.box_pending = False
             return
         self.box_pending = False
-        if self.state == C.SKILL_LOCO and self.near_box:
-            self._enter_skill(self.pick_enter, self.pick_end_of, C.SKILL_PICK, "pick")
+        if self.state == C.SKILL_LOCO and len(self.pick_enter):
+            self._start_move()
         elif self.state == C.SKILL_CARRY:
             self._enter_skill(self.place_enter, self.place_end_of, C.SKILL_PLACE, "place")
+
+    # --- move-to-pick (approach heuristics, from motionmatching-g1-shelf) ----
+    def _start_move(self):
+        """Plan the approach: invert the recorded stance-to-box relation at the live box
+        pose. The box's rotational symmetry gives SCENEBOT_ROT_FOLDS stance candidates
+        around it; the nearest way-in point wins."""
+        box_xy = self.boxPos[0:2]
+        box_yaw = _yaw(self.boxRot)
+        folds = max(1, C.SCENEBOT_ROT_FOLDS)
+        best = None
+        for k in range(folds):
+            sy = wrap_angle(box_yaw + k * 2.0 * np.pi / folds - self.stance_box_yaw)
+            rail = np.array([np.cos(sy), np.sin(sy)])
+            perp = np.array([-rail[1], rail[0]])
+            sxy = box_xy - self.stance_box_off[0] * rail - self.stance_box_off[1] * perp
+            wp = sxy - C.MOVE_WAYIN * rail
+            d = float(np.linalg.norm(wp - self.rootPos[0:2]))
+            if best is None or d < best[0]:
+                best = (d, sxy, sy, wp)
+        _, self.stance_xy, self.stance_yaw, self.route_wp = best
+        self.state = STATE_MOVE
+        self.move_timer = 0.0
+        self.move_settle_t = 0.0
+        self.on_rail = False
+
+    def _route_points(self):
+        """The planned route as a polyline from the robot to the overshoot target:
+        straight to the way-in point, a rounded corner there, then straight in along the
+        rail. The corner arc keeps the heading turning continuously."""
+        rail = np.array([np.cos(self.stance_yaw), np.sin(self.stance_yaw)])
+        end = self.stance_xy + C.MOVE_OVERSHOOT * rail
+        p0 = self.rootPos[0:2]
+        if self.on_rail:
+            return [p0, end]
+        wp = self.route_wp
+        d1 = wp - p0
+        L1 = float(np.linalg.norm(d1))
+        if L1 < 1e-6:
+            return [p0, end]
+        d1 = d1 / L1
+        ang = float(np.arccos(np.clip(d1 @ rail, -1.0, 1.0)))
+        if ang < 0.15:
+            return [p0, end]
+        # Round the corner at the way-in point with radius ~0.25 m; cap the fillet so
+        # sharp approach angles keep a real straight leg.
+        t = min(0.25 * np.tan(ang / 2.0), 0.3, 0.6 * L1,
+                0.5 * float(np.linalg.norm(end - wp)))
+        A = wp - d1 * t
+        B = wp + rail * t
+        corner = [(1 - s) ** 2 * A + 2 * (1 - s) * s * wp + s * s * B
+                  for s in np.linspace(0.0, 1.0, 9)[1:-1]]
+        return [p0, A] + corner + [B, end]
+
+    def _steer_to_stance(self):
+        """Walk the planned route toward a look-ahead point (facing the travel
+        direction), then servo straight onto the stance for the last stretch and hold
+        still inside the arrive radius so the root can settle before the pick."""
+        rail = np.array([np.cos(self.stance_yaw), np.sin(self.stance_yaw)])
+        rel = self.rootPos[0:2] - self.stance_xy
+        along = float(rel @ rail)
+        n = float(np.linalg.norm(rel - along * rail))
+        stance_d = float(np.linalg.norm(rel))
+        # Latch onto the final leg once the curve has merged with the rail; only fall
+        # back off it on a big miss.
+        if not self.on_rail:
+            if along < -0.1 and n < 0.15:
+                self.on_rail = True
+                self.move_timer = 0.0      # fresh time budget for the last leg
+        elif n > 0.45 or along > 0.25:
+            self.on_rail = False
+
+        face = np.array([rail[0], rail[1], 0.0])
+        if stance_d < 0.6:
+            # Endgame: servo straight at the stance (backward if overshot), facing
+            # down the rail, and stop commanding inside the hold radius. The old
+            # commander's proven profile: clip(1.4 d, 0.35, 0.7) escapes the
+            # slow-walk dead zone but arrives slow enough to settle in place.
+            self.route_pts = [self.rootPos[0:2].copy(), self.stance_xy.copy()]
+            vel = np.zeros(3)
+            if stance_d > 0.10:
+                vel[0:2] = -rel / stance_d * float(
+                    np.clip(1.4 * stance_d, 0.35, 0.7))
+            return vel, face
+
+        route = self._route_points()
+        self.route_pts = route
+        # Route length and the look-ahead point ~0.45 m down the curve.
+        look = route[-1]
+        total = 0.0
+        acc = 0.0
+        prev = route[0]
+        found = False
+        for p in route[1:]:
+            seg = float(np.linalg.norm(p - prev))
+            total += seg
+            if not found:
+                acc += seg
+                if acc >= 0.45:
+                    look = p
+                    found = True
+            prev = p
+
+        to = look - self.rootPos[0:2]
+        dist = float(np.linalg.norm(to))
+        vel = np.zeros(3)
+        if dist > 1e-6:
+            speed = float(np.clip(1.8 * total, 0.25, 1.2))
+            vel[0:2] = to / dist * speed
+            face = vel / (np.linalg.norm(vel) + 1e-9)
+        return vel, face
+
+    def _at_stance(self):
+        """Arrived: standing at the stance, facing down the rail, root settled. A
+        settled stop NEAR the stance also counts after a moment -- the entry match and
+        the box-offset inertialization absorb a small residual, while waiting for a
+        perfect stop can deadlock in the slow-walk dead zone."""
+        rel = self.rootPos[0:2] - self.stance_xy
+        dist = float(np.linalg.norm(rel))
+        dyaw = abs(wrap_angle(self.stance_yaw - self.rootYaw))
+        settled = float(np.linalg.norm(self.rootVel[0:2])) < C.MOVE_ARRIVE_SPEED
+        if settled and dist < 0.30 and dyaw < C.MOVE_ARRIVE_YAW:
+            self.move_settle_t += DT
+        else:
+            self.move_settle_t = 0.0
+        if dist < C.MOVE_ARRIVE_NEAR and dyaw < C.MOVE_ARRIVE_YAW and settled:
+            return True
+        return self.move_settle_t > 1.0
+
+    def _path_taps(self):
+        """The future taps read straight off the planned route: walk the remaining path
+        at the approach speed profile and sample the horizons."""
+        pts = [p.copy() for p in self.route_pts[1:]]
+        pos = self.rootPos[0:2].copy()
+        heading = np.array([np.cos(self.stance_yaw), np.sin(self.stance_yaw)])
+        k = 0
+        for i in range(1, int(HORIZONS[-1]) + 1):
+            rem, prev = 0.0, pos
+            for p in pts:
+                rem += float(np.linalg.norm(p - prev))
+                prev = p
+            adv = float(np.clip(1.8 * rem, 0.0, 1.2)) * DT
+            while adv > 1e-9 and pts:
+                seg = pts[0] - pos
+                L = float(np.linalg.norm(seg))
+                if L < 1e-9:
+                    pts.pop(0)
+                    continue
+                heading = seg / L
+                if adv < L:
+                    pos = pos + heading * adv
+                    adv = 0.0
+                else:
+                    pos = pts.pop(0)
+                    adv -= L
+            if k < len(HORIZONS) and i == int(HORIZONS[k]):
+                self.Tpos[k] = np.array([pos[0], pos[1], 0.0])
+                self.Tdir[k] = np.array([heading[0], heading[1], 0.0])
+                k += 1
 
     def _enter_skill(self, enter_frames, end_of, skill, dbname):
         """Nearest-neighbour match the live pose + box pose to the start of a pick/place phase
@@ -330,6 +543,18 @@ class MotionMatcher:
         self.rootAng = np.array([0.0, 0.0, self.yawRateDB[f]])
         self.rootPos = self.rootPos + self.rootVel * DT
         self.rootYaw = self.rootYaw + self.yawRateDB[f] * DT
+
+        # Path snap: on the final approach leg the root is pinned to the rail, in
+        # position and in heading -- the cross-track and yaw parts of the matched
+        # motion are projected out.
+        if self.state == STATE_MOVE and self.on_rail:
+            to = self.stance_xy - self.rootPos[0:2]
+            if float(np.linalg.norm(to)) < C.SNAP_RADIUS:
+                rail = np.array([np.cos(self.stance_yaw), np.sin(self.stance_yaw)])
+                cross = to - float(to @ rail) * rail
+                a = 1.0 - 0.5 ** (DT / C.SNAP_HALFLIFE)
+                self.rootPos[0:2] += a * cross
+                self.rootYaw += a * wrap_angle(self.stance_yaw - self.rootYaw)
         self.rootRot = yaw_quat(self.rootYaw)
 
         # ---- Inertialize joints + pelvis-local offset, then reconstruct the pose ----

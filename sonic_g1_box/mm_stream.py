@@ -35,6 +35,7 @@ class MMMotion:
         self._mm_t0 = self._mm_t1 = q
         self._frames = [q.copy()]
         self._meta = [self._meta_now()]
+        self._gframes = [int(matcher.cur)]
         self._rebuild()
 
     def _full_qpos(self, robot_q):
@@ -49,6 +50,11 @@ class MMMotion:
         """Matcher clip/frame/state/held as recorded at buffer frame `f` --
         the matcher itself has since run ahead of it."""
         return self._meta[min(f, len(self._meta) - 1)]
+
+    def gframe_at(self, f):
+        """The matcher's GLOBAL library frame recorded at buffer frame `f`
+        (indexes per-frame library arrays such as lib['contact'])."""
+        return self._gframes[min(f, len(self._gframes) - 1)]
 
     def box_at(self, f):
         return self._qpos[min(f, self.timesteps - 1), 36:43]   # (7,)
@@ -74,6 +80,7 @@ class MMMotion:
             q[39:43] = nlerp(self._mm_t0[39:43], self._mm_t1[39:43], mix)
             self._frames.append(q)
             self._meta.append(self._meta_now())
+            self._gframes.append(int(self.matcher.cur))
             grew = True
         if grew:
             self._rebuild()
@@ -83,6 +90,7 @@ class MMMotion:
     def truncate(self, n):
         del self._frames[n:]
         del self._meta[n:]
+        del self._gframes[n:]
         self._ticks = len(self._frames) / POLICY_FPS * MM_FPS
         q = self._frames[-1].copy()
         self._mm_t0 = self._mm_t1 = q
