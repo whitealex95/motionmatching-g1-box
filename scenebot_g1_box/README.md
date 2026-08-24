@@ -124,6 +124,14 @@ fixed timeline headlessly instead (settle, B, carry-walk 3 s, B, retreat)
 and is the regression test — it also exercises carry-walking, which the
 scripted runner never does. No reset key: restart the script.
 
+The matcher's box belief is snapped to the PHYSICAL box whenever the box
+is not held (resting, walked to, reached for, released); while held —
+through the carry — the reference box is authoritative and rides the
+robot. Move-to-pick replans its stance when the box moves more than
+0.10 m, so a kicked or repositioned box is approached and picked where it
+really is (verified: box teleported 0.38 m mid-approach, stance replans
+the same tick, full sequence still succeeds).
+
 Building this exposed an approach bug: the reference used to stop hard at
 the stance, and the physical robot (which lags decelerations) overshot and
 kicked the box away before the squat — worst at the short stream margin

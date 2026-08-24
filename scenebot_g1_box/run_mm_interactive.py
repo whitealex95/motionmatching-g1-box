@@ -54,6 +54,17 @@ class InteractiveDemo(Demo):
 
     # --- commander: live keys (or the --script timeline) ---------------------
     def _command(self, mm):
+        # The matcher's box belief is snapped to the PHYSICAL box whenever the
+        # box is not held (resting, being walked to, reached for, or released)
+        # -- so a kicked or moved box is approached and picked where it really
+        # is. While held (through the carry) the reference box is authoritative
+        # and rides the robot. Open loop shares one world frame with physics,
+        # so the physical pose is valid in the matcher frame.
+        if self.mode != 'kinematic' and not mm.box_held:
+            mm.boxPos[:] = self.data.qpos[self.bq:self.bq + 3]
+            mm.boxRot[:] = self.data.qpos[self.bq + 3:self.bq + 7]
+            mm.boxPosPrev[:] = mm.boxPos
+            mm.boxVelWorld[:] = 0.0
         st = mm.state_name()
         if self._mm_prev == 'PLACE' and st == 'LOCOMOTION':
             self.place_done = True
