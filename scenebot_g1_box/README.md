@@ -103,6 +103,34 @@ motionmatching-g1-shelf).
 --arm-gain 4` because the OmniRetarget palms hover 4-8 cm off the box faces;
 see the git history of this README for that sweep.)
 
+### run_mm_interactive.py — drive the physical robot with the keyboard
+
+The same pipeline, interactive: a GLFW window shows the physics scene and
+the keyboard steers the REFERENCE matcher live (open loop; the policy
+follows through the anchor-error observation). The reference stream runs
+only 2 frames ahead of the playhead (the scripted runner buffers 0.4 s),
+so key response is immediate.
+
+```bash
+~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_interactive.py             # grasp (default)
+~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_interactive.py --mode kinematic
+~/miniconda3/envs/mm-g1-sonic/bin/python run_mm_interactive.py --script    # headless regression
+```
+
+WASD moves (camera-relative, Shift = walk pace), arrows face, B walks over
+and picks up / sets down, T toggles the gizmos (green route, red command
+taps, contact prompts), Esc quits. Needs a display; `--script` replays a
+fixed timeline headlessly instead (settle, B, carry-walk 3 s, B, retreat)
+and is the regression test — it also exercises carry-walking, which the
+scripted runner never does. No reset key: restart the script.
+
+Building this exposed an approach bug: the reference used to stop hard at
+the stance, and the physical robot (which lags decelerations) overshot and
+kicked the box away before the squat — worst at the short stream margin
+(0.53 m kick). The move-to-pick endgame now brakes earlier and arrives
+slower (cap 0.55 m/s, release at 0.18 m), and the full grasp sequence
+succeeds at every margin.
+
 ### stress_single.py — dynamic-box envelope of the single pick
 
 Sweeps the PHYSICAL box's size and mass through the full grasp sequence
@@ -110,22 +138,25 @@ Sweeps the PHYSICAL box's size and mass through the full grasp sequence
 in `out/stress_single/results.json`, one 640x360 video per run with the
 verdict in the filename, figures + table from `stress_single_plots.py`.
 Success = picked, carried, set down FLAT at rest height, no fall, walked
-away. Measured envelope (base 0.30 x 0.20 x 0.30 m, 0.1 kg):
+away. Measured envelope (base 0.30 x 0.20 x 0.30 m, 0.1 kg; 25/36 runs,
+after the softened approach endgame):
 
-- **scale**: 0.8-1.0x succeed (and 1.4x, jaggedly); 0.5-0.6x are below the
-  hands' closing width, 1.2x and 1.6x never grip
-- **mass**: 0.1-3 kg carried -- the box rides lower in the hands as it gets
-  heavier (max box z 0.93 -> 0.66 m); 5 kg cannot be lifted
+- **scale**: 0.8x-1.6x ALL succeed; 0.5-0.6x are below the hands' closing
+  width and never grip
+- **mass**: 0.1-2 kg carried reliably -- the box rides lower in the hands
+  as it gets heavier (max box z ~1.0 -> 0.65 m); 3 kg is the edge (flips
+  between success and a fall across runs of nearby configs); 5 kg fails
 - **grip width** (y, the hands close on +-y): 0.15-0.40 m fine; 0.10 m
   lifts but slips out mid-carry
-- **height**: 0.2-0.3 m fine; 0.1 m slips out mid-carry, 0.5 m lifts but
-  tips at set-down (rests higher than the reference box), 0.7 m never grips
-- **depth** (x, toward the robot): only the data's 0.30 m works
-- **size x mass**: 0.8x and 1.0x boxes carry up to 2-3 kg; 1.2x mostly
-  fails at any mass
+- **height**: 0.1-0.3 m fine; 0.5 m lifts but tips at set-down (rests
+  higher than the reference box); 0.7 m topples the robot
+- **depth** (x, toward the robot): 0.30-0.50 m works; 0.10-0.20 m puts the
+  faces where the hands never land
+- **size x mass**: 1.0x and 1.2x boxes carry up to 2 kg; the 0.8x box gets
+  marginal above 0.5 kg (carried low, occasionally not walked away from)
 
-Contact-rich and jagged like the earlier sweeps: neighbouring configs can
-flip the outcome (1.2x fails while 1.4x succeeds).
+Still contact-rich at the edges: configs near a boundary flip outcome
+between otherwise-identical runs.
 
 ### Grip closed loop (grasp with a ref mode)
 

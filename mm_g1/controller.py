@@ -314,16 +314,18 @@ class MotionMatcher:
             self.on_rail = False
 
         face = np.array([rail[0], rail[1], 0.0])
-        if stance_d < 0.6:
+        if stance_d < 0.8:
             # Endgame: servo straight at the stance (backward if overshot), facing
-            # down the rail, and stop commanding inside the hold radius. The old
-            # commander's proven profile: clip(1.4 d, 0.35, 0.7) escapes the
-            # slow-walk dead zone but arrives slow enough to settle in place.
+            # down the rail, and stop commanding well outside the stance so the
+            # reference coasts to rest ON it. The floor 0.35 escapes the slow-walk
+            # dead zone; the cap keeps arrival momentum low -- a tracking policy
+            # lags decelerations, and a fast reference stop makes the physical
+            # robot overshoot into the box (its feet kick it away).
             self.route_pts = [self.rootPos[0:2].copy(), self.stance_xy.copy()]
             vel = np.zeros(3)
-            if stance_d > 0.10:
+            if stance_d > 0.18:
                 vel[0:2] = -rel / stance_d * float(
-                    np.clip(1.4 * stance_d, 0.35, 0.7))
+                    np.clip(1.2 * stance_d, 0.35, 0.55))
             return vel, face
 
         route = self._route_points()
