@@ -87,38 +87,62 @@ def build_library(clips=None, out=C.LIB_PATH):
     # at N=4) so the box can be picked/carried/placed at any facing (see _yaw_box_pose). Each
     # concrete entry is (name, robot_qpos, kind, box_pose) where box_pose is None for non-box clips.
     box_clips = _box_clip_names()
+    # Each entry is (name, robot_qpos, kind, box_pose, skill, attach, contact); the last
+    # three are None for clips segmented here (loco + OmniRetarget) and explicit for the
+    # baked SceneBot pick/drop.
     loaded = []
     for name in clips:                               # locomotion (walk / run / stumble)
         q = _load_clip(name)
-        loaded.append((name, q, "loco", None))
+        loaded.append((name, q, "loco", None, None, None, None))
         if C.MIRROR:
-            loaded.append((name + "_mirror", model.mirror_qpos(q), "loco", None))
+            loaded.append((name + "_mirror", model.mirror_qpos(q), "loco",
+                           None, None, None, None))
     folds = max(1, C.BOX_ROT_FOLDS)
     for name in box_clips:                            # OmniRetarget pick/carry/place clips
         robot_q, box_pose = _load_box_npz(name)
         for k in range(folds):                        # N-fold box-orientation augmentation
             bp = box_pose if k == 0 else _yaw_box_pose(box_pose, k * 2.0 * np.pi / folds)
             tag = name if k == 0 else f"{name}_rot{k}"
-            loaded.append((tag, robot_q, "box", bp))
+            loaded.append((tag, robot_q, "box", bp, None, None, None))
+    if C.SCENEBOT_PICK:                               # the single SceneBot pick / drop
+        from . import scenebot_pick
+        sb_folds = max(1, C.SCENEBOT_ROT_FOLDS)
+        for name, q, bp, ct, at, code in scenebot_pick.build():
+            sk = np.full(len(q), code, np.int32)
+            for k in range(sb_folds):
+                bpk = bp if k == 0 else _yaw_box_pose(bp, k * 2.0 * np.pi / sb_folds)
+                tag = name if k == 0 else f"{name}_rot{k}"
+                loaded.append((tag, q, "scenebot", bpk, sk, at, ct))
 
     qpos, clip_id, frame_in_clip, lengths, names = [], [], [], [], []
-    skill, box_pose_all, box_attach = [], [], []
+    skill, box_pose_all, box_attach, contact_all = [], [], [], []
     n_box = 0
-    for cid, (name, q, kind, bpose) in enumerate(loaded):
+    for cid, (name, q, kind, bpose, sk, at, ct) in enumerate(loaded):
         n = len(q)
         if kind == "box":
             sk, at, _info = boxes.segment_phases(bpose[:, 0:3])
+            if C.SCENEBOT_PICK:                      # OmniRetarget contributes carry only
+                sk = np.where(np.isin(sk, [C.SKILL_PICK, C.SKILL_PLACE]),
+                              C.SKILL_DISABLED, sk).astype(np.int32)
+            bp = bpose
+            n_box += 1
+        elif kind == "scenebot":
             bp = bpose
             n_box += 1
         else:                                        # locomotion
             sk = np.zeros(n, np.int32)
             bp, at = np.tile(np.r_[0, 0, 0, IDENTITY_QUAT], (n, 1)), np.zeros(n, bool)
+        if ct is None:
+            # No recorded labels: wrists prompt object contact while the box is
+            # attached (carry), feet/pelvis stay zero like the demo's plain walking.
+            ct = np.zeros((n, 5))
+            ct[:, 2] = ct[:, 3] = at.astype(float)
         qpos.append(q); skill.append(sk)
-        box_pose_all.append(bp); box_attach.append(at)
+        box_pose_all.append(bp); box_attach.append(at); contact_all.append(ct)
         clip_id.append(np.full(n, cid))
         frame_in_clip.append(np.arange(n))
         lengths.append(n); names.append(name)
-        tag = f", {kind}" if kind == "box" else ""
+        tag = f", {kind}" if kind != "loco" else ""
         print(f"  [{cid}] {name}: {n} frames{tag}")
 
     qpos = np.concatenate(qpos)
@@ -137,6 +161,7 @@ def build_library(clips=None, out=C.LIB_PATH):
         skill=np.concatenate(skill).astype(np.int32),
         box_pose=np.concatenate(box_pose_all).astype(np.float32),
         box_attach=np.concatenate(box_attach),
+        contact=np.concatenate(contact_all).astype(np.float32),
         lib_version=np.array(C.LIB_VERSION),
     )
     print(f"Saved library: {qpos.shape[0]} frames, {len(loaded)} clips "

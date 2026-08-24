@@ -31,6 +31,13 @@ _SPHERE_R = 0.05        # GenoView DrawSphere radius
 _STICK_LEN = 0.25       # GenoView facing-stick length
 _STICK_W = 0.012        # facing-stick / connector radius
 
+# Approach (move-to-pick) gizmo colors: green route + stance marker, blue walk
+# command, yellow face command (as in motionmatching-g1-shelf).
+_MARK_RGBA = np.array([0.15, 0.8, 0.25, 0.9], np.float32)
+_CMD_VEL_RGBA = np.array([0.2, 0.45, 0.95, 1.0], np.float32)
+_CMD_FACE_RGBA = np.array([0.95, 0.85, 0.15, 1.0], np.float32)
+_MARK_R = 0.22
+
 
 # Movement keys (WASD = travel) and facing keys (arrows = independent facing) -> held set.
 _MOVE_KEYS = {glfw.KEY_W, glfw.KEY_A, glfw.KEY_S, glfw.KEY_D}
@@ -193,6 +200,9 @@ class InteractiveViewer:
                                    mujoco.mjtCatBit.mjCAT_ALL, self.scene)
             if self.show_traj:
                 self._draw_command()
+                if self.matcher.state_name() == "MOVE-TO-PICK":
+                    self._draw_approach()
+                    self._draw_pick_marker()
             mujoco.mjr_render(viewport, self.scene, self.ctx)
             self._overlay(viewport, self._speed)
 
@@ -209,6 +219,41 @@ class InteractiveViewer:
             self._add_sphere(base, _SPHERE_R)
             self._add_stick(base, base + _STICK_LEN * np.array([dx, dy, 0.0]))
 
+    # --- approach gizmo: how move-to-pick makes its command ------------------
+    # green line = the planned route (through the way-in point behind the stance),
+    # blue arrow = commanded velocity, yellow tick = commanded facing. The red
+    # taps are sampled along the same route, so they lie on the green line.
+    def _draw_approach(self):
+        m = self.matcher
+        root = np.array([m.rootPos[0], m.rootPos[1], _TRAJ_Z])
+        pts = m.route_pts
+        for a, b in zip(pts[:-1], pts[1:]):
+            self._add_stick(np.array([a[0], a[1], _TRAJ_Z]),
+                            np.array([b[0], b[1], _TRAJ_Z]), _MARK_RGBA)
+        vel = np.array([m.cmdVel[0], m.cmdVel[1], 0.0])
+        if np.linalg.norm(vel) > 1e-3:
+            tip = root + 0.5 * vel
+            self._add_stick(root, tip, _CMD_VEL_RGBA)
+            self._add_sphere(tip, 0.03, _CMD_VEL_RGBA)
+        face = np.array([m.cmdFace[0], m.cmdFace[1], 0.0])
+        if np.linalg.norm(face) > 1e-3:
+            self._add_stick(root + [0, 0, 0.1],
+                            root + [0, 0, 0.1] + 0.3 * face, _CMD_FACE_RGBA)
+
+    # --- pick stance marker: a disc on the floor + a heading tick ------------
+    def _draw_pick_marker(self):
+        m = self.matcher
+        center = np.array([m.stance_xy[0], m.stance_xy[1], 0.006])
+        g = self._next_geom()
+        if g is None:
+            return
+        mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_CYLINDER,
+                            np.array([_MARK_R, 0.004, 0.0]), center,
+                            np.eye(3).flatten(), _MARK_RGBA)
+        tick = center + _MARK_R * 1.3 * np.array(
+            [np.cos(m.stance_yaw), np.sin(m.stance_yaw), 0.0])
+        self._add_stick(center, tick, _MARK_RGBA)
+
     def _next_geom(self):
         if self.scene.ngeom >= self.scene.maxgeom:
             return None
@@ -216,20 +261,20 @@ class InteractiveViewer:
         self.scene.ngeom += 1
         return g
 
-    def _add_sphere(self, pos, radius):
+    def _add_sphere(self, pos, radius, rgba=_TRAJ_RGBA):
         g = self._next_geom()
         if g is None:
             return
         mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_SPHERE,
                             np.array([radius, 0.0, 0.0]), np.asarray(pos, float),
-                            np.eye(3).flatten(), _TRAJ_RGBA)
+                            np.eye(3).flatten(), rgba)
 
-    def _add_stick(self, p0, p1):
+    def _add_stick(self, p0, p1, rgba=_TRAJ_RGBA):
         g = self._next_geom()
         if g is None:
             return
         mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_CAPSULE,
-                            np.zeros(3), np.zeros(3), np.eye(3).flatten(), _TRAJ_RGBA)
+                            np.zeros(3), np.zeros(3), np.eye(3).flatten(), rgba)
         mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_CAPSULE, _STICK_W,
                              np.asarray(p0, float), np.asarray(p1, float))
 
@@ -241,7 +286,9 @@ class InteractiveViewer:
             head = ("RUN" if speed > C.MAX_SPEED * (1 + C.WALK_SCALE) / 2 else
                     ("WALK" if speed > 1e-3 else "IDLE"))
             if self.has_box:
-                head += "  [B: pick up]" if m.near_box else "  (walk to the box, then B)"
+                head += "  [B: walk over + pick up]"
+        elif state == "MOVE-TO-PICK":
+            head = "WALKING TO THE BOX  [B: cancel]"
         else:
             head = state
             if state == "CARRY":

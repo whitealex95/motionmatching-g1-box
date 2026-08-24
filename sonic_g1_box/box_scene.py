@@ -32,7 +32,9 @@ GHOST_CENTER, GHOST_MAT, GHOST_HALF = _carton_obb()
 
 
 def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
-                box_scale=1.0):
+                box_scale=1.0, box_type='carton', box_half=(0.15, 0.10, 0.15)):
+    """box_type 'carton' = the OmniRetarget medicine-box mesh; 'scenebot' = the
+    SceneBot demo's plain free box with `box_half` half extents."""
     spec = mujoco.MjSpec.from_file(scene_xml_path)
 
     # SONIC's rubber hands are visual-only: bolt a contact pad onto each
@@ -50,27 +52,40 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
             wrist.add_site(name=f'{side}_palm', pos=[0.10, ysgn * 0.007, 0.0],
                            size=[0.012] * 3, rgba=[0.1, 0.9, 0.1, 0.35])
 
-    tex = spec.add_texture()
-    tex.name = 'box_tex'
-    tex.type = mujoco.mjtTexture.mjTEXTURE_2D
-    tex.file = BOX_TEX
-    mat = spec.add_material()
-    mat.name = 'box_mat'
-    mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = 'box_tex'
-    mat.texuniform = False
-    # box_scale shrinks/grows only the physical carton (about the mesh
-    # origin ~= its centre; UVs ride along, so the texture is unchanged).
-    # The clips' box pose and the reference-box ghost stay data-sized.
-    mesh = spec.add_mesh(name='box_mesh', file=BOX_MESH)
-    mesh.scale = [float(box_scale)] * 3
-
-    box = spec.worldbody.add_body(name='largebox', pos=[1.6, 0.0, 0.19])
-    box.add_joint(name='box_joint', type=mujoco.mjtJoint.mjJNT_FREE)
     collide = mode != 'kinematic'
-    box.add_geom(name='box_geom', type=mujoco.mjtGeom.mjGEOM_MESH,
-                 meshname='box_mesh', material='box_mat',
-                 mass=float(box_mass), friction=PALM_FRICTION,
-                 contype=1 if collide else 0, conaffinity=1 if collide else 0)
+    if box_type == 'carton':
+        tex = spec.add_texture()
+        tex.name = 'box_tex'
+        tex.type = mujoco.mjtTexture.mjTEXTURE_2D
+        tex.file = BOX_TEX
+        mat = spec.add_material()
+        mat.name = 'box_mat'
+        mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = 'box_tex'
+        mat.texuniform = False
+        # box_scale shrinks/grows only the physical carton (about the mesh
+        # origin ~= its centre; UVs ride along, so the texture is unchanged).
+        # The clips' box pose and the reference-box ghost stay data-sized.
+        mesh = spec.add_mesh(name='box_mesh', file=BOX_MESH)
+        mesh.scale = [float(box_scale)] * 3
+        box = spec.worldbody.add_body(name='largebox', pos=[1.6, 0.0, 0.19])
+        box.add_joint(name='box_joint', type=mujoco.mjtJoint.mjJNT_FREE)
+        box.add_geom(name='box_geom', type=mujoco.mjtGeom.mjGEOM_MESH,
+                     meshname='box_mesh', material='box_mat',
+                     mass=float(box_mass), friction=PALM_FRICTION,
+                     contype=1 if collide else 0,
+                     conaffinity=1 if collide else 0)
+        ghost = (GHOST_CENTER, GHOST_MAT, GHOST_HALF)
+    else:                                            # scenebot free box
+        half = np.array(box_half, float) * float(box_scale)
+        box = spec.worldbody.add_body(name='largebox',
+                                      pos=[1.6, 0.0, float(half[2])])
+        box.add_joint(name='box_joint', type=mujoco.mjtJoint.mjJNT_FREE)
+        box.add_geom(name='box_geom', type=mujoco.mjtGeom.mjGEOM_BOX,
+                     size=half, rgba=[0.82, 0.52, 0.22, 1.0],
+                     mass=float(box_mass), friction=PALM_FRICTION,
+                     contype=1 if collide else 0,
+                     conaffinity=1 if collide else 0)
+        ghost = (np.zeros(3), np.eye(3), np.array(box_half, float))
 
     if mode == 'weld':
         eq = spec.add_equality()
@@ -94,5 +109,6 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
         box_body=model.body('largebox').id,
         palm_sites=[model.site('left_palm').id, model.site('right_palm').id],
         weld_eq=model.equality('box_weld').id if mode == 'weld' else None,
+        ghost=ghost,                      # (centre, axes, half extents) in box frame
     )
     return model, ids

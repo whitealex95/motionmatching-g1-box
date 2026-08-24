@@ -90,16 +90,21 @@ PALM_REACH_DIST = 0.30
 class MMPacketAdapter:
     """One SceneBot stream packet per 50 Hz reference frame.
 
-    Contact labels are a pure function of the frame -- its FK pose, box
-    pose, and recorded matcher meta -- so every frame carries a fixed
-    label, like SceneBot's per-clip .contact files.
+    Contact labels come from the library's baked per-frame labels when it
+    carries them (lib['contact']: the SceneBot demo's own labels on the
+    pick/drop frames, wrists-while-attached on the carry frames); otherwise
+    they are synthesized from the frame's FK pose and box pose, so every
+    frame carries a fixed label, like SceneBot's per-clip .contact files.
     """
 
-    def __init__(self, motion, model, q_at, rq):
+    def __init__(self, motion, model, q_at, rq, contact=None, ghost=None):
         self.motion = motion
         self.model = model
         self.q_at = q_at
         self.rq = rq
+        self.contact = contact               # (N, 5) baked labels or None
+        self.ghost = ghost if ghost is not None else (
+            box_scene.GHOST_CENTER, box_scene.GHOST_MAT, box_scene.GHOST_HALF)
         self.fk = mujoco.MjData(model)
         self.body_ids = [model.body(n).id for n in VR_BODY_NAMES]
         self.pelvis_id = model.body('pelvis').id
@@ -119,14 +124,19 @@ class MMPacketAdapter:
         mujoco.mj_kinematics(self.model, d)
 
     def _palm_box_gap(self, site, box_pos, box_quat_wxyz):
+        gc, gm, gh = self.ghost
         mat = np.empty(9)
         mujoco.mju_quat2Mat(mat, np.asarray(box_quat_wxyz, float))
         local = mat.reshape(3, 3).T @ (self.fk.site_xpos[site] - box_pos)
-        obb = box_scene.GHOST_MAT.T @ (local - box_scene.GHOST_CENTER)
-        outside = np.maximum(np.abs(obb) - box_scene.GHOST_HALF, 0.0)
+        obb = gm.T @ (local - gc)
+        outside = np.maximum(np.abs(obb) - gh, 0.0)
         return float(np.linalg.norm(outside))
 
-    def _label(self, q, state, held):
+    def _label(self, f, q, state, held):
+        if self.contact is not None:
+            # inherited labels, indexed by the matcher frame recorded when
+            # this stream frame was buffered
+            return self.contact[self.motion.gframe_at(f)].copy()
         # feet from the frame's foot-site heights, wrists from palm
         # distance to the reference box surface (held forces them on);
         # feet only prompted during skill phases, like the SceneBot demo
@@ -163,7 +173,7 @@ class MMPacketAdapter:
                 quat_mul_xyzw(root_inv, body_q))
 
         _, _, state, held = mo.meta_at(f)
-        mask = self._label(q, state, held)
+        mask = self._label(f, q, state, held)
 
         return {
             'lower_cmd': lower_cmd,
@@ -176,7 +186,6 @@ class MMPacketAdapter:
 
 
 class Demo:
-    STAND_DIST = 0.7
     WALK_AWAY_DIST = 1.3
 
     def __init__(self, args):
@@ -185,7 +194,9 @@ class Demo:
         self.model, self.ids = box_scene.build_model(
             os.path.join(P.ASSET_DIR, 'scene_robot_only.xml'), self.mode,
             box_mass=args.box_mass, off_w=args.width, off_h=args.height,
-            box_scale=args.box_scale)
+            box_scale=args.box_scale,
+            box_type='scenebot' if C.SCENEBOT_PICK else 'carton',
+            box_half=C.BOX_HALF if C.SCENEBOT_PICK else (0.15, 0.10, 0.15))
         self.model.opt.timestep = P.SIM_DT
         self.data = mujoco.MjData(self.model)
         m = self.model
@@ -235,8 +246,11 @@ class Demo:
         self.next_replan = 0.0
 
         self.motion = MMMotion(self.matcher, self._command)
-        self.adapter = MMPacketAdapter(self.motion, self.model, self.q_at,
-                                       self.rq)
+        self.adapter = MMPacketAdapter(
+            self.motion, self.model, self.q_at, self.rq,
+            contact=lib['contact'].astype(np.float32)
+            if 'contact' in lib else None,
+            ghost=self.ids['ghost'])
         self.policy = ScenebotPolicy()
 
         self.seeder = self.anchor = None
@@ -328,7 +342,9 @@ class Demo:
                 self.place_done = True
                 self._place_time = self.t
         self._mm_prev = st
-        if st in ('PICK', 'PLACE'):
+        if st in ('PICK', 'PLACE', 'MOVE-TO-PICK'):
+            # move-to-pick steers itself (the approach heuristics); pick and
+            # place are ridden clips
             return np.zeros(3), np.zeros(3)
         if st == 'CARRY':
             if (self.carry_start is not None
@@ -351,19 +367,14 @@ class Demo:
                 return np.zeros(3), face
             return 0.35 * face, face
 
+        # LOCOMOTION before the pick: the matcher's own move-to-pick state
+        # walks the approach route, so B is simply pressed once settled (and
+        # again after each grip-abort cooldown).
         to_box = box_xy - pos_xy
         dist = float(np.linalg.norm(to_box))
-        u_appr = box_xy - self.start_xy
-        u_appr /= max(float(np.linalg.norm(u_appr)), 1e-6)
-        spot = box_xy - self.STAND_DIST * u_appr
-        to_spot = spot - pos_xy
-        far = float(np.linalg.norm(to_spot))
         face = np.array([to_box[0] / max(dist, 1e-6),
                          to_box[1] / max(dist, 1e-6), 0.0])
-        if far > 0.06 and dist > self.STAND_DIST + 0.05:
-            cmd_speed = float(np.clip(1.4 * far, 0.35, 0.7))
-            return np.array([*(to_spot / far * cmd_speed), 0.0]), face
-        if speed < 0.15 and self.t >= self._retry_after:
+        if self.t >= self._retry_after:
             mm.trigger_box()
             self.pick_triggered = True
         return np.zeros(3), face
@@ -471,12 +482,15 @@ class Demo:
         # squat/stand-up is otherwise too fast for the policy. Only while
         # the reference is near-stationary -- slowing while it translates
         # makes the full-speed leg commands fight the half-speed anchor.
+        # With SCENEBOT_PICK the baked reference already plays at the demo's
+        # own rates (half-speed pick, full-speed reversed drop): no slowing.
         _, _, state, _ = self.motion.meta_at(f)
         ref_z = float(self.motion.qpos[f][2])
         nxt = self.motion.qpos[min(f + 1, self.motion.timesteps - 1)]
         ref_speed = float(np.linalg.norm(nxt[0:2] - self.motion.qpos[f][0:2])
                           * POLICY_FPS)
-        slow = ((state in ('PICK', 'PLACE') or ref_z < 0.68)
+        slow = (not C.SCENEBOT_PICK
+                and (state in ('PICK', 'PLACE') or ref_z < 0.68)
                 and ref_speed < 0.25)
         self.frame_f += 0.5 if slow else 1.0
         self.frame = int(self.frame_f)
@@ -574,13 +588,13 @@ class Demo:
                                  np.asarray(a, float), np.asarray(c, float))
             scn.ngeom += 1
         if self.mode != 'kinematic' and scn.ngeom < scn.maxgeom:
+            gc, gmat, gh = self.ids['ghost']
             gm = scn.geoms[scn.ngeom]
             mat = np.empty(9)
             mujoco.mju_quat2Mat(mat, np.asarray(gq[39:43], float))
-            R = mat.reshape(3, 3) @ box_scene.GHOST_MAT
-            pos = gq[36:39] + mat.reshape(3, 3) @ box_scene.GHOST_CENTER
-            mujoco.mjv_initGeom(gm, mujoco.mjtGeom.mjGEOM_BOX,
-                                box_scene.GHOST_HALF,
+            R = mat.reshape(3, 3) @ gmat
+            pos = gq[36:39] + mat.reshape(3, 3) @ gc
+            mujoco.mjv_initGeom(gm, mujoco.mjtGeom.mjGEOM_BOX, gh,
                                 np.asarray(pos, float), R.ravel(), GHOST_RGBA)
             scn.ngeom += 1
 
@@ -690,7 +704,8 @@ def main():
     ap.add_argument('--ref-mode', choices=['none', *RM.MODES], default='none')
     ap.add_argument('--anchor-gain', type=float, default=0.20)
     ap.add_argument('--replan-gain', type=float, default=0.738)
-    ap.add_argument('--box-mass', type=float, default=0.5)
+    ap.add_argument('--box-mass', type=float,
+                    default=0.1 if C.SCENEBOT_PICK else 0.5)
     ap.add_argument('--box-scale', type=float, default=1.0,
                     help='scale the physical carton mesh only (texture and '
                          'reference motion unchanged)')

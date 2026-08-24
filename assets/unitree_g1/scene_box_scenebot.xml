@@ -1,0 +1,31 @@
+<mujoco model="g1_box_scenebot_scene">
+  <!-- G1 + the SceneBot demo's free box (0.3 x 0.2 x 0.3 m) for kinematic playback of
+       the single-pick branch. The box is a free body right after the robot's 36 qpos:
+       qpos[36:39] position, qpos[39:43] quaternion (wxyz). No collision (no physics). -->
+  <include file="g1.xml"/>
+
+  <statistic center="0 0 0.8" extent="1.6"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.28 0.26 0.24 1"/>
+    <global azimuth="120" elevation="-20" offwidth="1600" offheight="1600"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.56 0.52 0.47" rgb2="0.08 0.07 0.06" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.34 0.31 0.28"
+             rgb2="0.22 0.20 0.18" markrgb="0.72 0.69 0.64" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 4" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+    <body name="largebox" pos="1.6 0 0.15">
+      <freejoint name="box_joint"/>
+      <geom type="box" size="0.15 0.10 0.15" contype="0" conaffinity="0"
+            rgba="0.82 0.52 0.22 1"/>
+    </body>
+  </worldbody>
+</mujoco>

@@ -24,10 +24,11 @@ scroll           zoom
 Esc              quit
 ```
 
-A box spawns a short distance in front of the character. **Walk up to it and press B** to
-pick it up; the robot plays a `pick` clip and the box rides along in its hands. You are now
-**carrying** — move around (the box follows), then press **B** again to play a `place` clip
-and set the box back on the floor.
+A box spawns a short distance in front of the character. **Press B from anywhere**: the
+controller plans a walking route to the pick stance in front of the box (green line),
+walks it, settles, and rides the pick clip; the box then rides along in its hands. You are
+now **carrying** — move around (the box follows), then press **B** again to play the
+put-down and set the box back on the floor. B during the walk-over cancels it.
 
 A red **command gizmo** (à la GenoView's `DrawTrajectory`) is drawn on the ground: a
 sphere at each predicted future position with a short stick pointing in the predicted
@@ -36,18 +37,36 @@ press **T** to toggle it.
 
 ## Box manipulation (pick / carry / place)
 
-Each [OmniRetarget](https://github.com/) robot-object clip is one continuous *pick → carry
-→ place* sequence (the G1 lifts a large box off the floor, holds it, sets it down).
-`mm_g1/boxes.py` segments every clip into the three phases from the box-height trajectory
-and marks the interval over which the box is **attached** to the robot (lifted clear of the
-floor); before pick contact and after place release the box rests in the world, in between
-it rides the robot's gravity-aligned base frame.
+On this branch (`scenebot_g1_box_single`) the pick and the drop come from **one single
+motion**: the SceneBot web demo's squat pickup (clip 11 of the vendored motion graph,
+frames 0..120 at 50 Hz). The demo plays it at **half speed forward** for the pickup and
+the **same frames backward at full speed** for the put-down, and both playbacks are baked
+into the library exactly as played (`mm_g1/scenebot_pick.py`), resampled to 30 Hz,
+**together with the demo's own per-frame contact labels** (feet + wrists, `lib['contact']`).
+The clip has no box, so a box trajectory for the SceneBot free box (0.3 × 0.2 × 0.3 m) is
+synthesized: it rests where the clip's hands close (0.29 m ahead of the stance) and rides
+the wrist midpoint from that frame on. The [OmniRetarget](https://github.com/) robot-object
+clips contribute **only their carry frames** (their own pick/place phases are disabled);
+`mm_g1/boxes.py` still segments them and marks where the box is **attached**.
 
-A four-state machine drives it (`mm_g1/controller.py`):
+A state machine with a shelf-style approach drives it (`mm_g1/controller.py`):
 
 ```
-LOCOMOTION --B (near box)--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
+LOCOMOTION --B--> MOVE-TO-PICK (walk the planned route, settle) --> PICK (ride)
+    --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
 ```
+
+**MOVE-TO-PICK** (approach heuristics, ported from `motionmatching-g1-shelf`): B inverts
+the recorded stance-to-box offset at the LIVE box pose (the box's 2-fold symmetry gives
+two stance candidates; the nearer way-in point wins), plans a polyline route — straight to
+a way-in point 0.6 m behind the stance, a rounded corner, then in along the stance heading
+— and synthesizes the walk command from a look-ahead point on it, with the matcher's
+future trajectory taps read straight off the route. On the final leg the root is pinned to
+the rail (cross-track and yaw errors decay with a 1 s half-life); near the stance it
+servos to a stop, and the pick entry fires once the root has settled there. Unlike the
+shelf demo (which cuts into its clip at the stance crossing, still walking), the entry
+waits for a settled stop: the SceneBot tracking policy cannot follow an instant reference
+stop, and the demo's own sequence also settles before the squat.
 
 - **PICK** and **PLACE** are *ridden*: entered from the start of the
   phase by a nearest-neighbour match of the live pose **+ box pose**, then played to the

@@ -181,13 +181,16 @@ def build_db(lib):
     Wr, Wv = C.BOX_ROT_WEIGHT, C.BOX_VEL_WEIGHT
     pose = [(Xpos, 1.0), (Xvel, 1.0)]
     traj = [(XtrajPos, 1.0), (XtrajDir, 1.0)]
-    box = lambda wp: [(boxLocalPos, wp), (boxLocalAA, Wr), (boxLocalVel, Wv)]
+    box = lambda wp, wr=Wr: [(boxLocalPos, wp), (boxLocalAA, wr), (boxLocalVel, Wv)]
     # PICK and PLACE share the 24-D (pose + box, no trajectory) feature space but are SEPARATE
-    # databases, so pick can weight the box position more (PICK_BOX_POS_WEIGHT) than place.
+    # databases, so pick can weight the box position AND orientation more
+    # (PICK_BOX_POS_WEIGHT / PICK_BOX_ROT_WEIGHT) than place -- the entry is chosen mainly by
+    # where the box sits and which way it faces in the base frame.
     dbs = {
         "loco": make_db(pose + traj, masks["loco"]),                        # 27-D (unchanged)
         "carry": make_db(pose + traj + box(C.BOX_POS_WEIGHT), masks["carry"]),   # 36-D
-        "pick": make_db(pose + box(C.PICK_BOX_POS_WEIGHT), masks["pick"]),       # 24-D
+        "pick": make_db(pose + box(C.PICK_BOX_POS_WEIGHT,
+                                   C.PICK_BOX_ROT_WEIGHT), masks["pick"]),       # 24-D
         "place": make_db(pose + box(C.BOX_POS_WEIGHT), masks["place"]),          # 24-D
     }
     dbs = {k: dict(X=Xn, offset=off, scale=sc) for k, (Xn, off, sc) in dbs.items()}
