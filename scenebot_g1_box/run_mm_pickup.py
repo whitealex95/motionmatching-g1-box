@@ -226,6 +226,7 @@ class Demo:
         self.t = 0.0
         self.frame_f = 0.0
         self.frame = 0
+        self.margin = MARGIN          # stream frames kept ahead of the playhead
         self.carry_start = None
         self.place_done = False
         self.pick_triggered = False
@@ -356,7 +357,14 @@ class Demo:
         if self.place_done:
             away = pos_xy - box_xy
             n = float(np.linalg.norm(away))
-            u = away / max(n, 1e-6)
+            if n < 0.35:
+                # right after a place the robot stands ~0.29 m from the box,
+                # so the radial direction is noisy and the retreat can circle
+                # in place; back out along the approach rail instead
+                u = -np.array([np.cos(self.matcher.stance_yaw),
+                               np.sin(self.matcher.stance_yaw)])
+            else:
+                u = away / n
             face = np.array([u[0], u[1], 0.0])
             # stand up and settle before walking off; the place clip ends in
             # a deep squat and the policy needs a beat to recover
@@ -454,7 +462,7 @@ class Demo:
             if robot_time >= self.next_replan:
                 self._replan()
                 self.next_replan = robot_time + REPLAN_MM_TICKS / MM_FPS
-        self.motion.ensure(self.frame + MARGIN)
+        self.motion.ensure(self.frame + self.margin)
         if self.anchor is not None:
             self.anchor.record_applied()
         pkt = self.adapter.packet(self.frame)
@@ -638,8 +646,10 @@ class Demo:
         # a runaway counts as lost tracking
         tracked = self.max_xy_err < 0.9
         # genuine squats reach 0.42-0.61; snap-all's diluted pantomime
-        # stays >= 0.68 -- 0.65 separates the two clusters
-        squatted = self.min_root_z < 0.65
+        # stays >= 0.68 -- 0.65 separates the two clusters. Only kinematic
+        # mode needs this proxy: with a real box, the physical lift is the
+        # proof (a 0.9 m lift without a squat is impossible).
+        squatted = self.mode != 'kinematic' or self.min_root_z < 0.65
         lifted = (self.mode == 'kinematic'
                   or self.max_box_z > self.phys_rest_z + 0.25)
         box_z = float(d.qpos[self.bq + 2])
