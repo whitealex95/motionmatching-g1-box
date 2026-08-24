@@ -38,12 +38,15 @@ def _load_clip(name, data_dir=C.DATA_DIR, trim=None):
 
 
 def _box_clip_names(data_dir=C.BOX_DATA_DIR):
-    """Stems of the robot-object .npz clips to load (config BOX_CLIPS or every file)."""
+    """Stems of the robot-object .npz clips to load (config BOX_CLIPS or every file),
+    minus BOX_CLIPS_EXCLUDE."""
     if C.BOX_CLIPS != "all":
-        return [c for c in C.BOX_CLIPS
-                if os.path.exists(os.path.join(data_dir, c + ".npz"))]
-    return sorted(os.path.splitext(os.path.basename(p))[0]
-                  for p in glob.glob(os.path.join(data_dir, "*.npz")))
+        names = [c for c in C.BOX_CLIPS
+                 if os.path.exists(os.path.join(data_dir, c + ".npz"))]
+    else:
+        names = sorted(os.path.splitext(os.path.basename(p))[0]
+                       for p in glob.glob(os.path.join(data_dir, "*.npz")))
+    return [c for c in names if c not in C.BOX_CLIPS_EXCLUDE]
 
 
 def _load_box_npz(name, data_dir=C.BOX_DATA_DIR):
