@@ -1,6 +1,6 @@
 """Motion matching + SONIC tracking for the box pick/carry/place task.
 
-Shared machinery for the three variants (run_kinematic / run_weld / run_grasp):
+Shared machinery for the two variants (run_kinematic / run_grasp):
 the mm_g1 matcher streamed as a 50 Hz reference (mm_stream.MMMotion), the SONIC
 policy tracking it in MuJoCo, a scripted commander that walks to the box, picks
 it up, carries, places, and walks away, plus the five reference-correction
@@ -45,7 +45,7 @@ _EYE3 = np.eye(3).ravel()
 
 
 class Demo:
-    MODE = None                   # 'kinematic' | 'weld' | 'grasp'
+    MODE = None                   # 'kinematic' | 'grasp'
 
     STAND_DIST = 0.7              # stand this far from the box centre to pick
     WALK_AWAY_DIST = 1.3
@@ -73,7 +73,6 @@ class Demo:
         self.matcher = MotionMatcher(lib)
 
         self.t = 0.0
-        self.attached = False
         self.lift_seen = False
         self.last_up_time = None
         self.carry_start = None
@@ -374,7 +373,7 @@ class Demo:
                                  np.asarray(a, float), np.asarray(c, float))
             scn.ngeom += 1
         if self.MODE != 'kinematic' and scn.ngeom < scn.maxgeom:
-            # the reference box, so weld/grasp tracking error is visible;
+            # the reference box, so grasp tracking error is visible;
             # the carton is tilted in its local frame, so compose its OBB
             gm = scn.geoms[scn.ngeom]
             mat = np.empty(9)
@@ -399,8 +398,7 @@ class Demo:
         body = (f'clip [{cid}]: {clip}\n'
                 f'frame: {fic}/{length - 1}  (tracked ref frame {f})\n'
                 f'box: z {box_z:.2f} m'
-                f'  ref-{"held" if held else "resting"}'
-                + (f'  attached' if self.attached else '') + '\n'
+                f'  ref-{"held" if held else "resting"}\n'
                 f'ref-mode: {self.ref_mode}')
         return title, body
 

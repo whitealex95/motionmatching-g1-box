@@ -19,13 +19,10 @@ during pick/place, wrists while reaching or holding).
 Box variants:
   kinematic (default) -- box has no collision, teleported to the reference
       pose each substep; tests pure motion tracking.
-  weld -- free carton, welded to the pelvis at the reference box-in-pelvis
-      pose while held.
-  grasp -- free carton, hand friction only, like sonic_g1_box/run_grasp.
-      The data's palms hover 4-8 cm off the box faces, so it needs
-      --box-scale 0.85 --squeeze 0.5 --arm-gain 4 (see README).
+  grasp -- free box, hand friction only. The SceneBot pick clip fits its
+      own box, so no squeeze or arm-gain is needed.
 
-With a ref mode, weld/grasp also run demo_base's grip closed loop: the
+With a ref mode, grasp also runs demo_base's grip closed loop: the
 physical box pose is the matcher's belief while loose, a failed grip
 (reference box up, physical box down) aborts the matcher's hold so the
 pick retries after --retry-cooldown, and a placement only counts if the
@@ -36,6 +33,7 @@ policy's training distribution; success is an empirical question this
 script answers with exit code 0/1 and tracking stats.
 """
 import argparse
+import json
 import os
 import sys
 import time
@@ -59,7 +57,6 @@ from scenebot_tracking.rotations import (wxyz_to_xyzw, xyzw_to_wxyz,
                                          quat_rotate_xyzw)
 
 from mm_g1 import config as C
-from mm_g1 import quat as MQ
 from mm_g1.data import load_library
 from mm_g1.controller import MotionMatcher
 
@@ -196,7 +193,10 @@ class Demo:
             box_mass=args.box_mass, off_w=args.width, off_h=args.height,
             box_scale=args.box_scale,
             box_type='scenebot' if C.SCENEBOT_PICK else 'carton',
-            box_half=C.BOX_HALF if C.SCENEBOT_PICK else (0.15, 0.10, 0.15))
+            box_half=tuple(args.box_size))
+        # The PHYSICAL box's resting height (the reference box keeps the
+        # data's C.BOX_REST_Z regardless of the swept physical size).
+        self.phys_rest_z = float(args.box_size[2]) * args.box_scale
         self.model.opt.timestep = P.SIM_DT
         self.data = mujoco.MjData(self.model)
         m = self.model
@@ -231,7 +231,6 @@ class Demo:
         self.pick_triggered = False
         self._mm_prev = None
         self._place_time = 0.0
-        self.attached = False
         self._prev_mm_held = False
         self._hold_start_f = np.inf
         self._last_grip_abort = -1.0
@@ -274,9 +273,9 @@ class Demo:
         d.qpos[self.rq + 2] = 0.80
         d.qpos[self.q_at] = q0[7:36]
         d.qpos[self.bq:self.bq + 7] = q0[36:43]
-        # a scaled box rests lower/higher than the data's box; drop it just
+        # a resized box rests lower/higher than the data's box; drop it just
         # above its own rest height and let it settle during the settle phase
-        d.qpos[self.bq + 2] = q0[38] * args.box_scale + 0.005
+        d.qpos[self.bq + 2] = self.phys_rest_z + 0.005
         mujoco.mj_forward(self.model, d)
         self.start_xy = q0[0:2].copy()
 
@@ -338,7 +337,7 @@ class Demo:
             closed_loop = (self.mode != 'kinematic'
                            and self.ref_mode != 'none')
             if (not closed_loop or self._hold_peak
-                    > C.BOX_REST_Z * self.args.box_scale + 0.25):
+                    > self.phys_rest_z + 0.25):
                 self.place_done = True
                 self._place_time = self.t
         self._mm_prev = st
@@ -365,7 +364,9 @@ class Demo:
                 return np.zeros(3), face
             if n > self.WALK_AWAY_DIST:
                 return np.zeros(3), face
-            return 0.35 * face, face
+            # 0.35 m/s sits in the slow-walk dead zone and the retreat stalls
+            # short of WALK_AWAY_DIST; 0.6 walks off reliably
+            return 0.6 * face, face
 
         # LOCOMOTION before the pick: the matcher's own move-to-pick state
         # walks the approach route, so B is simply pressed once settled (and
@@ -405,8 +406,7 @@ class Demo:
         ref_z = float(self.motion.qpos[f][38])
         phys_z = float(self.data.qpos[self.bq + 2])
         if (ref_held and ref_z > C.BOX_REST_Z + GRIP_REF_DZ
-                and phys_z < C.BOX_REST_Z * self.args.box_scale
-                + GRIP_PHYS_DZ):
+                and phys_z < self.phys_rest_z + GRIP_PHYS_DZ):
             mm.box_locked = 0
             mm.box_pending = False
             mm.state = C.SKILL_LOCO
@@ -466,8 +466,6 @@ class Demo:
             target = target.copy()
             target[16] -= self.args.squeeze     # left shoulder roll inward
             target[23] += self.args.squeeze     # right shoulder roll inward
-        if self.mode == 'weld':
-            self._sync_weld(f)
         for _ in range(P.DECIMATION):
             tau = (self.kps * (target - d.qpos[self.q_at])
                    - self.kds * d.qvel[self.dq_at])
@@ -511,32 +509,6 @@ class Demo:
         if tracked_held:
             self._hold_peak = max(self._hold_peak, box_z)
         self._prev_tracked_held = tracked_held
-
-    def _palm_box_dist(self):
-        box_c = self.data.qpos[self.bq:self.bq + 3]
-        return min(float(np.linalg.norm(self.data.site_xpos[s] - box_c))
-                   for s in self.ids['palm_sites'])
-
-    def _sync_weld(self, f):
-        d, m = self.data, self.model
-        eq = self.ids['weld_eq']
-        ref = self.motion.qpos[f]
-        if self.motion.meta_at(f)[3]:
-            if not self.attached:
-                if self._palm_box_dist() > self.args.engage_dist:
-                    return
-                self.attached = True
-                d.eq_active[eq] = 1
-                print(f'[{self.t:6.2f}s] weld ENGAGED '
-                      f'(palm-box {self._palm_box_dist():.2f} m)')
-            m.eq_data[eq, 0:3] = 0.0
-            m.eq_data[eq, 3:6] = MQ.inv_mul_vec(ref[3:7],
-                                                ref[36:39] - ref[0:3])
-            m.eq_data[eq, 6:10] = MQ.mul(MQ.inv(ref[3:7]), ref[39:43])
-        elif self.attached:
-            self.attached = False
-            d.eq_active[eq] = 0
-            print(f'[{self.t:6.2f}s] weld RELEASED')
 
     def _check_fall(self):
         down = np.array([0.0, 0.0, -1.0])
@@ -669,15 +641,31 @@ class Demo:
         # stays >= 0.68 -- 0.65 separates the two clusters
         squatted = self.min_root_z < 0.65
         lifted = (self.mode == 'kinematic'
-                  or self.max_box_z > C.BOX_REST_Z + 0.25)
+                  or self.max_box_z > self.phys_rest_z + 0.25)
+        box_z = float(d.qpos[self.bq + 2])
+        placed_flat = abs(box_z - self.phys_rest_z) < 0.08
         ok = (self.pick_triggered and self.place_done and not self.fallen
-              and tracked and squatted and lifted and away > 1.0)
+              and tracked and squatted and lifted and placed_flat
+              and away > 1.0)
         print(f'[mm-scenebot:{self.mode}] {"SUCCESS" if ok else "INCOMPLETE"} -- '
               f'{self.t:.1f} s sim, {time.time() - wall:.0f} s wall, '
               f'picked={self.pick_triggered}, placed={self.place_done}, '
               f'fallen={self.fallen}, max xy err {self.max_xy_err:.2f} m, '
               f'min root z {self.min_root_z:.2f} m, '
               f'max box z {self.max_box_z:.2f} m, robot-box dist {away:.2f} m')
+        print('[stress-json] ' + json.dumps({
+            'mode': self.mode,
+            'box_size': [float(v) for v in self.args.box_size],
+            'box_scale': float(self.args.box_scale),
+            'box_mass': float(self.args.box_mass),
+            'success': bool(ok), 'lifted': bool(lifted),
+            'placed': bool(self.place_done), 'placed_flat': bool(placed_flat),
+            'fallen': bool(self.fallen),
+            'max_box_z': round(self.max_box_z, 3),
+            'final_box_z': round(box_z, 3),
+            'max_xy_err': round(self.max_xy_err, 3),
+            'min_root_z': round(self.min_root_z, 3),
+            'away': round(away, 2), 'sim_s': round(self.t, 1)}))
         if self.writer is not None:
             print(f'[mm-scenebot] wrote {self.args.video_path}')
         return 0 if ok else 1
@@ -685,7 +673,7 @@ class Demo:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--mode', choices=['kinematic', 'weld', 'grasp'],
+    ap.add_argument('--mode', choices=['kinematic', 'grasp'],
                     default='kinematic')
     ap.add_argument('--no-video', action='store_true')
     ap.add_argument('--viewer', action='store_true')
@@ -700,15 +688,18 @@ def main():
                          'before triggering the next pick attempt')
     ap.add_argument('--arm-gain', type=float, default=6.0)
     ap.add_argument('--squeeze', type=float, default=0.4)
-    ap.add_argument('--engage-dist', type=float, default=0.45)
     ap.add_argument('--ref-mode', choices=['none', *RM.MODES], default='none')
     ap.add_argument('--anchor-gain', type=float, default=0.20)
     ap.add_argument('--replan-gain', type=float, default=0.738)
     ap.add_argument('--box-mass', type=float,
                     default=0.1 if C.SCENEBOT_PICK else 0.5)
+    ap.add_argument('--box-size', type=float, nargs=3,
+                    default=list(C.BOX_HALF), metavar=('X', 'Y', 'Z'),
+                    help='physical box HALF extents (m); the reference '
+                         'motion and reference box stay data-sized')
     ap.add_argument('--box-scale', type=float, default=1.0,
-                    help='scale the physical carton mesh only (texture and '
-                         'reference motion unchanged)')
+                    help='uniform scale on top of --box-size (physical box '
+                         'only)')
     ap.add_argument('--video',
                     default=os.path.join(HERE, 'out', 'scenebot_mm_pickup.mp4'))
     args = ap.parse_args()
