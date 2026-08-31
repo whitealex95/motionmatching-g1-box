@@ -10,6 +10,7 @@ become real force.
 import sys
 
 from demo_base import Demo, run_main
+from mm_g1.states import State
 
 # MuJoCo-order arm indices -- left 15..21 / right 22..28, per arm:
 #   +0 shoulder_pitch  +1 shoulder_roll  +2 shoulder_yaw  +3 elbow
@@ -32,15 +33,21 @@ class GraspDemo(Demo):
         self.kds[CUSTOM_ARM_JOINTS] *= self.args.arm_kd
 
     def _adjust_target(self, target, f):
-        lc, rc = self.motion.meta_at(f)[4] # left_contact, right_contact
-        if lc or rc:
-            target = target.copy()
-            if lc:
-                target[L_SHOULDER_ROLL] -= self.args.shoulder_squeeze
-                target[L_WRIST_YAW] -= self.args.wrist_squeeze
-            if rc:
-                target[R_SHOULDER_ROLL] += self.args.shoulder_squeeze
-                target[R_WRIST_YAW] += self.args.wrist_squeeze
+        _, _, state, _, (lc, rc) = self.motion.meta_at(f)
+        # During the pick/place ride a hand whose contact label is OFF opens
+        # OUTWARD instead (clears the box on the way down and after release).
+        opening = state in (State.PICK, State.PLACE)
+        target = target.copy()
+        if lc:
+            target[L_SHOULDER_ROLL] -= self.args.shoulder_squeeze
+            target[L_WRIST_YAW] -= self.args.wrist_squeeze
+        elif opening:
+            target[L_SHOULDER_ROLL] += self.args.shoulder_open
+        if rc:
+            target[R_SHOULDER_ROLL] += self.args.shoulder_squeeze
+            target[R_WRIST_YAW] += self.args.wrist_squeeze
+        elif opening:
+            target[R_SHOULDER_ROLL] -= self.args.shoulder_open
         return target
 
 
@@ -49,6 +56,9 @@ def extra_args(ap):
                     help='scale on the arm PD stiffness (squeeze strength)')
     ap.add_argument('--arm-kd', type=float, default=1.0,
                     help='scale on the arm PD damping')
+    ap.add_argument('--shoulder-open', type=float, default=0.0,
+                    help='outward shoulder-roll bias (rad) during PICK/PLACE '
+                         "while that hand's contact label is OFF")
     ap.add_argument('--shoulder-squeeze', type=float, default=0.0,
                     help='inward shoulder-roll bias (rad) while that '
                          "hand's contact label is on (palm pressure)")
