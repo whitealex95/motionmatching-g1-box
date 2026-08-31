@@ -182,17 +182,21 @@ def build_db(lib):
     Wr, Wv = C.BOX_ROT_WEIGHT, C.BOX_VEL_WEIGHT
     pose = [(Xpos, 1.0), (Xvel, 1.0)]
     traj = [(XtrajPos, 1.0), (XtrajDir, 1.0)]
-    box = lambda wp, wr=Wr: [(boxLocalPos, wp), (boxLocalAA, wr), (boxLocalVel, Wv)]
-    # PICK and PLACE share the 24-D (pose + box, no trajectory) feature space but are SEPARATE
+    # The SEARCH sees only the box's planar position: its height is a function of
+    # the phase (resting / riding the lift), not something to match on. The full
+    # 3-D boxLocalPos is still what reconstructs the ridden box at runtime.
+    boxSearchPos = boxLocalPos[:, 0:2]                                     # (T,2)
+    box = lambda wp, wr=Wr: [(boxSearchPos, wp), (boxLocalAA, wr), (boxLocalVel, Wv)]
+    # PICK and PLACE share the 23-D (pose + box, no trajectory) feature space but are SEPARATE
     # databases, so pick can weight the box position AND orientation more
     # (PICK_BOX_POS_WEIGHT / PICK_BOX_ROT_WEIGHT) than place -- the entry is chosen mainly by
     # where the box sits and which way it faces in the base frame.
     dbs = {
         "loco": make_db(pose + traj, masks["loco"]),                        # 27-D (unchanged)
-        "carry": make_db(pose + traj + box(C.BOX_POS_WEIGHT), masks["carry"]),   # 36-D
+        "carry": make_db(pose + traj + box(C.BOX_POS_WEIGHT), masks["carry"]),   # 35-D
         "pick": make_db(pose + box(C.PICK_BOX_POS_WEIGHT,
-                                   C.PICK_BOX_ROT_WEIGHT), masks["pick"]),       # 24-D
-        "place": make_db(pose + box(C.BOX_POS_WEIGHT), masks["place"]),          # 24-D
+                                   C.PICK_BOX_ROT_WEIGHT), masks["pick"]),       # 23-D
+        "place": make_db(pose + box(C.BOX_POS_WEIGHT), masks["place"]),          # 23-D
     }
     dbs = {k: dict(X=Xn, offset=off, scale=sc) for k, (Xn, off, sc) in dbs.items()}
 
@@ -207,7 +211,6 @@ def build_db(lib):
         # raw (un-normalized) blocks so the controller can assemble a cross-database query
         # (pose from the current frame, trajectory from the command, box from the live box).
         rawXpos=Xpos, rawXvel=Xvel, rawTrajPos=XtrajPos, rawTrajDir=XtrajDir,
-        rawBoxPos=boxLocalPos, rawBoxAA=boxLocalAA, rawBoxVel=boxLocalVel,
         dbs=dbs,
         # back-compat aliases: the locomotion database is the default "X".
         X=dbs["loco"]["X"], Xoffset=dbs["loco"]["offset"], Xscale=dbs["loco"]["scale"])

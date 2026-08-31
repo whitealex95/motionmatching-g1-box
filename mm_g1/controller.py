@@ -15,10 +15,12 @@ database transitions ever made are exactly those in the chain above (req. 13):
 
 Each searchable database has its own feature space (features.build_db):
   loco  (27)  pose + future trajectory                         -- unchanged genoview features
-  carry (36)  pose + future trajectory + box(pos,ori,vel)      -- box added to the query
-  pick  (24)  pose + box(pos,ori,vel)                           -- NO trajectory; box pos weighted
-  place (24)  pose + box(pos,ori,vel)                           -- NO trajectory
-pick and place share the 24-D layout but are separate databases, so pick can weight the box
+  carry (35)  pose + future trajectory + box(xy,ori,vel)       -- box added to the query
+  pick  (23)  pose + box(xy,ori,vel)                            -- NO trajectory; box pos weighted
+  place (23)  pose + box(xy,ori,vel)                            -- NO trajectory
+The box position block is PLANAR (xy in the base frame): box height is a function of the
+phase, not something to match on. pick and place share the 23-D layout but are separate
+databases, so pick can weight the box
 position more heavily (PICK_BOX_POS_WEIGHT) -- the entry is chosen mainly by where the box is.
 
 The box rides the robot's gravity-aligned base frame while held (stored per frame as
@@ -445,8 +447,9 @@ class MotionMatcher:
 
     # --- query assembly (one normalized vector per database) -----------------
     def _box_local_live(self, qh):
-        """Live box pose in the controller base frame (yaw qh at the ground root)."""
-        bp = quat.inv_mul_vec(qh, self.boxPos - self.rootPos)
+        """Live box pose in the controller base frame (yaw qh at the ground root).
+        Position is planar (xy): the search ignores box height."""
+        bp = quat.inv_mul_vec(qh, self.boxPos - self.rootPos)[0:2]
         br = quat.mul(quat.inv(qh), self.boxRot)
         baa = quat.to_scaled_angle_axis(quat.abs(br))
         bv = quat.inv_mul_vec(qh, self.boxVelWorld)
