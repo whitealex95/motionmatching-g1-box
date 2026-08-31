@@ -25,9 +25,30 @@ import numpy as np
 import yaml
 
 from . import boxes
+from . import config as C
 from .states import Phase
 
 _HAND_CH = {"left_hand": 2, "right_hand": 3}
+
+
+def shift_spans(track, on_delay, off_advance):
+    """Move each contiguous ON interval's edges: start by `on_delay` frames
+    (negative = earlier), end by `-off_advance`. Interval edges touching the
+    clip boundary are continuations, not events, and stay put."""
+    if on_delay == 0 and off_advance == 0:
+        return track
+    out = np.zeros_like(track)
+    on = np.flatnonzero(track > 0.5)
+    if len(on):
+        for run in np.split(on, np.flatnonzero(np.diff(on) > 1) + 1):
+            s, e = int(run[0]), int(run[-1])
+            if s > 0:
+                s = max(0, s + on_delay)
+            if e < len(track) - 1:
+                e = min(len(track) - 1, e - off_advance)
+            if s <= e:
+                out[s:e + 1] = 1.0
+    return out
 
 
 def sidecar_path(data_dir, stem):
@@ -72,4 +93,9 @@ def box_labels(stem, box_pose, data_dir):
         # No recorded labels: wrists prompt object contact while the box is
         # attached, feet/pelvis stay zero (the demo's plain-walking pattern).
         contact[:, 2] = contact[:, 3] = attach.astype(float)
+    for ch in (2, 3):
+        contact[:, ch] = shift_spans(
+            contact[:, ch],
+            int(round(C.OMNI_CONTACT_ONSET_DELAY * C.FPS)),
+            int(round(C.OMNI_CONTACT_RELEASE_ADVANCE * C.FPS)))
     return phase, attach, contact

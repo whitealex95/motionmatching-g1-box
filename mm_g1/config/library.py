@@ -79,7 +79,7 @@ BOX_ROT_FOLDS = 4
 # playbacks are baked as-played into the library at FPS, with the demo's per-frame
 # contact labels (mm_g1/scenebot_pick.py). The OmniRetarget clips then contribute ONLY
 # their carry frames (their own pick/place phases are marked Phase.DISABLED).
-SCENEBOT_PICK = True
+SCENEBOT_PICK = False
 SCENEBOT_CLIP = 11
 SCENEBOT_FRAMES = (0, 120)
 SCENEBOT_FPS = 50
@@ -97,6 +97,11 @@ SCENEBOT_ROT_FOLDS = 2
 # is never modified.
 CONTACT_ONSET_DELAY = 0.75
 CONTACT_RELEASE_ADVANCE = 1.0
+# Same idea for the OmniRetarget clips (proxy or sidecar labels), applied
+# after label resolution; NEGATIVE onset = contact starts EARLIER (preload
+# before the box moves). SceneBot's baked labels use the knobs above only.
+OMNI_CONTACT_ONSET_DELAY = -0.5
+OMNI_CONTACT_RELEASE_ADVANCE = 0.0
 BOX_HALF = (0.2, 0.2, 0.2)  # SceneBot free_box half extents. Default: (0.15, 0.10, 0.15)
 BOX_REST_Z = BOX_HALF[2]       # the SceneBot box rests on the floor at its half height
 
