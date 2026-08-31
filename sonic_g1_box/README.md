@@ -23,7 +23,7 @@ the frictional grasp remain):
 | variant | file | box handling |
 |---|---|---|
 | (a) kinematic | `run_kinematic.py` | no collision, box teleported to the reference pose |
-| (b) grasp | `run_grasp.py` | free body; friction only. While a hand's contact label is on, `--shoulder-squeeze` biases that shoulder roll inward and `--elbow-squeeze` adds elbow flexion (chest hug). Contact-rich and jagged: small parameter changes flip the outcome |
+| (b) grasp | `run_grasp.py` | free body; friction only. While a hand's contact label is on, `--shoulder-squeeze` biases that shoulder roll inward and `--wrist-squeeze` toes the wrist yaw in. Contact-rich and jagged: small parameter changes flip the outcome |
 
 ```bash
 ~/miniconda3/envs/mm-g1-sonic/bin/python run_kinematic.py           # -> out/*.mp4
