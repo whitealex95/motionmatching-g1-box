@@ -507,9 +507,11 @@ def build_argparser(video_name):
                     help='SONIC checkpoint: release (v1.0), low_latency '
                          '(~80 ms lookahead), sonic_v1_1 (heading-normalized '
                          'target orientations)')
-    ap.add_argument('--robot', choices=['sonic', 'scenebot'], default='sonic',
-                    help="G1 model: NVIDIA's 29-DoF scene or SceneBot's "
-                         'flat-hand G1 (assets/scenebot)')
+    ap.add_argument('--robot', choices=['scenebot', 'sonic'], default='scenebot',
+                    help="G1 model: SceneBot's flat-hand G1 (the model the "
+                         'motion + contact labels were made with; its own '
+                         "palm collision) or NVIDIA's 29-DoF SONIC scene "
+                         '(visual-only hands, capsule pads bolted on)')
     ap.add_argument('--anchor-gain', type=float, default=0.20)
     ap.add_argument('--replan-gain', type=float, default=0.738)
     ap.add_argument('--box', choices=['scenebot', 'carton'],

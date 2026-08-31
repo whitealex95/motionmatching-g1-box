@@ -31,7 +31,7 @@ class GraspDemo(Demo):
 
 
 def extra_args(ap):
-    ap.add_argument('--arm-gain', type=float, default=6.0,
+    ap.add_argument('--arm-gain', type=float, default=1.0,
                     help='scale on the arm PD stiffness (squeeze strength)')
     ap.add_argument('--squeeze', type=float, default=0.4,
                     help='inward shoulder-roll bias (rad) while the '
