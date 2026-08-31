@@ -265,6 +265,10 @@ class Demo:
     def setup_extra(self):
         """Before the warmup loop."""
 
+    def _ctrl_extra(self, f):
+        """Optional feedforward torque (29,) added to the PD each substep."""
+        return None
+
     def _adjust_target(self, target, f):
         """PD target hook (MuJoCo joint order); `f` is the tracked frame."""
         return target
@@ -290,10 +294,13 @@ class Demo:
                                   d.qvel[self.dq_at].copy())
         f = min(int(self.policy.current_frame), self.motion.timesteps - 1)
         target = self._adjust_target(target, f)
+        extra = self._ctrl_extra(f)
         self._sync_box(f)
         for _ in range(self.args.substeps):
             d.ctrl[:29] = (self.kps * (target - d.qpos[self.q_at])
                            - self.kds * d.qvel[self.dq_at])
+            if extra is not None:
+                d.ctrl[:29] += extra
             mujoco.mj_step(self.model, d)
             self._post_substep(f)
 

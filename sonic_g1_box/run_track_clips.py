@@ -216,6 +216,33 @@ def track_clip(stem, variant, args):
     policy.reinitialize_heading = False
     policy._update_heading = lambda base_quat: None
 
+    palm_sites = [model.site('left_palm').id, model.site('right_palm').id]
+    arm_idx = [list(range(15, 22)), list(range(22, 29))]
+    palm_ramp = [0.0, 0.0]
+    jacp = np.zeros((3, model.nv))
+
+    def palm_tau(lc, rc):
+        """Jacobian squeeze: tau = J^T f pressing each labeled palm toward
+        the box centre with --palm-force newtons, ramped over 0.15 s."""
+        tau = np.zeros(29)
+        box_c = data.qpos[bq:bq + 3]
+        for h, on in enumerate((lc, rc)):
+            step = P.CONTROL_DT / 0.15
+            palm_ramp[h] = (min(1.0, palm_ramp[h] + step) if on
+                            else max(0.0, palm_ramp[h] - step))
+            if palm_ramp[h] <= 0.0:
+                continue
+            sid = palm_sites[h]
+            mujoco.mj_jacSite(model, data, jacp, None, sid)
+            n = box_c - data.site_xpos[sid]
+            L = float(np.linalg.norm(n))
+            if L < 1e-6:
+                continue
+            fvec = (palm_ramp[h] * args.palm_force / L) * n
+            for j in arm_idx[h]:
+                tau[j] += float(jacp[:, dq_at[j]] @ fvec)
+        return tau
+
     def tick():
         # freejoint qvel[3:6] is already body-local (gyro convention)
         target = policy.step(data.qpos[3:7].copy(), data.qvel[3:6].copy(),
@@ -234,9 +261,12 @@ def track_clip(stem, variant, args):
             target = target.copy()
             target[L_SHOULDER_ROLL] += args.shoulder_open
             target[R_SHOULDER_ROLL] -= args.shoulder_open
+        tau = palm_tau(lc, rc) if args.palm_force > 0.0 else None
         for _ in range(args.substeps):
             data.ctrl[:29] = (kps * (target - data.qpos[q_at])
                               - kds * data.qvel[dq_at])
+            if tau is not None:
+                data.ctrl[:29] += tau
             mujoco.mj_step(model, data)
 
     tmp = (os.path.join(HERE, 'out', 'track_clips', f'.{variant}_{stem}.tmp.mp4')
@@ -282,6 +312,9 @@ def main():
                     choices=list(P.SONIC_VARIANTS))
     ap.add_argument('--shoulder-squeeze', type=float, default=0.6)
     ap.add_argument('--wrist-squeeze', type=float, default=0.2)
+    ap.add_argument('--palm-force', type=float, default=0.0,
+                    help='Jacobian squeeze: newtons per labeled palm toward '
+                         'the box centre (tau = J^T f)')
     ap.add_argument('--shoulder-open', type=float, default=0.4)
     ap.add_argument('--arm-kp', type=float, default=1.0)
     ap.add_argument('--arm-kd', type=float, default=1.0)
