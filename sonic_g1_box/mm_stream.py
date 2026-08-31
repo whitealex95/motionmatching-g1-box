@@ -43,7 +43,7 @@ class MMMotion:
     def _meta_now(self):
         m = self.matcher
         return (int(m.lib['clip_id'][m.cur]), int(m.lib['frame_in_clip'][m.cur]),
-                m.state_name(), bool(m.box_held))
+                m.state, bool(m.box_held))
 
     def meta_at(self, f):
         """Matcher clip/frame/state/held as recorded at buffer frame `f` --

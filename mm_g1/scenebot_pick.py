@@ -17,6 +17,7 @@ import sys
 import numpy as np
 
 from . import config as C
+from .states import Skill
 from . import quat
 
 _TOOLS = os.path.join(C.ROOT, 'tools')
@@ -132,8 +133,8 @@ def build():
     fwd = np.arange(0.0, F + 1e-9, step_pick)               # (145,)
     rev = np.arange(float(F), -1e-9, -step_drop)            # (73,) F..0
     out = []
-    for name, frames, code in (("scenebot_pick", fwd, C.SKILL_PICK),
-                               ("scenebot_drop", rev, C.SKILL_PLACE)):
+    for name, frames, code in (("scenebot_pick", fwd, Skill.PICK),
+                               ("scenebot_drop", rev, Skill.PLACE)):
         qpos, box_pose, contact, attach = _bake(smp, frames)
         out.append((name, qpos, box_pose, contact, attach, code))
     return out

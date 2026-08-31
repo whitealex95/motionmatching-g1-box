@@ -22,6 +22,7 @@ import glfw
 import mujoco
 
 from . import config as C
+from .states import State
 
 # GenoView draws the command trajectory in red: a sphere at each predicted future
 # position plus a short stick pointing in the predicted facing direction.
@@ -160,7 +161,7 @@ class InteractiveViewer:
 
         m = np.linalg.norm(move)
         if m > 1e-6:   # full stick = MAX_SPEED; while carrying, the slower CARRY cap (the
-            top = (C.CARRY_MAX_SPEED if self.matcher.state == C.SKILL_CARRY  # box data is slow)
+            top = (C.CARRY_MAX_SPEED if self.matcher.state is State.CARRY  # box data is slow)
                    else C.MAX_SPEED)
             move = move / m * (top * (C.WALK_SCALE if self.shift else 1.0))
         else:
@@ -199,7 +200,7 @@ class InteractiveViewer:
                                    mujoco.mjtCatBit.mjCAT_ALL, self.scene)
             if self.show_traj:
                 self._draw_command()
-                if self.matcher.state_name() == "MOVE-TO-PICK":
+                if self.matcher.state is State.MOVE_TO_PICK:
                     self._draw_approach()
                     self._draw_pick_marker()
             mujoco.mjr_render(viewport, self.scene, self.ctx)
@@ -280,17 +281,17 @@ class InteractiveViewer:
     def _overlay(self, viewport, speed):
         m = self.matcher
         # Box state machine takes precedence in the HUD; otherwise show the loco gait.
-        state = m.state_name()
-        if state == "LOCOMOTION":
+        state = m.state
+        if state is State.LOCOMOTION:
             head = ("RUN" if speed > C.MAX_SPEED * (1 + C.WALK_SCALE) / 2 else
                     ("WALK" if speed > 1e-3 else "IDLE"))
             if self.has_box:
                 head += "  [B: walk over + pick up]"
-        elif state == "MOVE-TO-PICK":
+        elif state is State.MOVE_TO_PICK:
             head = "WALKING TO THE BOX  [B: cancel]"
         else:
-            head = state
-            if state == "CARRY":
+            head = state.name
+            if state is State.CARRY:
                 head += "  [B: set down]"
         lib, cur = m.lib, m.cur
         cid = int(lib["clip_id"][cur])

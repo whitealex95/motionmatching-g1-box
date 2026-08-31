@@ -13,6 +13,7 @@ import numpy as np
 from . import config as C
 from . import boxes
 from . import quat
+from .states import Skill
 from .g1_model import G1Model, csv_to_qpos, quat_wxyz_yaw
 
 IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
@@ -122,8 +123,8 @@ def build_library(clips=None, out=C.LIB_PATH):
         if kind == "box":
             sk, at, _info = boxes.segment_phases(bpose[:, 0:3])
             if C.SCENEBOT_PICK:                      # OmniRetarget contributes carry only
-                sk = np.where(np.isin(sk, [C.SKILL_PICK, C.SKILL_PLACE]),
-                              C.SKILL_DISABLED, sk).astype(np.int32)
+                sk = np.where(np.isin(sk, [Skill.PICK, Skill.PLACE]),
+                              Skill.DISABLED, sk).astype(np.int32)
             bp = bpose
             n_box += 1
         elif kind == "scenebot":

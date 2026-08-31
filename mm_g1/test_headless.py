@@ -15,6 +15,7 @@ import numpy as np
 
 from . import config as C
 from .controller import MotionMatcher
+from .states import State
 from .data import load_library
 from .features import yaw_quat
 
@@ -51,7 +52,7 @@ def run(video=None):
     seen = set()
     max_box_z = 0.0
     stance_err_at_pick = None
-    prev_state = m.state_name()
+    prev_state = m.state
 
     def step_until(want, timeout_s, vel=None, face=None):
         nonlocal max_box_z, stance_err_at_pick, prev_state
@@ -61,30 +62,30 @@ def run(video=None):
             assert np.isfinite(q).all(), "NaN in qpos"
             if render:
                 render(q)
-            st = m.state_name()
+            st = m.state
             seen.add(st)
-            if st == "PICK" and prev_state == "MOVE-TO-PICK":
+            if st is State.PICK and prev_state is State.MOVE_TO_PICK:
                 stance_err_at_pick = float(
                     np.linalg.norm(m.rootPos[0:2] - m.stance_xy))
             prev_state = st
             max_box_z = max(max_box_z, float(m.boxPos[2]))
-            if st == want:
+            if st is want:
                 return True
         return False
 
-    assert step_until("LOCOMOTION", 1.0), "did not settle"
+    assert step_until(State.LOCOMOTION, 1.0), "did not settle"
     m.trigger_box()
-    assert step_until("MOVE-TO-PICK", 1.0), "B did not start the approach"
-    assert step_until("PICK", C.MOVE_TIMEOUT + 2.0), "approach never reached the stance"
-    assert step_until("CARRY", 8.0), "pick ride did not hand off to carry"
+    assert step_until(State.MOVE_TO_PICK, 1.0), "B did not start the approach"
+    assert step_until(State.PICK, C.MOVE_TIMEOUT + 2.0), "approach never reached the stance"
+    assert step_until(State.CARRY, 8.0), "pick ride did not hand off to carry"
     assert m.box_held, "box not held after pick"
     fwd = np.array([1.0, 0.0, 0.0])
-    step_until("__never__", 2.0, vel=0.5 * fwd)          # carry-walk 2 s
+    step_until(None, 2.0, vel=0.5 * fwd)                 # carry-walk 2 s
     m.trigger_box()
-    assert step_until("PLACE", 2.0), "B while carrying did not enter place"
-    assert step_until("LOCOMOTION", 6.0), "place ride did not finish"
+    assert step_until(State.PLACE, 2.0), "B while carrying did not enter place"
+    assert step_until(State.LOCOMOTION, 6.0), "place ride did not finish"
     assert not m.box_held, "box still held after place"
-    step_until("__never__", 1.5)                          # settle out
+    step_until(None, 1.5)                                 # settle out
 
     box_z = float(m.boxPos[2])
     assert max_box_z > 0.5, f"box never lifted (max z {max_box_z:.2f})"
@@ -102,7 +103,7 @@ def run(video=None):
         w.close()
         print(f"wrote {video} ({len(frames)} frames)")
 
-    print(f"OK: states {sorted(seen)}, max box z {max_box_z:.2f} m, "
+    print(f"OK: states {sorted(s.name for s in seen)}, max box z {max_box_z:.2f} m, "
           f"final box z {box_z:.2f} m, stance err at pick "
           f"{stance_err_at_pick:.3f} m")
     return 0

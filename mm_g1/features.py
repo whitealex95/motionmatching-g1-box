@@ -15,6 +15,7 @@ from scipy.signal import savgol_filter
 
 from . import config as C
 from . import quat
+from .states import Skill
 
 FPS = C.FPS
 HORIZONS = np.array(C.HORIZONS)
@@ -164,8 +165,8 @@ def build_db(lib):
     # block statistics match what is actually searched. A block's scale is its (shared) std
     # divided by an optional weight, so a heavier block contributes more to the L2 distance.
     skill = lib["skill"] if "skill" in lib else np.zeros(T, np.int32)
-    masks = {"loco": skill == C.SKILL_LOCO, "carry": skill == C.SKILL_CARRY,
-             "pick": skill == C.SKILL_PICK, "place": skill == C.SKILL_PLACE}
+    masks = {s.db: skill == s for s in
+             (Skill.LOCO, Skill.CARRY, Skill.PICK, Skill.PLACE)}
 
     def make_db(blocks, mask):
         """blocks: list of (array (T,d), weight). Returns (Xn, offset, scale) over mask."""
