@@ -537,8 +537,9 @@ def build_argparser(video_name):
     ap.add_argument('--box-mass', type=float, default=0.5)
     ap.add_argument('--substeps', type=int, default=20,
                     help='physics substeps per 50 Hz control tick (timestep = '
-                         '0.02/substeps); the stiff light-box contact needs '
-                         '>= 16 to integrate stably')
+                         "0.02/substeps). SONIC's official sim2sim uses 4 "
+                         '(5 ms); the stiff light-box contact needs >= 16 '
+                         'to integrate stably')
     ap.add_argument('--box-friction', type=float, default=1.5,
                     help='sliding friction of the box geom; contacts use the '
                          'pair MAXIMUM, so this alone sets box-hand friction')

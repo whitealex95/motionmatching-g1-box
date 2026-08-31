@@ -50,8 +50,6 @@ def variant_dir(variant=DEFAULT_VARIANT):
 G1_SCENE_XML = os.path.join(SONIC_ASSETS, 'g1', 'scene_29dof.xml')
 
 CONTROL_DT = 0.02            # 50 Hz policy / reference-motion rate
-SIM_DT = 0.005               # 200 Hz physics (SIMULATE_DT in their sim yaml)
-DECIMATION = int(round(CONTROL_DT / SIM_DT))
 
 # MuJoCo/URDF/hardware joint order (matches both their g1_29dof.xml and our
 # resources/g1/g1_mocap_29dof.xml -- verified identical).
