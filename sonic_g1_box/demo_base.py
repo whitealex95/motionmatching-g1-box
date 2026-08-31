@@ -57,7 +57,8 @@ class Demo:
         self.model, self.ids = box_scene.build_model(
             scene_xml, self.MODE, box_mass=args.box_mass,
             off_w=args.width, off_h=args.height,
-            box_scale=args.box_scale, box_type=args.box)
+            box_scale=args.box_scale, box_type=args.box,
+            box_friction=args.box_friction)
         self.model.opt.timestep = P.SIM_DT
         self.data = mujoco.MjData(self.model)
         m = self.model
@@ -517,6 +518,9 @@ def build_argparser(video_name):
                          'baked for (C.BOX_HALF), or the OmniRetarget MEDICINE '
                          'carton mesh (a different, larger size)')
     ap.add_argument('--box-mass', type=float, default=0.5)
+    ap.add_argument('--box-friction', type=float, default=1.5,
+                    help='sliding friction of the box geom; contacts use the '
+                         'pair MAXIMUM, so this alone sets box-hand friction')
     ap.add_argument('--box-scale', type=float, default=1.0,
                     help='scale the physical box only (reference motion '
                          'unchanged)')

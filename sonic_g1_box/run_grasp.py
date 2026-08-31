@@ -25,7 +25,7 @@ class GraspDemo(Demo):
 
     def setup_extra(self):
         self.kps[ARM_JOINTS] *= self.args.arm_gain
-        self.kds[ARM_JOINTS] *= np.sqrt(self.args.arm_gain)
+        self.kds[ARM_JOINTS] *= 1 # np.sqrt(self.args.arm_gain)
 
     def _adjust_target(self, target, f):
         lc, rc = self.motion.meta_at(f)[4]
