@@ -19,19 +19,10 @@ BOX_TEX = os.path.join(ROOT, 'assets', 'largebox', 'medicinebox.png')
 
 PALM_FRICTION = [1.5, 0.02, 0.0005]
 
-# Box contact model (direct units; negative solref = mass-INDEPENDENT, so the
-# light box stays firm under arm/foot forces). PRIORITY makes these win over
-# the floor/hand defaults for every contact the box is in.
-#   stiffness -40000 N/m: ~1 mm dent per 40 N press
-#   damping      -60 N s/m: ~0.67 of critical for a 0.05 kg box
-# TO TUNE: edit the values below and rerun the demo -- the scene is built
-# fresh at every launch (no CLI flag, no cache to rebuild).
-# Both entries are NEGATIVE magnitudes: toward zero = softer / bouncier,
-# more negative = stiffer / deader. Examples:
-#   squishy box:  [-2000.0, -15.0]   (~2 cm dent per 40 N)
-#   bouncy box:   [-40000.0, -10.0]  (underdamped -> visible restitution)
-# Stability: substeps must resolve sqrt(k/m) -- the default --substeps 20
-# (1 ms) covers these values.
+# Box contact: [stiffness N/m, damping N s/m], negative = mass-independent
+# (a light box stays firm); priority makes them win over floor/hand defaults.
+# Edit + rerun to tune. Toward zero = softer/bouncier, e.g. squishy
+# [-2000, -15], bouncy [-40000, -10]. Stiffer than -40000 needs more --substeps.
 BOX_SOLREF = [-40000.0, -60.0]
 BOX_PRIORITY = 2
 
