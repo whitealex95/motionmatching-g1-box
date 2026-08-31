@@ -35,7 +35,7 @@ GHOST_CENTER, GHOST_MAT, GHOST_HALF = _carton_obb()
 
 
 def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
-                box_scale=1.0, box_type='scenebot'):
+                box_scale=1.0, box_type='scenebot', box_friction=1.5):
     """box_type 'scenebot' (default) = the SceneBot free box with the
     C.BOX_HALF extents the motion library is baked for; 'carton' = the
     OmniRetarget medicine-box mesh (a DIFFERENT size than the library's box)."""
@@ -75,7 +75,8 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
         box.add_joint(name='box_joint', type=mujoco.mjtJoint.mjJNT_FREE)
         box.add_geom(name='box_geom', type=mujoco.mjtGeom.mjGEOM_MESH,
                      meshname='box_mesh', material='box_mat',
-                     mass=float(box_mass), friction=PALM_FRICTION,
+                     mass=float(box_mass),
+                     friction=[float(box_friction), 0.02, 0.0005],
                      contype=1 if collide else 0,
                      conaffinity=1 if collide else 0)
         ghost = (GHOST_CENTER, GHOST_MAT, GHOST_HALF)
@@ -86,7 +87,8 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
         box.add_joint(name='box_joint', type=mujoco.mjtJoint.mjJNT_FREE)
         box.add_geom(name='box_geom', type=mujoco.mjtGeom.mjGEOM_BOX,
                      size=half, rgba=[0.82, 0.52, 0.22, 1.0],
-                     mass=float(box_mass), friction=PALM_FRICTION,
+                     mass=float(box_mass),
+                     friction=[float(box_friction), 0.02, 0.0005],
                      contype=1 if collide else 0,
                      conaffinity=1 if collide else 0)
         ghost = (np.zeros(3), np.eye(3), np.array(C.BOX_HALF, float))
