@@ -149,7 +149,8 @@ motionmatching-g1-box/
 ├── setup.sh                     # venv + install + build cache (self-contained)
 ├── requirements.txt
 ├── mm_g1/
-│   ├── config.py                # paths, FPS, joint layout, feature + skill settings
+│   ├── config/                  # split by concern: paths / library / matching / state_machine
+│   ├── states.py                # Skill data labels + State runtime states
 │   ├── g1_model.py              # qpos conversion, quaternion yaw, FK for the feet, mirror
 │   ├── data.py                  # build / load + cache the loco + box library
 │   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
@@ -170,30 +171,39 @@ motionmatching-g1-box/
 
 ## Tuning
 
-Edit `mm_g1/config.py`:
+Configuration lives in `mm_g1/config/`, split by concern (all names stay flat:
+`from mm_g1 import config as C`, then `C.<NAME>`). The low-level tracking
+controller (SONIC PD gains, joint orderings, rates) is configured separately
+in `tools/sonic_tracking/params.py`.
 
-- `WALK_SPEED` / `RUN_SPEED` — commanded speeds (m/s) for walk and Shift-run.
-- `TURN_RATE` — how fast the predicted heading chases the input direction.
-- `MM_SEARCH_INTERVAL` — frames between searches (lower = more reactive, more pops).
-- `CLIPS` — which clips form the library (drop extra GMR `.pkl` clips into
-  `data/gmr_lafan1_g1/` and list them here; delete `data/motion_lib.npz` to rebuild).
-- `CLIP_TRIM` / `DEFAULT_TRIM` — per-clip `(head, tail)` frames cropped to remove the
-  LAFAN1 T-pose lead-in/out. These mirror GenoView's hand-picked `start:stop` indices
+`config/library.py` — what the motion library contains (changes here rebuild
+`data/motion_lib.npz`; bump `LIB_VERSION` for incompatible changes):
+
+- `CLIPS` — which locomotion clips form the library (drop extra GMR `.pkl` clips into
+  `data/gmr_lafan1_g1/` and list them here).
+- `CLIP_TRIM` — per-clip `[start:stop]` frame windows cropping the LAFAN1 T-pose
+  lead-in/out. These mirror GenoView's hand-picked indices
   (its 60 fps starts of walk=160 / run=172 → our 30 fps 80 / 86); add an entry per new clip.
-- `SEARCH_TAIL` — frames at each clip's end excluded from the *search only* (GenoView's
-  `cKDTree(X[rs:re-60])`): the tail still plays but can't be matched into, so the
-  character never runs off the end of a clip.
-
-Box-skill knobs (also in `config.py`):
-
 - `BOX_CLIPS` — which robot-object clips to load (`"all"` or an explicit list of stems).
-- `PICK_RADIUS` — how close the root must be to the box for **B** to pick it up.
-- `BOX_SPAWN_FWD` / `BOX_SPAWN_LAT` — where the box spawns, in the robot's start frame.
 - `BOX_CARRY_FRAC`, `BOX_HOLD_DZ`, `BOX_HOLD_SPEED` — phase-segmentation thresholds
   (`mm_g1/boxes.py`): how high the box must rise to count as *carry* / be *attached*.
+
+`config/matching.py` — the search:
+
+- `SEARCH_TIME` — seconds between searches (lower = more reactive, more pops).
+- `SEARCH_TAIL` — frames at each clip's end excluded from the *search only* (GenoView's
+  `cKDTree(X[rs:re-30])`): the tail still plays but can't be matched into, so the
+  character never runs off the end of a clip.
 - `BOX_POS_WEIGHT` / `BOX_ROT_WEIGHT` / `BOX_VEL_WEIGHT` — how much the box blocks weigh in
   the pick/place/carry search vs. the body pose.
 - `BOX_INERT_HALFLIFE` — how quickly the box settles into the hands at grab time.
+
+`config/state_machine.py` — the B-driven behavior:
+
+- `MAX_SPEED` / `WALK_SCALE` — full-stick command speed and the Shift walk scale.
+- `MOVE_*` / `SNAP_*` — the move-to-pick approach (way-in point, arrive tolerances,
+  rail pin).
+- `BOX_SPAWN_FWD` / `BOX_SPAWN_LAT` — where the box spawns, in the robot's start frame.
 
 > **Note on the carry data.** The OmniRetarget carry clips are essentially in-place (the
 > robot holds the box and barely translates), so while *carrying* the character mostly
