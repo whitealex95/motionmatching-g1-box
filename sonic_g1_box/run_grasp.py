@@ -20,17 +20,16 @@ SHOULDERS = [15, 16, 17, 22, 23, 24]
 ELBOWS = [18, 25]
 WRISTS = [19, 20, 21, 26, 27, 28]
 L_SHOULDER_ROLL, R_SHOULDER_ROLL = 16, 23
-# Inward = same mirroring as the shoulder rolls (measured in the grab pose:
-# left yaw NEGATIVE / right yaw POSITIVE toe the palms toward the box).
 L_WRIST_YAW, R_WRIST_YAW = 21, 28
+CUSTOM_ARM_JOINTS = [16, 23, 21, 28]
 
 
 class GraspDemo(Demo):
     MODE = 'grasp'
 
     def setup_extra(self):
-        self.kps[ARM_JOINTS] *= self.args.arm_kp
-        self.kds[ARM_JOINTS] *= self.args.arm_kd
+        self.kps[CUSTOM_ARM_JOINTS] *= self.args.arm_kp
+        self.kds[CUSTOM_ARM_JOINTS] *= self.args.arm_kd
 
     def _adjust_target(self, target, f):
         lc, rc = self.motion.meta_at(f)[4]
@@ -50,7 +49,7 @@ def extra_args(ap):
                     help='scale on the arm PD stiffness (squeeze strength)')
     ap.add_argument('--arm-kd', type=float, default=1.0,
                     help='scale on the arm PD damping')
-    ap.add_argument('--shoulder-squeeze', type=float, default=0.2,
+    ap.add_argument('--shoulder-squeeze', type=float, default=0.0,
                     help='inward shoulder-roll bias (rad) while that '
                          "hand's contact label is on (palm pressure)")
     ap.add_argument('--wrist-squeeze', type=float, default=0.0,
