@@ -58,10 +58,14 @@ stayed on the ground, the matcher's belief is dropped -- back to locomotion,
 box fed back from physics, immediate retry -- instead of pantomiming the
 whole carry and place with an empty-handed robot.
 
-The box is ONE geom: the printed MEDICINE carton mesh (closed 24-vertex
-cuboid, 0.32 x 0.34 x 0.36 m) is both the collision shape and the visual.
-The carton sits tilted inside its local frame on purpose — the clips' box
-quaternion is calibrated to the scanned box's frame (tools/make_medicine_box.py).
+The physical box defaults to the SceneBot free box the motion library is
+baked for, sized from the single source of truth `C.BOX_HALF`
+(mm_g1/config/library.py) — the same setting run.py's interactive scene
+uses. `--box carton` swaps in the printed MEDICINE carton mesh instead
+(closed 24-vertex cuboid, 0.32 x 0.34 x 0.36 m — a DIFFERENT size than the
+library's box; the carton sits tilted inside its local frame on purpose,
+the OmniRetarget clips' box quaternion is calibrated to the scanned box's
+frame, tools/make_medicine_box.py).
 
 The amber stick figure is the reference frame the policy is tracking; in the
 grasp variant the amber box outline is the reference box, so tracking

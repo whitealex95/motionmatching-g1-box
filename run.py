@@ -45,6 +45,8 @@ def main():
 
     scene = C.SCENE_BOX_SCENEBOT_XML if C.SCENEBOT_PICK else C.SCENE_BOX_XML
     model = mujoco.MjModel.from_xml_path(scene)
+    if C.SCENEBOT_PICK:
+        model.geom('box_geom').size[:] = C.BOX_HALF   # single source: config
     data = mujoco.MjData(model)
     print("Opening viewer -- WASD to move, B to pick up / set down the box, Esc to quit.")
     InteractiveViewer(model, data, matcher).run()

@@ -7,10 +7,13 @@ OmniRetarget clips' box quaternion is calibrated to the scanned box's frame
 half extents) is recovered from the mesh corners for the ghost overlay.
 """
 import os
+import sys
 import numpy as np
 import mujoco
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from mm_g1 import config as C
 BOX_MESH = os.path.join(ROOT, 'assets', 'largebox', 'medicinebox.obj')
 BOX_TEX = os.path.join(ROOT, 'assets', 'largebox', 'medicinebox.png')
 
@@ -32,9 +35,10 @@ GHOST_CENTER, GHOST_MAT, GHOST_HALF = _carton_obb()
 
 
 def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
-                box_scale=1.0, box_type='carton', box_half=(0.15, 0.10, 0.15)):
-    """box_type 'carton' = the OmniRetarget medicine-box mesh; 'scenebot' = the
-    SceneBot demo's plain free box with `box_half` half extents."""
+                box_scale=1.0, box_type='scenebot'):
+    """box_type 'scenebot' (default) = the SceneBot free box with the
+    C.BOX_HALF extents the motion library is baked for; 'carton' = the
+    OmniRetarget medicine-box mesh (a DIFFERENT size than the library's box)."""
     spec = mujoco.MjSpec.from_file(scene_xml_path)
 
     # SONIC's rubber hands are visual-only: bolt a contact pad onto each
@@ -76,7 +80,7 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
                      conaffinity=1 if collide else 0)
         ghost = (GHOST_CENTER, GHOST_MAT, GHOST_HALF)
     else:                                            # scenebot free box
-        half = np.array(box_half, float) * float(box_scale)
+        half = np.array(C.BOX_HALF, float) * float(box_scale)
         box = spec.worldbody.add_body(name='largebox',
                                       pos=[1.6, 0.0, float(half[2])])
         box.add_joint(name='box_joint', type=mujoco.mjtJoint.mjJNT_FREE)
@@ -85,7 +89,7 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
                      mass=float(box_mass), friction=PALM_FRICTION,
                      contype=1 if collide else 0,
                      conaffinity=1 if collide else 0)
-        ghost = (np.zeros(3), np.eye(3), np.array(box_half, float))
+        ghost = (np.zeros(3), np.eye(3), np.array(C.BOX_HALF, float))
 
     model = spec.compile()
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, off_w)
