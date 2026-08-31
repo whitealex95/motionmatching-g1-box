@@ -138,7 +138,7 @@ class Demo:
             self.viewer = mj_viewer.launch_passive(
                 self.model, self.data,
                 show_left_ui=False, show_right_ui=False)
-            self.viewer.cam.distance, self.viewer.cam.azimuth = 2.8, -35.0
+            self.viewer.cam.distance, self.viewer.cam.azimuth = 2.8, 120.0
             self.viewer.cam.elevation = -18.0
             self._vlook = np.array([0.8, 0.0, 0.7])
             self.viewer.cam.lookat[:] = self._vlook
