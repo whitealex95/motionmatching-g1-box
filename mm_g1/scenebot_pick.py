@@ -17,7 +17,7 @@ import sys
 import numpy as np
 
 from . import config as C
-from .states import Skill
+from .states import Phase
 from . import quat
 
 _TOOLS = os.path.join(C.ROOT, 'tools')
@@ -124,7 +124,7 @@ def build():
     """The two baked playbacks: ('scenebot_pick', ...) at half speed forward and
     ('scenebot_drop', ...) at full speed backward, both at C.FPS (30 Hz).
 
-    Returns a list of (name, qpos, box_pose, contact, attach, skill_code).
+    Returns a list of (name, qpos, box_pose, contact, attach, phase_code).
     """
     smp = _Sampler()
     F = smp.hi - smp.lo                                    # 120 clip frames
@@ -133,8 +133,8 @@ def build():
     fwd = np.arange(0.0, F + 1e-9, step_pick)               # (145,)
     rev = np.arange(float(F), -1e-9, -step_drop)            # (73,) F..0
     out = []
-    for name, frames, code in (("scenebot_pick", fwd, Skill.PICK),
-                               ("scenebot_drop", rev, Skill.PLACE)):
+    for name, frames, code in (("scenebot_pick", fwd, Phase.PICK),
+                               ("scenebot_drop", rev, Phase.PLACE)):
         qpos, box_pose, contact, attach = _bake(smp, frames)
         out.append((name, qpos, box_pose, contact, attach, code))
     return out

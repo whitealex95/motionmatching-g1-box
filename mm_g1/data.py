@@ -13,7 +13,7 @@ import numpy as np
 from . import config as C
 from . import boxes
 from . import quat
-from .states import Skill
+from .states import Phase
 from .g1_model import G1Model, csv_to_qpos, quat_wxyz_yaw
 
 IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
@@ -88,7 +88,7 @@ def build_library(clips=None, out=C.LIB_PATH):
     # at N=4) so the box can be picked/carried/placed at any facing (see _yaw_box_pose). Each
     # concrete entry is (name, robot_qpos, kind, box_pose) where box_pose is None for non-box clips.
     box_clips = _box_clip_names()
-    # Each entry is (name, robot_qpos, kind, box_pose, skill, attach, contact); the last
+    # Each entry is (name, robot_qpos, kind, box_pose, phase, attach, contact); the last
     # three are None for clips segmented here (loco + OmniRetarget) and explicit for the
     # baked SceneBot pick/drop.
     loaded = []
@@ -109,36 +109,36 @@ def build_library(clips=None, out=C.LIB_PATH):
         from . import scenebot_pick
         sb_folds = max(1, C.SCENEBOT_ROT_FOLDS)
         for name, q, bp, ct, at, code in scenebot_pick.build():
-            sk = np.full(len(q), code, np.int32)
+            ph = np.full(len(q), code, np.int32)
             for k in range(sb_folds):
                 bpk = bp if k == 0 else _yaw_box_pose(bp, k * 2.0 * np.pi / sb_folds)
                 tag = name if k == 0 else f"{name}_rot{k}"
-                loaded.append((tag, q, "scenebot", bpk, sk, at, ct))
+                loaded.append((tag, q, "scenebot", bpk, ph, at, ct))
 
     qpos, clip_id, frame_in_clip, lengths, names = [], [], [], [], []
-    skill, box_pose_all, box_attach, contact_all = [], [], [], []
+    phase, box_pose_all, box_attach, contact_all = [], [], [], []
     n_box = 0
-    for cid, (name, q, kind, bpose, sk, at, ct) in enumerate(loaded):
+    for cid, (name, q, kind, bpose, ph, at, ct) in enumerate(loaded):
         n = len(q)
         if kind == "box":
-            sk, at, _info = boxes.segment_phases(bpose[:, 0:3])
+            ph, at, _info = boxes.segment_phases(bpose[:, 0:3])
             if C.SCENEBOT_PICK:                      # OmniRetarget contributes carry only
-                sk = np.where(np.isin(sk, [Skill.PICK, Skill.PLACE]),
-                              Skill.DISABLED, sk).astype(np.int32)
+                ph = np.where(np.isin(ph, [Phase.PICK, Phase.PLACE]),
+                              Phase.DISABLED, ph).astype(np.int32)
             bp = bpose
             n_box += 1
         elif kind == "scenebot":
             bp = bpose
             n_box += 1
         else:                                        # locomotion
-            sk = np.zeros(n, np.int32)
+            ph = np.zeros(n, np.int32)
             bp, at = np.tile(np.r_[0, 0, 0, IDENTITY_QUAT], (n, 1)), np.zeros(n, bool)
         if ct is None:
             # No recorded labels: wrists prompt object contact while the box is
             # attached (carry), feet/pelvis stay zero like the demo's plain walking.
             ct = np.zeros((n, 5))
             ct[:, 2] = ct[:, 3] = at.astype(float)
-        qpos.append(q); skill.append(sk)
+        qpos.append(q); phase.append(ph)
         box_pose_all.append(bp); box_attach.append(at); contact_all.append(ct)
         clip_id.append(np.full(n, cid))
         frame_in_clip.append(np.arange(n))
@@ -159,7 +159,7 @@ def build_library(clips=None, out=C.LIB_PATH):
         frame_in_clip=np.concatenate(frame_in_clip).astype(np.int32),
         lengths=np.array(lengths, np.int32),
         clip_names=np.array(names),
-        skill=np.concatenate(skill).astype(np.int32),
+        phase=np.concatenate(phase).astype(np.int32),
         box_pose=np.concatenate(box_pose_all).astype(np.float32),
         box_attach=np.concatenate(box_attach),
         contact=np.concatenate(contact_all).astype(np.float32),

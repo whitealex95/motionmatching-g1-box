@@ -7,7 +7,7 @@ state machine driven by the B trigger:
 
     LOCOMOTION --B (near box)--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
 
-PICK and PLACE are *ridden* (no search mid-skill, entered from their start by a
+PICK and PLACE are *ridden* (no search mid-phase, entered from their start by a
 nearest-neighbour match of the live pose + box pose). CARRY is searched every SEARCH_TIME like
 locomotion, but only among CARRY frames and with the box pose added to the query. The only
 database transitions ever made are exactly those in the chain above (req. 13):
@@ -62,18 +62,18 @@ class MotionMatcher:
         self.prDB, self.paDB = db["pelvLocalRot"], db["pelvLocalAng"]
         self.boxLocalPos, self.boxLocalRot = db["boxLocalPos"], db["boxLocalRot"]
         self.boxLocalPosVel, self.boxLocalAng = db["boxLocalPosVel"], db["boxLocalAng"]
-        # Per-skill normalized feature matrices + raw blocks for cross-database queries.
+        # Per-phase normalized feature matrices + raw blocks for cross-database queries.
         self.Xloco, self.Xcarry = db["dbs"]["loco"]["X"], db["dbs"]["carry"]["X"]
         self.rawXpos, self.rawXvel = db["rawXpos"], db["rawXvel"]
-        self.skill = lib["skill"]
+        self.phase = lib["phase"]
         self.box_attach = lib["box_attach"]
         self.Ttimes = HORIZONS / FPS
         TAIL = C.SEARCH_TAIL
 
-        # ---- Locomotion KD-trees: one per locomotion clip (skill==0 everywhere) ----
+        # ---- Locomotion KD-trees: one per locomotion clip (phase==LOCO everywhere) ----
         self.loco_trees = []                                 # (rs, re, tree)
         for rs, re in zip(self.starts, self.stops):
-            if self.skill[rs:re].any() or re - rs <= TAIL:   # skip box clips & tiny clips
+            if self.phase[rs:re].any() or re - rs <= TAIL:   # skip box clips & tiny clips
                 continue
             self.loco_trees.append((int(rs), int(re), cKDTree(self.Xloco[rs:re - TAIL])))
 
@@ -210,8 +210,8 @@ class MotionMatcher:
                 self._start_move()
             desiredVel, desiredFace = self._steer_to_stance()
             if self._at_stance():
-                self._enter_skill(self.pick_enter, self.pick_end_of,
-                                  State.PICK)
+                self._enter_ride(self.pick_enter, self.pick_end_of,
+                                 State.PICK)
                 desiredVel = np.zeros(3)
                 desiredFace = np.zeros(3)
             elif self.move_timer > C.MOVE_TIMEOUT:
@@ -234,7 +234,7 @@ class MotionMatcher:
         if self.state is State.LOCOMOTION and len(self.pick_enter):
             self._start_move()
         elif self.state is State.CARRY:
-            self._enter_skill(self.place_enter, self.place_end_of, State.PLACE)
+            self._enter_ride(self.place_enter, self.place_end_of, State.PLACE)
 
     # --- move-to-pick (approach heuristics, from motionmatching-g1-shelf) ----
     def _start_move(self):
@@ -397,10 +397,10 @@ class MotionMatcher:
                 self.Tdir[k] = np.array([heading[0], heading[1], 0.0])
                 k += 1
 
-    def _enter_skill(self, enter_frames, end_of, state):
+    def _enter_ride(self, enter_frames, end_of, state):
         """Nearest-neighbour match the live pose + box pose to the start of a pick/place phase
-        (in that skill's own database), inertialize into it, and lock the skill so it
-        is ridden to the phase end."""
+        (in that phase's own database), inertialize into it, and lock the playhead so the
+        phase is ridden to its end."""
         if len(enter_frames) == 0:
             return
         dbname = state.name.lower()                  # State.PICK -> the 'pick' db
@@ -511,7 +511,7 @@ class MotionMatcher:
 
     # --- match + advance + reconstruct ---------------------------------------
     def _query_from_trajectory(self, desiredVel=None):
-        # ---- Search (skipped while riding a pick/place skill) ----
+        # ---- Search (skipped while riding a pick/place phase) ----
         if self.box_locked == 0 and self.searchTimer <= 0.0:
             if self.state is State.CARRY:
                 self._search_carry()

@@ -15,7 +15,7 @@ from scipy.signal import savgol_filter
 
 from . import config as C
 from . import quat
-from .states import Skill
+from .states import Phase
 
 FPS = C.FPS
 HORIZONS = np.array(C.HORIZONS)
@@ -161,16 +161,16 @@ def build_db(lib):
         boxLocalAng[rs:re] = central_diff_ang(boxLocalRot[rs:re], FPS)     # (T,3) local ang. vel
 
     # ---- Three normalized search databases (genoview-style per-block scaling) ----
-    # Each frame belongs to one skill; we normalize each database over its own frames so the
+    # Each frame belongs to one phase; we normalize each database over its own frames so the
     # block statistics match what is actually searched. A block's scale is its (shared) std
     # divided by an optional weight, so a heavier block contributes more to the L2 distance.
-    skill = lib["skill"] if "skill" in lib else np.zeros(T, np.int32)
-    masks = {s.db: skill == s for s in
-             (Skill.LOCO, Skill.CARRY, Skill.PICK, Skill.PLACE)}
+    phase = lib["phase"] if "phase" in lib else np.zeros(T, np.int32)
+    masks = {p.db: phase == p for p in
+             (Phase.LOCO, Phase.CARRY, Phase.PICK, Phase.PLACE)}
 
     def make_db(blocks, mask):
         """blocks: list of (array (T,d), weight). Returns (Xn, offset, scale) over mask."""
-        if not mask.any():                            # no frames of this skill in the library
+        if not mask.any():                            # no frames of this phase in the library
             mask = np.ones(T, bool)
         X = np.concatenate([b for b, _ in blocks], -1)
         offset = X[mask].mean(0)

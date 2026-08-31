@@ -2,7 +2,7 @@
 
     paths.py          repo-relative data / scene / cache locations
     library.py        WHAT the motion library contains and how it is baked
-                      (clips, trims, folds, skill segmentation, box geometry)
+                      (clips, trims, folds, phase segmentation, box geometry)
     matching.py       motion-matching search: features, springs, biases, weights
     state_machine.py  the B-driven pick/carry/place behavior: command speeds,
                       the move-to-pick approach, box spawn
