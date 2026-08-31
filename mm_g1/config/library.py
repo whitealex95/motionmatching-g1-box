@@ -100,7 +100,7 @@ CONTACT_RELEASE_ADVANCE = 1.0
 # Same idea for the OmniRetarget clips (proxy or sidecar labels), applied
 # after label resolution; NEGATIVE onset = contact starts EARLIER (preload
 # before the box moves). SceneBot's baked labels use the knobs above only.
-OMNI_CONTACT_ONSET_DELAY = -0.5
+OMNI_CONTACT_ONSET_DELAY = 0.0
 OMNI_CONTACT_RELEASE_ADVANCE = 0.0
 BOX_HALF = (0.2, 0.2, 0.2)  # SceneBot free_box half extents. Default: (0.15, 0.10, 0.15)
 BOX_REST_Z = BOX_HALF[2]       # the SceneBot box rests on the floor at its half height
