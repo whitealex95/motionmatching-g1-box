@@ -27,7 +27,6 @@ def run(video=None):
     # Box off the start axis and turned: the approach must corner and pick a fold.
     m.boxPos = np.array([1.7, 0.9, C.BOX_REST_Z])
     m.boxRot = yaw_quat(np.deg2rad(40.0))
-    m.boxPosPrev = m.boxPos.copy()
 
     frames = []
     render = None

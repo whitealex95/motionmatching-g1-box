@@ -159,8 +159,6 @@ class Demo:
                 # Live box feedback: the physical box is the truth while not held.
                 mm.boxPos[:] = d.qpos[self.bq:self.bq + 3]
                 mm.boxRot[:] = d.qpos[self.bq + 3:self.bq + 7]
-                mm.boxPosPrev[:] = mm.boxPos
-                mm.boxVelWorld[:] = 0.0
             else:
                 if not self._prev_mm_held:
                     self._hold_start_f = self.motion.timesteps
@@ -229,8 +227,6 @@ class Demo:
             mm.box_held = False
             mm.boxPos[:] = self.data.qpos[self.bq:self.bq + 3]
             mm.boxRot[:] = self.data.qpos[self.bq + 3:self.bq + 7]
-            mm.boxPosPrev[:] = mm.boxPos
-            mm.boxVelWorld[:] = 0.0
             mm.searchTimer = 0.0
             if self.t - getattr(self, '_last_grip_abort', -1.0) > 0.5:
                 self._last_grip_abort = self.t
