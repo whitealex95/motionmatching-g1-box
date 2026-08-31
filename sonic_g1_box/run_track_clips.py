@@ -272,7 +272,7 @@ def main():
     ap.add_argument('--shoulder-squeeze', type=float, default=0.6)
     ap.add_argument('--wrist-squeeze', type=float, default=0.2)
     ap.add_argument('--shoulder-open', type=float, default=0.4)
-    ap.add_argument('--arm-kp', type=float, default=1.5)
+    ap.add_argument('--arm-kp', type=float, default=1.0)
     ap.add_argument('--arm-kd', type=float, default=1.0)
     ap.add_argument('--box-mass', type=float, default=0.25)
     ap.add_argument('--box-friction', type=float, default=1.5)
