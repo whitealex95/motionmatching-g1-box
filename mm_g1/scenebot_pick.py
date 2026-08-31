@@ -87,7 +87,10 @@ class _Sampler:
 
 def _erode(track, on_delay, off_advance):
     """Shrink each contiguous ON interval of a 0/1 track: start `on_delay`
-    frames later, end `off_advance` frames earlier (dropped if it closes)."""
+    frames later, end `off_advance` frames earlier (dropped if it closes).
+    Playback-boundary edges are NOT real events and stay put: a run starting
+    at frame 0 (the drop begins already holding) keeps its start, and a run
+    ending at the last frame (the pick ends still holding) keeps its end."""
     if on_delay == 0 and off_advance == 0:
         return track
     out = np.zeros_like(track)
@@ -95,7 +98,8 @@ def _erode(track, on_delay, off_advance):
     if len(on):
         splits = np.split(on, np.flatnonzero(np.diff(on) > 1) + 1)
         for run in splits:
-            s, e = run[0] + on_delay, run[-1] - off_advance
+            s = run[0] + (on_delay if run[0] > 0 else 0)
+            e = run[-1] - (off_advance if run[-1] < len(track) - 1 else 0)
             if s <= e:
                 out[s:e + 1] = 1.0
     return out

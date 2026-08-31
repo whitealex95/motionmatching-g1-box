@@ -36,7 +36,8 @@ CLIP_TRIM = {
 # v7: single SceneBot pick/drop (clip 11 half-speed + reversed), baked contact labels,
 #     OmniRetarget clips reduced to carry-only, SceneBot 0.3x0.2x0.3 box.
 # v8: per-frame label renamed skill -> phase (lib key + Phase enum).
-LIB_VERSION = 8
+# v9: contact-label erosion is boundary-aware (playback-edge holds stay put).
+LIB_VERSION = 9
 
 # The locomotion library: GMR-retargeted LAFAN1 clips (subject5) -- walk, run, and
 # push-and-stumble. Each clip is added twice (normal + L/R MIRRORED, GenoView-style) for
@@ -88,12 +89,14 @@ SCENEBOT_PLACE_SPEED = 1.0     # reverse playback runs at full speed in the demo
 # vertical, so the baked pick/drop is replicated at 0 and 180 deg of box yaw only.
 # (The approach heuristic aligns the stance to the live box yaw, so 2 folds suffice.)
 SCENEBOT_ROT_FOLDS = 2
-# Manual tuning of the baked HAND-contact labels, in seconds of playback time,
-# applied per hand to each contiguous ON interval of both baked playbacks
-# (pick and drop): ONSET_DELAY moves the label's start later, RELEASE_ADVANCE
-# moves its end earlier. The vendored annotation itself is never modified.
+# Manual tuning of the baked HAND-contact labels, in seconds of playback
+# time. Only REAL events move -- playback-boundary edges stay put -- so
+# ONSET_DELAY delays the pick's touch (the drop starts already holding and
+# is untouched), and RELEASE_ADVANCE makes the drop let go earlier (the
+# pick ends still holding and is untouched). The vendored annotation itself
+# is never modified.
 CONTACT_ONSET_DELAY = 0.75
-CONTACT_RELEASE_ADVANCE = 0.0
+CONTACT_RELEASE_ADVANCE = 0.75
 BOX_HALF = (0.2, 0.2, 0.2)  # SceneBot free_box half extents. Default: (0.15, 0.10, 0.15)
 BOX_REST_Z = BOX_HALF[2]       # the SceneBot box rests on the floor at its half height
 
