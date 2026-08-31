@@ -172,6 +172,15 @@ class MotionMatcher:
         if self.box_locked == 0:
             self.box_pending = True
 
+    def trigger_pick_instant(self):
+        """N: skip the approach entirely -- nearest-neighbour match the live
+        pose + box pose into the best PICK entry right now."""
+        if (self.box_locked == 0 and len(self.pick_enter)
+                and self.state in (State.LOCOMOTION, State.MOVE_TO_PICK)):
+            self.state = State.LOCOMOTION
+            self.box_pending = False
+            self._enter_ride(self.pick_enter, self.pick_end_of, State.PICK)
+
     # --- inertialized cut ----------------------------------------------------
     def _inertialize_into(self, b, lo, hi):
         """Capture the pose discontinuity from the current frame to frame `b` (joints,
