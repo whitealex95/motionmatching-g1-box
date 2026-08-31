@@ -20,3 +20,6 @@ scenebot_g1_box/out/scenebot_mm_pickup.mp4
 scenebot_g1_box/out/stress/*.mp4
 scenebot_g1_box/out/stress_shape/*.mp4
 scenebot_g1_box/out/stress_single/*.mp4
+
+# per-clip tracking sweep videos (2 variants x 20 clips x ~7 MB) stay on disk
+sonic_g1_box/out/track_clips/

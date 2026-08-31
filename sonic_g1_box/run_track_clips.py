@@ -5,8 +5,9 @@ the clip itself (resampled 30 -> 50 Hz) is the reference SONIC tracks in full
 physics with the frictional carton. The label-gated squeeze/open biases work
 exactly as in run_grasp, driven by the clip's own labels (sidecar or rule).
 
-    python run_track_clips.py                        # all clips x all variants
-    python run_track_clips.py --sonic release --clips sub12_largebox_071_original_mujoco
+    python run_track_clips.py                        # all clips x all variants, headless
+    python run_track_clips.py --video                # + an mp4 per run in out/track_clips/
+    python run_track_clips.py --viewer --sonic release --clips sub12_largebox_071_original_mujoco
 """
 import argparse
 import os
@@ -16,7 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
-os.environ.setdefault('MUJOCO_GL', 'egl')
+os.environ.setdefault('MUJOCO_GL',
+                      'glfw' if '--viewer' in sys.argv else 'egl')
 
 import numpy as np
 import mujoco
@@ -60,6 +62,53 @@ class ClipMotion:
         self.joint_pos, self.joint_vel = ang, vel
         self.body_pos = q[:, None, 0:3]
         self.body_quat = q[:, None, 3:7]
+
+
+class _Render:
+    def __init__(self, model, data, bq, path=None, viewer=False):
+        self.model, self.data, self.bq = model, data, bq
+        self.writer = self.renderer = self.viewer = None
+        self.look = self._focus()
+        if path:
+            import imageio
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            self.renderer = mujoco.Renderer(model, 720, 1280)
+            self.writer = imageio.get_writer(path, fps=int(POLICY_FPS),
+                                             codec='libx264', quality=8,
+                                             macro_block_size=None)
+            self.cam = mujoco.MjvCamera()
+            self.cam.distance, self.cam.azimuth, self.cam.elevation = \
+                2.8, 120.0, -18.0
+        if viewer:
+            import mujoco.viewer as mj_viewer
+            self.viewer = mj_viewer.launch_passive(
+                model, data, show_left_ui=False, show_right_ui=False)
+            self.viewer.cam.distance, self.viewer.cam.azimuth = 2.8, 120.0
+            self.viewer.cam.elevation = -18.0
+            self.viewer.cam.lookat[:] = self.look
+
+    def _focus(self):
+        d = self.data
+        return np.array([0.55 * d.qpos[0] + 0.45 * d.qpos[self.bq],
+                         0.55 * d.qpos[1] + 0.45 * d.qpos[self.bq + 1], 0.7])
+
+    def frame(self):
+        self.look += 0.06 * (self._focus() - self.look)
+        if self.renderer is not None:
+            self.cam.lookat[:] = self.look
+            self.renderer.update_scene(self.data, camera=self.cam)
+            self.writer.append_data(self.renderer.render())
+        if self.viewer is not None:
+            import time
+            self.viewer.cam.lookat[:] = self.look
+            self.viewer.sync()
+            time.sleep(P.CONTROL_DT)
+
+    def close(self):
+        if self.writer is not None:
+            self.writer.close()
+        if self.viewer is not None:
+            self.viewer.close()
 
 
 def track_clip(stem, variant, args):
@@ -125,16 +174,22 @@ def track_clip(stem, variant, args):
                               - kds * data.qvel[dq_at])
             mujoco.mj_step(model, data)
 
+    path = (os.path.join(HERE, 'out', 'track_clips', f'{variant}_{stem}.mp4')
+            if args.video else None)
+    ren = _Render(model, data, bq, path=path, viewer=args.viewer)
     for _ in range(int(args.settle / P.CONTROL_DT)):     # policy paused at frame 0
         tick()
+        ren.frame()
     policy.start_play()
     peak, fallen, fall_f = 0.0, False, None
     for _ in range(motion.timesteps + int(1.0 / P.CONTROL_DT)):
         tick()
+        ren.frame()
         peak = max(peak, float(data.qpos[bq + 2]))
         if data.qpos[2] < FALL_Z:
             fallen, fall_f = True, int(policy.current_frame)
             break
+    ren.close()
     lifted = peak > z_rest + 0.25
     return dict(lifted=lifted, peak=peak, ref_peak=ref_peak,
                 end_z=float(data.qpos[bq + 2]), fallen=fallen, fall_f=fall_f)
@@ -154,6 +209,10 @@ def main():
     ap.add_argument('--box-friction', type=float, default=1.5)
     ap.add_argument('--substeps', type=int, default=20)
     ap.add_argument('--settle', type=float, default=1.0)
+    ap.add_argument('--video', action='store_true',
+                    help='write out/track_clips/<variant>_<stem>.mp4 per run')
+    ap.add_argument('--viewer', action='store_true',
+                    help='watch live (one window per clip; needs a display)')
     args = ap.parse_args()
     stems = args.clips or _box_clip_names()
 
