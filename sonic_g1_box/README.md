@@ -43,13 +43,13 @@ on this branch.
 and gitignored, so run `assets/sonic/policy/fetch_models.sh` once to
 download them.
 
-`--robot scenebot` swaps in the SceneBot flat-hand G1
-(assets/scenebot/scene_robot_only.xml) instead of the NVIDIA model.
-Kinematic (12 s) still succeeds; the
-frictional grasp does NOT — the flat palm pads protrude ~1.4 cm less than
-the bolted-on capsule pads and need face-parallel wrist alignment that
-SONIC's arm tracking doesn't deliver, so the box slips on every attempt
-(swept squeeze 0.4-0.7, arm-gain 6-8, `--box-scale` 0.85-1.0).
+The robot model defaults to SceneBot's flat-hand G1
+(assets/scenebot/scene_robot_only.xml) — the model the motion and the
+contact labels were made with, using its own flat palm collision boxes.
+`--robot sonic` swaps in NVIDIA's 29-DoF SONIC scene instead; its rubber
+hands are visual-only, so capsule contact pads are bolted onto the wrists
+(a different contact geometry than the demo's). With either robot the
+frictional grasp currently slips with default tuning.
 
 A grip check closes the loop between the kinematic reference and physics:
 the matcher's box is clip-driven once its data marks it held, so if the
