@@ -34,19 +34,14 @@ class GraspDemo(Demo):
 
     def _adjust_target(self, target, f):
         _, _, state, _, (lc, rc) = self.motion.meta_at(f)
-        # During the pick/place ride a hand whose contact label is OFF opens
-        # OUTWARD instead (clears the box on the way down and after release).
-        opening = state in (State.PICK, State.PLACE)
         target = target.copy()
-        if lc:
+        if lc or rc:                              # closing: squeeze both hands
             target[L_SHOULDER_ROLL] -= self.args.shoulder_squeeze
-            target[L_WRIST_YAW] -= self.args.wrist_squeeze
-        elif opening:
-            target[L_SHOULDER_ROLL] += self.args.shoulder_open
-        if rc:
             target[R_SHOULDER_ROLL] += self.args.shoulder_squeeze
+            target[L_WRIST_YAW] -= self.args.wrist_squeeze
             target[R_WRIST_YAW] += self.args.wrist_squeeze
-        elif opening:
+        elif state in (State.PICK, State.PLACE):  # opening: clear the box
+            target[L_SHOULDER_ROLL] += self.args.shoulder_open
             target[R_SHOULDER_ROLL] -= self.args.shoulder_open
         return target
 
