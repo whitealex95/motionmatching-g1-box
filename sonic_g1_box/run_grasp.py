@@ -32,7 +32,7 @@ class GraspDemo(Demo):
         self.kds[CUSTOM_ARM_JOINTS] *= self.args.arm_kd
 
     def _adjust_target(self, target, f):
-        lc, rc = self.motion.meta_at(f)[4]
+        lc, rc = self.motion.meta_at(f)[4] # left_contact, right_contact
         if lc or rc:
             target = target.copy()
             if lc:

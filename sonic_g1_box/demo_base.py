@@ -534,7 +534,7 @@ def build_argparser(video_name):
                     help="physical box: the SceneBot free box the library is "
                          'baked for (C.BOX_HALF), or the OmniRetarget MEDICINE '
                          'carton mesh (a different, larger size)')
-    ap.add_argument('--box-mass', type=float, default=0.5)
+    ap.add_argument('--box-mass', type=float, default=0.25)
     ap.add_argument('--substeps', type=int, default=20,
                     help='physics substeps per 50 Hz control tick (timestep = '
                          "0.02/substeps). SONIC's official sim2sim uses 4 "

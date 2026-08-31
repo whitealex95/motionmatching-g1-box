@@ -19,11 +19,12 @@ BOX_TEX = os.path.join(ROOT, 'assets', 'largebox', 'medicinebox.png')
 
 PALM_FRICTION = [1.5, 0.02, 0.0005]
 
-# Box contact: [stiffness N/m, damping N s/m], negative = mass-independent
-# (a light box stays firm); priority makes them win over floor/hand defaults.
-# Edit + rerun to tune. Toward zero = softer/bouncier, e.g. squishy
-# [-2000, -15], bouncy [-40000, -10]. Stiffer than -40000 needs more --substeps.
-BOX_SOLREF = [-40000.0, -60.0]
+# Box contact: [timeconst s, dampratio], MuJoCo's mass-scaled convention --
+# stiffness = mass/timeconst^2 (~16 kN/m at the default 0.25 kg; a much
+# lighter box gets proportionally soft again). Edit + rerun: longer timeconst = softer,
+# dampratio < 1 = bouncy. Needs timeconst >= 2*timestep, i.e. --substeps >= 10.
+# Priority makes these (and the box friction) win over floor/hand defaults.
+BOX_SOLREF = [0.004, 1.0]
 BOX_PRIORITY = 2
 
 
@@ -41,7 +42,7 @@ def _carton_obb():
 GHOST_CENTER, GHOST_MAT, GHOST_HALF = _carton_obb()
 
 
-def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
+def build_model(scene_xml_path, mode, box_mass=0.25, off_w=1280, off_h=720,
                 box_scale=1.0, box_type='scenebot', box_friction=1.5):
     """box_type 'scenebot' (default) = the SceneBot free box with the
     C.BOX_HALF extents the motion library is baked for; 'carton' = the
