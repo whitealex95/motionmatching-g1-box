@@ -6,7 +6,7 @@ physics with the frictional carton. The label-gated squeeze/open biases work
 exactly as in run_grasp, driven by the clip's own labels (sidecar or rule).
 
     python run_track_clips.py                        # all clips x all variants, headless
-    python run_track_clips.py --video                # + an mp4 per run in out/track_clips/
+    python run_track_clips.py --video   # + out/track_clips/<stem>_<sonic>_<success|fail>.mp4
     python run_track_clips.py --viewer --sonic release --clips sub12_largebox_071_original_mujoco
 """
 import argparse
@@ -32,6 +32,7 @@ from mm_g1.data import _box_clip_names, _load_box_npz
 from mm_g1.states import Phase
 
 import box_scene
+from demo_base import GHOST_RGBA, CONTACT_RGBA, _EYE3
 from mm_stream import nlerp
 from run_grasp import (L_SHOULDER_ROLL, R_SHOULDER_ROLL,
                        L_WRIST_YAW, R_WRIST_YAW, CUSTOM_ARM_JOINTS)
@@ -65,8 +66,13 @@ class ClipMotion:
 
 
 class _Render:
-    def __init__(self, model, data, bq, path=None, viewer=False):
-        self.model, self.data, self.bq = model, data, bq
+    def __init__(self, model, data, bq, q_at, ghost, path=None, viewer=False):
+        self.model, self.data, self.bq, self.q_at = model, data, bq, q_at
+        self.ghost = ghost                       # (centre, axes, half) box OBB
+        self.gdata = mujoco.MjData(model)        # ghost FK only
+        self.gbodies = [b for b in range(1, model.nbody)
+                        if mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b)
+                        != 'largebox']
         self.writer = self.renderer = self.viewer = None
         self.look = self._focus()
         if path:
@@ -92,14 +98,53 @@ class _Render:
         return np.array([0.55 * d.qpos[0] + 0.45 * d.qpos[self.bq],
                          0.55 * d.qpos[1] + 0.45 * d.qpos[self.bq + 1], 0.7])
 
-    def frame(self):
+    def _draw_ghost(self, scn, ref_q, in_contact):
+        """Amber reference skeleton + reference box (green while a hand-contact
+        label is on) -- the same overlay as the grasp demo."""
+        g = self.gdata
+        g.qpos[:] = 0.0
+        g.qpos[3] = 1.0
+        g.qpos[0:7] = ref_q[0:7]
+        g.qpos[self.q_at] = ref_q[7:36]
+        mujoco.mj_kinematics(self.model, g)
+        for b in self.gbodies:
+            pa = self.model.body_parentid[b]
+            if pa == 0 or scn.ngeom >= scn.maxgeom:
+                continue
+            a, c = g.xpos[pa], g.xpos[b]
+            if np.linalg.norm(c - a) < 1e-6:
+                continue
+            gm = scn.geoms[scn.ngeom]
+            mujoco.mjv_initGeom(gm, mujoco.mjtGeom.mjGEOM_CAPSULE,
+                                np.zeros(3), np.zeros(3), _EYE3, GHOST_RGBA)
+            mujoco.mjv_connector(gm, mujoco.mjtGeom.mjGEOM_CAPSULE, 0.025,
+                                 np.asarray(a, float), np.asarray(c, float))
+            scn.ngeom += 1
+        if scn.ngeom < scn.maxgeom:
+            gc, gmat, ghalf = self.ghost
+            gm = scn.geoms[scn.ngeom]
+            mat = np.empty(9)
+            mujoco.mju_quat2Mat(mat, np.asarray(ref_q[39:43], float))
+            R = mat.reshape(3, 3) @ gmat
+            pos = ref_q[36:39] + mat.reshape(3, 3) @ gc
+            mujoco.mjv_initGeom(gm, mujoco.mjtGeom.mjGEOM_BOX, ghalf,
+                                np.asarray(pos, float), R.ravel(),
+                                CONTACT_RGBA if in_contact else GHOST_RGBA)
+            scn.ngeom += 1
+
+    def frame(self, ref_q, in_contact):
         self.look += 0.06 * (self._focus() - self.look)
         if self.renderer is not None:
             self.cam.lookat[:] = self.look
             self.renderer.update_scene(self.data, camera=self.cam)
+            self._draw_ghost(self.renderer.scene, ref_q, in_contact)
             self.writer.append_data(self.renderer.render())
         if self.viewer is not None:
             import time
+            scn = getattr(self.viewer, 'user_scn', None)
+            if scn is not None:
+                scn.ngeom = 0
+                self._draw_ghost(scn, ref_q, in_contact)
             self.viewer.cam.lookat[:] = self.look
             self.viewer.sync()
             time.sleep(P.CONTROL_DT)
@@ -157,8 +202,10 @@ def track_clip(stem, variant, args):
         # freejoint qvel[3:6] is already body-local (gyro convention)
         target = policy.step(data.qpos[3:7].copy(), data.qvel[3:6].copy(),
                              data.qpos[q_at], data.qvel[dq_at])
-        f30 = motion.src30[min(policy.current_frame, motion.timesteps - 1)]
+        f50 = min(policy.current_frame, motion.timesteps - 1)
+        f30 = motion.src30[f50]
         lc, rc = contact[f30, 2] > 0.5, contact[f30, 3] > 0.5
+        tick.f50, tick.in_contact = f50, bool(lc or rc)
         if lc or rc:
             target = target.copy()
             target[L_SHOULDER_ROLL] -= args.shoulder_squeeze
@@ -174,24 +221,39 @@ def track_clip(stem, variant, args):
                               - kds * data.qvel[dq_at])
             mujoco.mj_step(model, data)
 
-    path = (os.path.join(HERE, 'out', 'track_clips', f'{variant}_{stem}.mp4')
-            if args.video else None)
-    ren = _Render(model, data, bq, path=path, viewer=args.viewer)
+    tmp = (os.path.join(HERE, 'out', 'track_clips', f'.{variant}_{stem}.tmp.mp4')
+           if args.video else None)
+    ren = _Render(model, data, bq, q_at, ids['ghost'], path=tmp,
+                  viewer=args.viewer)
+    # Success = still holding when the reference starts the put-down.
+    ref_z = motion.qpos[:, 38]
+    carry = np.flatnonzero(ref_z > z_rest + 0.25)
+    carry_end = int(carry[-1]) if len(carry) else motion.timesteps - 1
+    z_at_carry_end = None
     for _ in range(int(args.settle / P.CONTROL_DT)):     # policy paused at frame 0
         tick()
-        ren.frame()
+        ren.frame(motion.qpos[tick.f50], tick.in_contact)
     policy.start_play()
     peak, fallen, fall_f = 0.0, False, None
     for _ in range(motion.timesteps + int(1.0 / P.CONTROL_DT)):
         tick()
-        ren.frame()
+        ren.frame(motion.qpos[tick.f50], tick.in_contact)
         peak = max(peak, float(data.qpos[bq + 2]))
+        if z_at_carry_end is None and tick.f50 >= carry_end:
+            z_at_carry_end = float(data.qpos[bq + 2])
         if data.qpos[2] < FALL_Z:
             fallen, fall_f = True, int(policy.current_frame)
             break
     ren.close()
     lifted = peak > z_rest + 0.25
-    return dict(lifted=lifted, peak=peak, ref_peak=ref_peak,
+    success = (lifted and not fallen and z_at_carry_end is not None
+               and z_at_carry_end > z_rest + 0.15)
+    if tmp:
+        final = os.path.join(HERE, 'out', 'track_clips',
+                             f'{stem}_{variant}_'
+                             f'{"success" if success else "fail"}.mp4')
+        os.replace(tmp, final)
+    return dict(lifted=lifted, peak=peak, ref_peak=ref_peak, success=success,
                 end_z=float(data.qpos[bq + 2]), fallen=fallen, fall_f=fall_f)
 
 
@@ -201,7 +263,7 @@ def main():
     ap.add_argument('--sonic', nargs='+', default=['release', 'sonic_v1_1'],
                     choices=list(P.SONIC_VARIANTS))
     ap.add_argument('--shoulder-squeeze', type=float, default=0.6)
-    ap.add_argument('--wrist-squeeze', type=float, default=0.0)
+    ap.add_argument('--wrist-squeeze', type=float, default=0.2)
     ap.add_argument('--shoulder-open', type=float, default=0.4)
     ap.add_argument('--arm-kp', type=float, default=1.5)
     ap.add_argument('--arm-kd', type=float, default=1.0)
@@ -221,12 +283,13 @@ def main():
         wins = 0
         for stem in stems:
             r = track_clip(stem, variant, args)
-            wins += r['lifted'] and not r['fallen']
+            wins += r['success']
             status = (f"FELL@{r['fall_f']}" if r['fallen'] else
-                      'LIFTED' if r['lifted'] else 'slipped')
+                      'SUCCESS' if r['success'] else
+                      'dropped' if r['lifted'] else 'slipped')
             print(f'  {stem:42s} {status:8s} peak {r["peak"]:.2f} '
                   f'(ref {r["ref_peak"]:.2f}) end z {r["end_z"]:.2f}')
-        print(f'  -> {wins}/{len(stems)} lifted without falling')
+        print(f'  -> {wins}/{len(stems)} carried without dropping')
 
 
 if __name__ == '__main__':
