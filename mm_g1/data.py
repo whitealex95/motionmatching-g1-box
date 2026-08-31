@@ -5,6 +5,8 @@ array and precomputes the per-frame heading and FK foot positions that the featu
 extractor needs. It is cached to data/motion_lib.npz so subsequent launches start
 instantly. See data/gmr_lafan1_g1/README.md for the source pickle format.
 """
+import hashlib
+import json
 import os
 import glob
 import pickle
@@ -164,19 +166,35 @@ def build_library(clips=None, out=C.LIB_PATH):
         box_attach=np.concatenate(box_attach),
         contact=np.concatenate(contact_all).astype(np.float32),
         lib_version=np.array(C.LIB_VERSION),
+        bake_fp=np.array(bake_fingerprint()),
     )
     print(f"Saved library: {qpos.shape[0]} frames, {len(loaded)} clips "
           f"({n_box} box) -> {out}")
     return out
 
 
+def bake_fingerprint():
+    """Digest of every value in config/library.py -- the full bake recipe.
+    A cache built under a different recipe rebuilds automatically, so edits
+    to library settings never need a manual `rm data/motion_lib.npz`.
+    (LIB_VERSION still covers CODE changes in the bake pipeline.)"""
+    from .config import library
+    vals = {k: getattr(library, k) for k in dir(library) if k.isupper()}
+    blob = json.dumps(vals, sort_keys=True, default=repr)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def load_library(path=C.LIB_PATH):
     if os.path.exists(path):
         d = np.load(path, allow_pickle=True)
         version = int(d["lib_version"]) if "lib_version" in d.files else 0
+        fp = str(d["bake_fp"]) if "bake_fp" in d.files else ""
         if version != C.LIB_VERSION:
             print("Cache is stale (library v%d != v%d); rebuilding..." % (version, C.LIB_VERSION))
-            os.remove(path)                          # rebuild with the current heuristics
+            os.remove(path)
+        elif fp != bake_fingerprint():
+            print("Cache is stale (library settings changed); rebuilding...")
+            os.remove(path)
     if not os.path.exists(path):
         build_library(out=path)
     d = np.load(path, allow_pickle=True)

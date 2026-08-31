@@ -3,8 +3,8 @@
 
 Builds (or loads the cached) motion library, opens a MuJoCo window, and lets you steer the
 G1 around with WASD in real time and pick up / carry / set down a box with B. The first
-launch spends ~20-40 s building the feature database (data/motion_lib.npz); later launches
-start instantly.
+launch builds the library cache (data/motion_lib.npz, ~1 s); it rebuilds
+automatically whenever a config/library.py setting changes.
 
 Controls
   W / A / S / D ........ move, relative to the camera
