@@ -43,14 +43,17 @@ POLICY_FPS = 1.0 / P.CONTROL_DT
 
 
 class ClipMotion:
-    """One clip resampled to 50 Hz, exposing the interface SonicPolicy reads."""
+    """One clip resampled to 50 Hz, exposing the interface SonicPolicy reads.
+    `speed` scales playback: 0.5 tracks the motion at half speed (SceneBot's
+    own demo plays its pickup at half speed)."""
 
-    def __init__(self, robot_q, box_pose):
+    def __init__(self, robot_q, box_pose, speed=1.0):
         q30 = np.concatenate([robot_q, box_pose], axis=1)        # (T30, 43)
         T30 = len(q30)
-        t50 = np.arange(0, (T30 - 1) / C.FPS, P.CONTROL_DT)
-        i0 = np.minimum((t50 * C.FPS).astype(int), T30 - 2)
-        a = (t50 * C.FPS - i0)[:, None]
+        t50 = np.arange(0, (T30 - 1) / C.FPS / speed, P.CONTROL_DT)
+        src = t50 * speed * C.FPS
+        i0 = np.minimum(src.astype(int), T30 - 2)
+        a = (src - i0)[:, None]
         q = (1 - a) * q30[i0] + a * q30[i0 + 1]                  # (T50, 43)
         for k, (lo, hi) in enumerate(((3, 7), (39, 43))):
             q[:, lo:hi] = np.array([nlerp(q30[j, lo:hi], q30[j + 1, lo:hi], a[m, 0])
@@ -160,7 +163,7 @@ class _Render:
 def track_clip(stem, variant, args):
     robot_q, box_pose = _load_box_npz(stem)
     phase, _, contact = labels.box_labels(stem, box_pose, C.BOX_DATA_DIR)
-    motion = ClipMotion(robot_q, box_pose)
+    motion = ClipMotion(robot_q, box_pose, speed=args.speed)
     z_rest = float(np.median(box_pose[:C.BOX_REST_FRAMES, 2]))
     ref_peak = float(box_pose[:, 2].max())
 
@@ -291,6 +294,8 @@ def main():
                          "robot's initial heading (reference unchanged)")
     ap.add_argument('--substeps', type=int, default=20)
     ap.add_argument('--settle', type=float, default=1.0)
+    ap.add_argument('--speed', type=float, default=1.0,
+                    help='reference playback speed factor (0.5 = half speed)')
     ap.add_argument('--video', action='store_true',
                     help='write out/track_clips/<variant>_<stem>.mp4 per run')
     ap.add_argument('--viewer', action='store_true',
