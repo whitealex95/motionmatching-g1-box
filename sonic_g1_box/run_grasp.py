@@ -1,11 +1,12 @@
 """Variant (c): true frictional grasp. Nothing attaches the box -- only
 contact friction between the palm pads (and forearms) and the box can lift and
 hold it. The reference hands merely touch the box surface, so tracking alone
-produces no squeeze pressure. While a hand's SceneBot contact label is on at
-the tracked frame, --shoulder-squeeze biases that shoulder-roll PD target
-inward (palm pressure) and --wrist-squeeze toes the wrist yaw in (fingers
-press toward the box); --arm-kp / --arm-kd scale the arm PD so the biases
-become real force.
+produces no squeeze pressure. The SceneBot contact labels at the tracked
+frame drive a single open/close mode for BOTH hands: while either label is
+on, --shoulder-squeeze presses the shoulder rolls in and --wrist-squeeze
+toes the wrist yaws in; while both are off during the PICK/PLACE ride,
+--shoulder-open swings the shoulder rolls out to clear the box.
+--arm-kp / --arm-kd scale the arm PD so the biases become real force.
 """
 import sys
 
@@ -52,14 +53,14 @@ def extra_args(ap):
     ap.add_argument('--arm-kd', type=float, default=1.0,
                     help='scale on the arm PD damping')
     ap.add_argument('--shoulder-open', type=float, default=0.0,
-                    help='outward shoulder-roll bias (rad) during PICK/PLACE '
-                         "while that hand's contact label is OFF")
+                    help='outward shoulder-roll bias (rad), both hands, during '
+                         'PICK/PLACE while both contact labels are off')
     ap.add_argument('--shoulder-squeeze', type=float, default=0.0,
-                    help='inward shoulder-roll bias (rad) while that '
-                         "hand's contact label is on (palm pressure)")
+                    help='inward shoulder-roll bias (rad), both hands, while '
+                         'either contact label is on (palm pressure)')
     ap.add_argument('--wrist-squeeze', type=float, default=0.0,
-                    help="inward wrist-yaw bias (rad) while that hand's "
-                         'label is on (toes the palm into the box)')
+                    help='inward wrist-yaw bias (rad), both hands, while '
+                         'either label is on (toes the palms into the box)')
     ap.set_defaults(max_seconds=60.0)
 
 
