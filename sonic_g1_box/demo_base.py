@@ -140,7 +140,7 @@ class Demo:
                 show_left_ui=False, show_right_ui=False)
             self.viewer.cam.distance, self.viewer.cam.azimuth = 2.8, 120.0
             self.viewer.cam.elevation = -18.0
-            self._vlook = np.array([0.8, 0.0, 0.7])
+            self._vlook = self._focus_point()    # start ON target: no initial glide
             self.viewer.cam.lookat[:] = self._vlook
 
         self.setup_extra()
@@ -320,7 +320,7 @@ class Demo:
     def _open_outputs(self):
         a = self.args
         self.renderer = self.writer = self.cam = None
-        self.look = np.array([0.8, 0.0, 0.7])
+        self.look = self._focus_point()
         if a.no_video:
             return
         import imageio
