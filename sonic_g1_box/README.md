@@ -33,6 +33,12 @@ Measured (defaults, headless, 0.5 kg box everywhere): kinematic succeeds in
 ~13 s; grasp (arm-gain 6, squeeze 0.4) slips and retries but succeeds in
 ~24 s.
 
+`--sonic {release,low_latency,sonic_v1_1}` picks the SONIC checkpoint
+(default `release` = v1.0). The variants live in
+`assets/sonic/policy/<variant>/`; the two non-release decoders are ~150 MB
+and gitignored, so run `assets/sonic/policy/fetch_models.sh` once to
+download them.
+
 `--robot scenebot` swaps in the SceneBot flat-hand G1
 (assets/scenebot/scene_robot_only.xml) instead of the NVIDIA model.
 Kinematic (12 s) still succeeds; the

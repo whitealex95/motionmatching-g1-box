@@ -26,9 +26,27 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(
 SONIC_ASSETS = os.environ.get(
     'SONIC_ASSETS', os.path.join(_REPO_ROOT, 'assets', 'sonic'))
 POLICY_DIR = os.path.join(SONIC_ASSETS, 'policy')
-ENCODER_ONNX = os.path.join(POLICY_DIR, 'model_encoder.onnx')
-DECODER_ONNX = os.path.join(POLICY_DIR, 'model_decoder.onnx')
-OBS_CONFIG_YAML = os.path.join(POLICY_DIR, 'observation_config.yaml')
+
+# Released SONIC checkpoint variants (subdirectories of POLICY_DIR, matching
+# the layout of the HF repo nvidia/GEAR-SONIC). Each holds model_encoder.onnx,
+# model_decoder.onnx, observation_config.yaml.
+#   release      v1.0, 10-frame step-5 lookahead (~200 ms)
+#   low_latency  4-frame smpl / step-1 g1 lookahead (~80 ms), teleop-oriented
+#   sonic_v1_1   v1.1, heading-normalized target orientations
+SONIC_VARIANTS = ('release', 'low_latency', 'sonic_v1_1')
+DEFAULT_VARIANT = 'release'
+
+
+def variant_dir(variant=DEFAULT_VARIANT):
+    if variant not in SONIC_VARIANTS:
+        raise ValueError(f'unknown SONIC variant {variant!r}; '
+                         f'choose from {SONIC_VARIANTS}')
+    d = os.path.join(POLICY_DIR, variant)
+    if not os.path.isfile(os.path.join(d, 'model_encoder.onnx')):
+        raise FileNotFoundError(
+            f'SONIC weights for {variant!r} not found in {d}; '
+            f'run assets/sonic/policy/fetch_models.sh to download them')
+    return d
 G1_SCENE_XML = os.path.join(SONIC_ASSETS, 'g1', 'scene_29dof.xml')
 PLANNER_ONNX = os.path.join(SONIC_ASSETS, 'planner', 'planner_sonic.onnx')
 

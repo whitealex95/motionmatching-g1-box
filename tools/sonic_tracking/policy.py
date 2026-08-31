@@ -58,10 +58,17 @@ OBS_DIMS = {
     'motion_joint_velocities_lowerbody_10frame_step1': 120,
     'motion_joint_positions_wrists_10frame_step1': 60,
     'motion_joint_velocities_wrists_10frame_step1': 60,
+    'motion_anchor_orientation_heading': 6,
+    'motion_anchor_orientation_heading_10frame_step5': 60,
+    'motion_anchor_orientation_heading_10frame_step1': 60,
+    'motion_joint_positions_wrists_4frame_step1': 24,
     'vr_3point_local_target': 9, 'vr_3point_local_orn_target': 12,
     'vr_3point_compliance': 3,
     'smpl_joints_10frame_step1': 720,
+    'smpl_joints_4frame_step1': 288,
     'smpl_anchor_orientation_10frame_step1': 60,
+    'smpl_anchor_orientation_4frame_step1': 24,
+    'smpl_anchor_orientation_heading_10frame_step1': 60,
     'base_angular_velocity': 3, 'body_joint_positions': 29,
     'body_joint_velocities': 29, 'last_actions': 29, 'gravity_dir': 3,
     'his_base_angular_velocity_10frame_step1': 30,
@@ -96,8 +103,11 @@ class _Entry:
 
 
 class SonicPolicy:
-    def __init__(self, policy_dir=None, device='cpu'):
-        policy_dir = policy_dir or P.POLICY_DIR
+    def __init__(self, variant=None, policy_dir=None, device='cpu'):
+        """variant: one of params.SONIC_VARIANTS ('release', 'low_latency',
+        'sonic_v1_1'); policy_dir overrides it with an explicit directory."""
+        self.variant = variant or P.DEFAULT_VARIANT
+        policy_dir = policy_dir or P.variant_dir(self.variant)
         import os
         enc_path = os.path.join(policy_dir, 'model_encoder.onnx')
         dec_path = os.path.join(policy_dir, 'model_decoder.onnx')
@@ -226,9 +236,12 @@ class SonicPolicy:
             return np.zeros(num * 29)
         return self.motion.joint_vel[idx].reshape(-1)
 
-    def _gather_anchor_ori(self, num, step, base_quat):
+    def _gather_anchor_ori(self, num, step, base_quat, heading_only=False):
+        # heading_only is the C++ orientation_mode 1 (motion_anchor_ori_heading,
+        # SONIC v1.1): the left quaternion is the robot's heading yaw only.
         adh = self._apply_delta_heading()
-        base_conj = quat_conjugate(base_quat)
+        left = calc_heading_quat(base_quat) if heading_only else base_quat
+        base_conj = quat_conjugate(left)
         out = np.empty(num * 6)
         for k, f in enumerate(self._future_frames(num, step)):
             new_ref = quat_mul(adh, self.motion.body_quat[f, 0])
@@ -269,8 +282,19 @@ class SonicPolicy:
                 buf[off:off + dim] = self._gather_motion_jvel(10, 5)
             elif name == 'motion_anchor_orientation_10frame_step5':
                 buf[off:off + dim] = self._gather_anchor_ori(10, 5, base_quat)
+            elif name == 'motion_anchor_orientation_10frame_step1':
+                buf[off:off + dim] = self._gather_anchor_ori(10, 1, base_quat)
             elif name == 'motion_anchor_orientation':
                 buf[off:off + dim] = self._gather_anchor_ori(1, 1, base_quat)
+            elif name == 'motion_anchor_orientation_heading_10frame_step5':
+                buf[off:off + dim] = self._gather_anchor_ori(
+                    10, 5, base_quat, heading_only=True)
+            elif name == 'motion_anchor_orientation_heading_10frame_step1':
+                buf[off:off + dim] = self._gather_anchor_ori(
+                    10, 1, base_quat, heading_only=True)
+            elif name == 'motion_anchor_orientation_heading':
+                buf[off:off + dim] = self._gather_anchor_ori(
+                    1, 1, base_quat, heading_only=True)
             elif name == 'motion_joint_positions_10frame_step1':
                 buf[off:off + dim] = self._gather_motion_jpos(10, 1)
             elif name == 'motion_joint_velocities_10frame_step1':

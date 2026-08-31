@@ -97,7 +97,7 @@ class Demo:
         mujoco.mj_forward(self.model, d)
         self.start_xy = d.qpos[0:2].copy()
 
-        self.policy = SonicPolicy(device='cpu')
+        self.policy = SonicPolicy(variant=args.sonic, device='cpu')
         self.policy.streaming = True
         self.policy.set_motion(self.motion)
         # One shared world frame: pin heading alignment to identity so the
@@ -521,6 +521,11 @@ def build_argparser(video_name):
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
     ap.add_argument('--ref-mode', choices=RM.MODES, default='snap-all')
+    ap.add_argument('--sonic', choices=list(P.SONIC_VARIANTS),
+                    default=P.DEFAULT_VARIANT,
+                    help='SONIC checkpoint: release (v1.0), low_latency '
+                         '(~80 ms lookahead), sonic_v1_1 (heading-normalized '
+                         'target orientations)')
     ap.add_argument('--robot', choices=['sonic', 'scenebot'], default='sonic',
                     help="G1 model: NVIDIA's 29-DoF scene or SceneBot's "
                          'flat-hand G1 (assets/scenebot)')
