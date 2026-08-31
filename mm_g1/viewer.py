@@ -39,6 +39,9 @@ _CMD_VEL_RGBA = np.array([0.2, 0.45, 0.95, 1.0], np.float32)
 _CMD_FACE_RGBA = np.array([0.95, 0.85, 0.15, 1.0], np.float32)
 _MARK_R = 0.22
 
+# Box tint while the current frame's hand-contact label is on.
+_CONTACT_RGBA = np.array([0.25, 0.9, 0.35, 1.0])
+
 
 # Movement keys (WASD = travel) and facing keys (arrows = independent facing) -> held set.
 _MOVE_KEYS = {glfw.KEY_W, glfw.KEY_A, glfw.KEY_S, glfw.KEY_D}
@@ -92,8 +95,14 @@ class InteractiveViewer:
         # If the scene carries the interactive box (qpos extends past the robot's 36), seed it
         # at the matcher's spawn so it is visible before the first simulation step.
         self.has_box = self.model.nq >= 43
+        self._box_gid = None
         if self.has_box:
             self.data.qpos[36:43] = self.matcher.box_qpos()
+            try:
+                self._box_gid = self.model.geom('box_geom').id
+                self._box_rgba = self.model.geom_rgba[self._box_gid].copy()
+            except KeyError:
+                pass
 
     # --- input callbacks -----------------------------------------------------
     def _on_key(self, window, key, scancode, action, mods):
@@ -187,6 +196,10 @@ class InteractiveViewer:
                 self.data.qpos[0:36] = world
                 if self.has_box:                       # box freejoint rides at qpos[36:43]
                     self.data.qpos[36:43] = self.matcher.box_qpos()
+                if self._box_gid is not None:          # green while contact is labeled
+                    on = (self.matcher.lib['contact'][self.matcher.cur][2:4] > 0.5).any()
+                    self.model.geom_rgba[self._box_gid] = (
+                        _CONTACT_RGBA if on else self._box_rgba)
                 mujoco.mj_forward(self.model, self.data)
                 acc -= C.DT
 
@@ -301,6 +314,8 @@ class InteractiveViewer:
         body = (f"clip [{cid}]: {clip}\n"
                 f"frame: {fic}/{length - 1}  (global {cur})\n"
                 f"box: {'held' if m.box_held else 'resting'}"
+                f"  contact [{'L' if lib['contact'][cur][2] > 0.5 else '-'}"
+                f"{'R' if lib['contact'][cur][3] > 0.5 else '-'}]"
                 f"   command gizmo: {'on' if self.show_traj else 'off'} (T)\n"
                 "WASD move | arrows face | Shift walk | B box | Space reset\n"
                 "drag orbit | right-drag pan | scroll zoom | Esc quit")

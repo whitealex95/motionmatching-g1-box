@@ -42,12 +42,13 @@ class MMMotion:
 
     def _meta_now(self):
         m = self.matcher
+        lc, rc = m.lib['contact'][m.cur][2:4] > 0.5      # L / R hand labels
         return (int(m.lib['clip_id'][m.cur]), int(m.lib['frame_in_clip'][m.cur]),
-                m.state, bool(m.box_held))
+                m.state, bool(m.box_held), (bool(lc), bool(rc)))
 
     def meta_at(self, f):
-        """Matcher clip/frame/state/held as recorded at buffer frame `f` --
-        the matcher itself has since run ahead of it."""
+        """Matcher (clip, frame, state, held, (L, R) hand contact) as recorded
+        at buffer frame `f` -- the matcher itself has since run ahead of it."""
         return self._meta[min(f, len(self._meta) - 1)]
 
     def _step_matcher(self):

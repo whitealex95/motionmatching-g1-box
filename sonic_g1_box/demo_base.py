@@ -41,6 +41,7 @@ REPLAN_MM_TICKS = 6               # matcher ticks per replan period (0.2 s)
 GRIP_REF_DZ = 0.10                # reference lift before the grip is judged
 GRIP_PHYS_DZ = 0.04               # physical lift that counts as gripped
 GHOST_RGBA = np.array([1.0, 0.75, 0.2, 0.55], np.float32)
+CONTACT_RGBA = np.array([0.25, 0.95, 0.35, 0.55], np.float32)  # ref box while hand contact is labeled
 _EYE3 = np.eye(3).ravel()
 
 
@@ -291,7 +292,7 @@ class Demo:
             mujoco.mj_step(self.model, d)
             self._post_substep(f)
 
-        _, _, state, held = self.motion.meta_at(f)
+        _, _, state, held, _ = self.motion.meta_at(f)
         box_z = float(d.qpos[self.bq + 2])
         self.max_box_z = max(self.max_box_z, box_z)
         if box_z > C.BOX_REST_Z + 0.25:
@@ -354,17 +355,19 @@ class Demo:
             # the carton is tilted in its local frame, so compose its OBB
             gm = scn.geoms[scn.ngeom]
             gc, gmat, ghalf = self.ids['ghost']
+            lc, rc = self.motion.meta_at(f)[4]
             mat = np.empty(9)
             mujoco.mju_quat2Mat(mat, np.asarray(gq[39:43], float))
             R = mat.reshape(3, 3) @ gmat
             pos = gq[36:39] + mat.reshape(3, 3) @ gc
             mujoco.mjv_initGeom(gm, mujoco.mjtGeom.mjGEOM_BOX, ghalf,
-                                np.asarray(pos, float), R.ravel(), GHOST_RGBA)
+                                np.asarray(pos, float), R.ravel(),
+                                CONTACT_RGBA if (lc or rc) else GHOST_RGBA)
             scn.ngeom += 1
 
     def _overlay_text(self):
         f = min(int(self.policy.current_frame), self.motion.timesteps - 1)
-        cid, fic, state, held = self.motion.meta_at(f)
+        cid, fic, state, held, (lc, rc) = self.motion.meta_at(f)
         lib = self.matcher.lib
         clip, length = lib['clip_names'][cid], int(lib['lengths'][cid])
         speed = float(np.linalg.norm(self.data.qvel[0:2]))
@@ -375,7 +378,8 @@ class Demo:
         body = (f'clip [{cid}]: {clip}\n'
                 f'frame: {fic}/{length - 1}  (tracked ref frame {f})\n'
                 f'box: z {box_z:.2f} m'
-                f'  ref-{"held" if held else "resting"}\n'
+                f'  ref-{"held" if held else "resting"}'
+                f'  contact [{"L" if lc else "-"}{"R" if rc else "-"}]\n'
                 f'ref-mode: {self.ref_mode}')
         return title, body
 
@@ -497,7 +501,7 @@ def build_argparser(video_name):
     ap.add_argument('--max-seconds', type=float, default=40.0)
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
-    ap.add_argument('--ref-mode', choices=RM.MODES, default='snap-all')
+    ap.add_argument('--ref-mode', choices=RM.MODES, default='anchor')
     ap.add_argument('--sonic', choices=list(P.SONIC_VARIANTS),
                     default=P.DEFAULT_VARIANT,
                     help='SONIC checkpoint: release (v1.0), low_latency '
