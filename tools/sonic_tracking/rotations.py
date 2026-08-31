@@ -77,28 +77,3 @@ def quat_to_6d(q):
     motion_anchor_ori format: R00,R01,R10,R11,R20,R21)."""
     R = quat_to_mat(q)
     return R[:, :2].reshape(-1)
-
-
-def quat_slerp(q0, q1, t):
-    """Spherical interpolation between two wxyz quaternions (scalar t)."""
-    q0 = np.asarray(q0, float) / np.linalg.norm(q0)
-    q1 = np.asarray(q1, float) / np.linalg.norm(q1)
-    d = float(np.dot(q0, q1))
-    if d < 0.0:
-        q1, d = -q1, -d
-    if d > 0.9995:
-        out = q0 + t * (q1 - q0)
-        return out / np.linalg.norm(out)
-    th = np.arccos(np.clip(d, -1.0, 1.0))
-    return (np.sin((1 - t) * th) * q0 + np.sin(t * th) * q1) / np.sin(th)
-
-
-def quat_to_angle_axis(q):
-    """(angle, axis) of a single wxyz quaternion, angle in [-pi, pi]."""
-    q = np.asarray(q, float) / np.linalg.norm(q)
-    if q[0] < 0:
-        q = -q
-    sin_half = np.linalg.norm(q[1:])
-    angle = 2.0 * np.arctan2(sin_half, q[0])
-    axis = q[1:] / sin_half if sin_half > 1e-12 else np.array([1.0, 0.0, 0.0])
-    return angle, axis

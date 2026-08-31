@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 from . import config as C
-from .controller import MotionMatcher, STATE_MOVE
+from .controller import MotionMatcher
 from .data import load_library
 from .features import yaw_quat
 

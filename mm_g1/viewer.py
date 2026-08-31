@@ -173,7 +173,6 @@ class InteractiveViewer:
     def run(self):
         last = glfw.get_time()
         acc = 0.0
-        speed = 0.0
         while not glfw.window_should_close(self.window):
             now = glfw.get_time()
             acc += now - last

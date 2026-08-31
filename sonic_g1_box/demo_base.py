@@ -27,7 +27,6 @@ from sonic_tracking.policy import SonicPolicy
 from sonic_tracking.rotations import quat_rotate, quat_conjugate
 
 from mm_g1 import config as C
-from mm_g1 import quat
 from mm_g1.data import load_library
 from mm_g1.controller import MotionMatcher
 
@@ -280,17 +279,6 @@ class Demo:
 
     def ref_attached(self, f):
         return self.motion.meta_at(f)[3]
-
-    def ref_box_relpose(self, f):
-        ref = self.motion.qpos[f]
-        rel_p = quat.inv_mul_vec(ref[3:7], ref[36:39] - ref[0:3])
-        rel_q = quat.mul(quat.inv(ref[3:7]), ref[39:43])
-        return rel_p, rel_q
-
-    def palm_box_dist(self):
-        box_c = self.data.qpos[self.bq:self.bq + 3]
-        return min(float(np.linalg.norm(self.data.site_xpos[s] - box_c))
-                   for s in self.ids['palm_sites'])
 
     def step_physics(self):
         d = self.data

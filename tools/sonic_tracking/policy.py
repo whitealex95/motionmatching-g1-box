@@ -170,7 +170,6 @@ class SonicPolicy:
         self.motion = None
         self.current_frame = 0
         self.play = False
-        self.motion_done = False
         self.streaming = False    # streamed motions hold the newest frame
                                   # instead of resetting at the end (the C++
                                   # "streamed" motion special case)
@@ -182,22 +181,15 @@ class SonicPolicy:
         self.delta_heading = 0.0
         self.init_ref_root_quat = np.array([1.0, 0.0, 0.0, 0.0])
 
-    # -- motion control (keyboard T/R/N equivalents) --------------------------
+    # -- motion control (keyboard T/R equivalents) ----------------------------
     def set_motion(self, motion):
         self.motion = motion
         self.current_frame = 0
         self.play = False
-        self.motion_done = False
         self.reinitialize_heading = True
 
     def start_play(self):
         self.play = True
-        self.motion_done = False
-
-    def restart(self):
-        self.play = False
-        self.current_frame = 0
-        self.reinitialize_heading = True
 
     # -- heading state (UpdateHeadingState / ComputeApplyDeltaHeading) --------
     def _update_heading(self, base_quat):
@@ -372,6 +364,5 @@ class SonicPolicy:
                     self.play = False
                     self.current_frame = 0
                     self.reinitialize_heading = True
-                    self.motion_done = True
 
         return q_target
