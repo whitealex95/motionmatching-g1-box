@@ -10,6 +10,8 @@ toes the wrist yaws in; while both are off during the PICK/PLACE ride,
 """
 import sys
 
+import numpy as np
+
 from demo_base import Demo, run_main
 from mm_g1.states import State
 
@@ -32,6 +34,39 @@ class GraspDemo(Demo):
     def setup_extra(self):
         self.kps[CUSTOM_ARM_JOINTS] *= self.args.arm_kp
         self.kds[CUSTOM_ARM_JOINTS] *= self.args.arm_kd
+        self._palm_sites = [self.model.site('left_palm').id,
+                            self.model.site('right_palm').id]
+        self._arm_idx = [list(range(15, 22)), list(range(22, 29))]
+        self._palm_ramp = [0.0, 0.0]
+
+    def _ctrl_extra(self, f):
+        """Jacobian squeeze: while a hand's label is on, press its palm toward
+        the box centre with --palm-force newtons (tau = J^T f on that arm),
+        ramped over 0.15 s so contact makes and releases without a step."""
+        F = self.args.palm_force
+        if F <= 0.0:
+            return None
+        import mujoco
+        _, _, _, _, (lc, rc) = self.motion.meta_at(f)
+        tau = np.zeros(29)
+        box_c = self.data.qpos[self.bq:self.bq + 3]
+        jacp = np.zeros((3, self.model.nv))
+        for h, on in enumerate((lc, rc)):
+            step = 0.02 / 0.15
+            self._palm_ramp[h] = (min(1.0, self._palm_ramp[h] + step) if on
+                                  else max(0.0, self._palm_ramp[h] - step))
+            if self._palm_ramp[h] <= 0.0:
+                continue
+            sid = self._palm_sites[h]
+            mujoco.mj_jacSite(self.model, self.data, jacp, None, sid)
+            n = box_c - self.data.site_xpos[sid]
+            L = float(np.linalg.norm(n))
+            if L < 1e-6:
+                continue
+            fvec = (self._palm_ramp[h] * F / L) * n
+            for j in self._arm_idx[h]:
+                tau[j] += float(jacp[:, self.dq_at[j]] @ fvec)
+        return tau
 
     def _adjust_target(self, target, f):
         _, _, state, _, (lc, rc) = self.motion.meta_at(f)
@@ -58,6 +93,9 @@ def extra_args(ap):
     ap.add_argument('--shoulder-squeeze', type=float, default=0.0,
                     help='inward shoulder-roll bias (rad), both hands, while '
                          'either contact label is on (palm pressure)')
+    ap.add_argument('--palm-force', type=float, default=0.0,
+                    help='Jacobian squeeze: newtons pressing each palm toward '
+                         "the box centre while that hand's label is on")
     ap.add_argument('--wrist-squeeze', type=float, default=0.0,
                     help='inward wrist-yaw bias (rad), both hands, while '
                          'either label is on (toes the palms into the box)')
