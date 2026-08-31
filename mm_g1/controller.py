@@ -241,11 +241,12 @@ class MotionMatcher:
     # --- move-to-pick (approach heuristics, from motionmatching-g1-shelf) ----
     def _start_move(self):
         """Plan the approach: invert the recorded stance-to-box relation at the live box
-        pose. The box's rotational symmetry gives SCENEBOT_ROT_FOLDS stance candidates
+        pose. The box's rotational symmetry gives one stance candidate per yaw fold
         around it; the nearest way-in point wins."""
         box_xy = self.boxPos[0:2]
         box_yaw = _yaw(self.boxRot)
-        folds = max(1, C.SCENEBOT_ROT_FOLDS)
+        folds = max(1, C.SCENEBOT_ROT_FOLDS if C.SCENEBOT_PICK
+                    else C.BOX_ROT_FOLDS)
         best = None
         for k in range(folds):
             sy = wrap_angle(box_yaw + k * 2.0 * np.pi / folds - self.stance_box_yaw)
