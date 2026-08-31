@@ -24,7 +24,6 @@ DT = 1.0 / FPS
 #   [3:7]  root orientation quaternion -- DATASET stores xyzw, MuJoCo qpos stores wxyz
 #          (csv_to_qpos / mirror_qpos handle the reorder; see g1_model.py)
 #   [7:36] 29 joint angles (radians)
-JOINTS = slice(7, 36)
 
 # Foot bodies used for motion-matching pose features (names from menagerie g1.xml).
 FOOT_BODIES = ["left_ankle_roll_link", "right_ankle_roll_link"]
@@ -32,7 +31,6 @@ FOOT_BODIES = ["left_ankle_roll_link", "right_ankle_roll_link"]
 # --- Motion-matching: GenoView (Holden "Simple Motion Matching") heuristics ----------
 # All math + hyperparameters mirror ../GenoViewPython-MotionMatching/genoview_g1.py.
 HORIZONS = [10, 20, 30]        # future trajectory taps (frames) ~0.33 / 0.67 / 1.0 s @30fps
-TRAJ_HORIZONS = HORIZONS       # (alias kept for any external reference)
 SEARCH_TIME = 0.15             # seconds between database searches
 INERT_HALFLIFE = 0.075         # inertialization (pose-transition) blend half-life
 VEL_HALFLIFE = 0.2             # desired-trajectory position spring half-life
@@ -178,9 +176,6 @@ BOX_HOLD_SPEED = 0.05    # m/s box speed to count as being handled
 # then ridden to the phase end.
 PICK_ENTRY = 8           # candidate entry frames at the start of each PICK phase
 PLACE_ENTRY = 8          # candidate entry frames at the start of each PLACE phase
-
-# B only picks up a box you are standing next to (planar root<->box distance, metres).
-PICK_RADIUS = 0.9
 
 # Box search-feature block weights (box pos / orientation / linear velocity, all expressed
 # in the robot's gravity-aligned base frame). Scaled like the genoview blocks (one shared

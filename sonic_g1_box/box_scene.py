@@ -95,7 +95,6 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
         box_qpos_at=model.joint('box_joint').qposadr[0],
         box_dof_at=model.joint('box_joint').dofadr[0],
         box_body=model.body('largebox').id,
-        palm_sites=[model.site('left_palm').id, model.site('right_palm').id],
         ghost=ghost,                      # (centre, axes, half extents) in box frame
     )
     return model, ids

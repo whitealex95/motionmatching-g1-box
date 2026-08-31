@@ -48,9 +48,7 @@ def variant_dir(variant=DEFAULT_VARIANT):
             f'run assets/sonic/policy/fetch_models.sh to download them')
     return d
 G1_SCENE_XML = os.path.join(SONIC_ASSETS, 'g1', 'scene_29dof.xml')
-PLANNER_ONNX = os.path.join(SONIC_ASSETS, 'planner', 'planner_sonic.onnx')
 
-NUM_JOINTS = 29
 CONTROL_DT = 0.02            # 50 Hz policy / reference-motion rate
 SIM_DT = 0.005               # 200 Hz physics (SIMULATE_DT in their sim yaml)
 DECIMATION = int(round(CONTROL_DT / SIM_DT))
@@ -117,7 +115,3 @@ DEFAULT_ANGLES = np.array([
     0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,         # right arm
 ])
 DEFAULT_ANGLES_ISAAC = DEFAULT_ANGLES[MUJOCO_TO_ISAACLAB]
-
-# Standing pelvis height for that pose (their XML pelvis @0.793 is the
-# zero-pose height; with knees bent ~0.669 the standing root sits lower).
-DEFAULT_ROOT_Z = 0.76

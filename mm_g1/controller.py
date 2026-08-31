@@ -65,11 +65,10 @@ class MotionMatcher:
         # Per-skill normalized feature matrices + raw blocks for cross-database queries.
         self.Xloco, self.Xcarry = db["dbs"]["loco"]["X"], db["dbs"]["carry"]["X"]
         self.rawXpos, self.rawXvel = db["rawXpos"], db["rawXvel"]
-        self.clip_id = lib["clip_id"]
         self.skill = lib["skill"]
         self.box_attach = lib["box_attach"]
         self.Ttimes = HORIZONS / FPS
-        TAIL = HORIZONS[-1]
+        TAIL = C.SEARCH_TAIL
 
         # ---- Locomotion KD-trees: one per locomotion clip (skill==0 everywhere) ----
         self.loco_trees = []                                 # (rs, re, tree)
@@ -159,11 +158,6 @@ class MotionMatcher:
     @property
     def cur(self):
         return self.animFrame
-
-    @property
-    def near_box(self):
-        """True when the root is within PICK_RADIUS of the box (planar)."""
-        return float(np.linalg.norm(self.rootPos[:2] - self.boxPos[:2])) < C.PICK_RADIUS
 
     def state_name(self):
         return {C.SKILL_LOCO: "LOCOMOTION", C.SKILL_PICK: "PICK",
