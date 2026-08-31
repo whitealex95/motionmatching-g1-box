@@ -87,6 +87,13 @@ SCENEBOT_PLACE_SPEED = 1.0     # reverse playback runs at full speed in the demo
 # vertical, so the baked pick/drop is replicated at 0 and 180 deg of box yaw only.
 # (The approach heuristic aligns the stance to the live box yaw, so 2 folds suffice.)
 SCENEBOT_ROT_FOLDS = 2
+# Manual tuning of the baked HAND-contact labels, in seconds of playback time,
+# applied per hand to each contiguous ON interval of both baked playbacks
+# (pick and drop): ONSET_DELAY moves the label's start later, RELEASE_ADVANCE
+# moves its end earlier. The vendored annotation itself is never modified.
+# Rebuild the cache after changing (delete data/motion_lib.npz).
+CONTACT_ONSET_DELAY = 0.0
+CONTACT_RELEASE_ADVANCE = 0.0
 BOX_HALF = (0.15, 0.10, 0.15)  # SceneBot free_box half extents
 BOX_REST_Z = BOX_HALF[2]       # the SceneBot box rests on the floor at its half height
 
