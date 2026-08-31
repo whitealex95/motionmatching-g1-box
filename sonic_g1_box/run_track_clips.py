@@ -10,6 +10,7 @@ exactly as in run_grasp, driven by the clip's own labels (sidecar or rule).
     python run_track_clips.py --viewer --sonic release --clips sub12_largebox_071_original_mujoco
 """
 import argparse
+import math
 import os
 import sys
 
@@ -180,6 +181,12 @@ def track_clip(stem, variant, args):
     data.qpos[0:7] = q0[0:7]
     data.qpos[q_at] = q0[7:36]
     data.qpos[bq:bq + 7] = q0[36:43]
+    # Perturbation: shift the PHYSICAL box along the robot's initial heading
+    # (the reference stays at the data spot -- the ghost shows the mismatch).
+    w, x, y, z = q0[3:7]
+    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    data.qpos[bq] += args.box_offset * math.cos(yaw)
+    data.qpos[bq + 1] += args.box_offset * math.sin(yaw)
     mujoco.mj_forward(model, data)
     # Feet flush with the floor: the clip's root z is data, not this scene.
     foot_lo = min(float(data.geom_xpos[g][2]) - float(model.geom_size[g][2])
@@ -271,6 +278,9 @@ def main():
     ap.add_argument('--box-friction', type=float, default=1.5)
     ap.add_argument('--box-scale', type=float, default=1.0,
                     help='scale the physical carton only (reference unchanged)')
+    ap.add_argument('--box-offset', type=float, default=0.05,
+                    help='shift the physical box this far (m) along the '
+                         "robot's initial heading (reference unchanged)")
     ap.add_argument('--substeps', type=int, default=20)
     ap.add_argument('--settle', type=float, default=1.0)
     ap.add_argument('--video', action='store_true',
