@@ -11,6 +11,7 @@ Controls
   Arrow keys ........... face direction, independent of travel (GenoView-style)
   Shift (hold) ......... walk instead of run (full stick is run pace, GenoView-style)
   B .................... box action: pick up when near the box, set down while carrying
+  N .................... pick up NOW: skip the walk-over, best-matching entry
   Space ................ reset to the start pose
   T .................... toggle the command trajectory gizmo (GenoView-style)
   Left-drag ............ orbit camera     Right-drag ... pan     Scroll ... zoom
@@ -41,6 +42,68 @@ _MARK_R = 0.22
 
 # Box tint while the current frame's hand-contact label is on.
 _CONTACT_RGBA = np.array([0.25, 0.9, 0.35, 1.0])
+
+
+def _next_geom(scn):
+    if scn.ngeom >= scn.maxgeom:
+        return None
+    g = scn.geoms[scn.ngeom]
+    scn.ngeom += 1
+    return g
+
+
+def _add_sphere(scn, pos, radius, rgba=_TRAJ_RGBA):
+    g = _next_geom(scn)
+    if g is None:
+        return
+    mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_SPHERE,
+                        np.array([radius, 0.0, 0.0]), np.asarray(pos, float),
+                        np.eye(3).flatten(), rgba)
+
+
+def _add_stick(scn, p0, p1, rgba=_TRAJ_RGBA):
+    g = _next_geom(scn)
+    if g is None:
+        return
+    mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_CAPSULE,
+                        np.zeros(3), np.zeros(3), np.eye(3).flatten(), rgba)
+    mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_CAPSULE, _STICK_W,
+                         np.asarray(p0, float), np.asarray(p1, float))
+
+
+def draw_gizmos(scn, m):
+    """Append the matcher's planning gizmos to a scene: the red command
+    trajectory (GenoView DrawTrajectory), and during MOVE_TO_PICK the green
+    planned route + stance disc, blue velocity arrow, yellow facing tick."""
+    for (px, py, _), (dx, dy, _) in zip(m.Tpos, m.Tdir):
+        base = np.array([px, py, _TRAJ_Z])
+        _add_sphere(scn, base, _SPHERE_R)
+        _add_stick(scn, base, base + _STICK_LEN * np.array([dx, dy, 0.0]))
+    if m.state is not State.MOVE_TO_PICK:
+        return
+    root = np.array([m.rootPos[0], m.rootPos[1], _TRAJ_Z])
+    pts = m.route_pts
+    for a, b in zip(pts[:-1], pts[1:]):
+        _add_stick(scn, np.array([a[0], a[1], _TRAJ_Z]),
+                   np.array([b[0], b[1], _TRAJ_Z]), _MARK_RGBA)
+    vel = np.array([m.cmdVel[0], m.cmdVel[1], 0.0])
+    if np.linalg.norm(vel) > 1e-3:
+        tip = root + 0.5 * vel
+        _add_stick(scn, root, tip, _CMD_VEL_RGBA)
+        _add_sphere(scn, tip, 0.03, _CMD_VEL_RGBA)
+    face = np.array([m.cmdFace[0], m.cmdFace[1], 0.0])
+    if np.linalg.norm(face) > 1e-3:
+        _add_stick(scn, root + [0, 0, 0.1],
+                   root + [0, 0, 0.1] + 0.3 * face, _CMD_FACE_RGBA)
+    center = np.array([m.stance_xy[0], m.stance_xy[1], 0.006])
+    g = _next_geom(scn)
+    if g is not None:
+        mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_CYLINDER,
+                            np.array([_MARK_R, 0.004, 0.0]), center,
+                            np.eye(3).flatten(), _MARK_RGBA)
+    tick = center + _MARK_R * 1.3 * np.array(
+        [np.cos(m.stance_yaw), np.sin(m.stance_yaw), 0.0])
+    _add_stick(scn, center, tick, _MARK_RGBA)
 
 
 # Movement keys (WASD = travel) and facing keys (arrows = independent facing) -> held set.
@@ -116,6 +179,8 @@ class InteractiveViewer:
                 self.show_traj = not self.show_traj
             elif key == glfw.KEY_B:
                 self.matcher.trigger_box()
+            elif key == glfw.KEY_N:
+                self.matcher.trigger_pick_instant()
             elif key in _MOVE_KEYS or key in _FACE_KEYS:
                 self.held.add(key)
         elif action == glfw.RELEASE:
@@ -212,84 +277,13 @@ class InteractiveViewer:
             mujoco.mjv_updateScene(self.model, self.data, self.opt, None, self.cam,
                                    mujoco.mjtCatBit.mjCAT_ALL, self.scene)
             if self.show_traj:
-                self._draw_command()
-                if self.matcher.state is State.MOVE_TO_PICK:
-                    self._draw_approach()
-                    self._draw_pick_marker()
+                draw_gizmos(self.scene, self.matcher)
             mujoco.mjr_render(viewport, self.scene, self.ctx)
             self._overlay(viewport, self._speed)
 
             glfw.swap_buffers(self.window)
             glfw.poll_events()
         glfw.terminate()
-
-    # --- command trajectory gizmo (GenoView DrawTrajectory) ------------------
-    def _draw_command(self):
-        """Append the spring-predicted command trajectory (matcher.Tpos / Tdir) to the
-        scene: a red sphere at each future tap with a short stick along its facing."""
-        for (px, py, _), (dx, dy, _) in zip(self.matcher.Tpos, self.matcher.Tdir):
-            base = np.array([px, py, _TRAJ_Z])
-            self._add_sphere(base, _SPHERE_R)
-            self._add_stick(base, base + _STICK_LEN * np.array([dx, dy, 0.0]))
-
-    # --- approach gizmo: how move-to-pick makes its command ------------------
-    # green line = the planned route (through the way-in point behind the stance),
-    # blue arrow = commanded velocity, yellow tick = commanded facing. The red
-    # taps are sampled along the same route, so they lie on the green line.
-    def _draw_approach(self):
-        m = self.matcher
-        root = np.array([m.rootPos[0], m.rootPos[1], _TRAJ_Z])
-        pts = m.route_pts
-        for a, b in zip(pts[:-1], pts[1:]):
-            self._add_stick(np.array([a[0], a[1], _TRAJ_Z]),
-                            np.array([b[0], b[1], _TRAJ_Z]), _MARK_RGBA)
-        vel = np.array([m.cmdVel[0], m.cmdVel[1], 0.0])
-        if np.linalg.norm(vel) > 1e-3:
-            tip = root + 0.5 * vel
-            self._add_stick(root, tip, _CMD_VEL_RGBA)
-            self._add_sphere(tip, 0.03, _CMD_VEL_RGBA)
-        face = np.array([m.cmdFace[0], m.cmdFace[1], 0.0])
-        if np.linalg.norm(face) > 1e-3:
-            self._add_stick(root + [0, 0, 0.1],
-                            root + [0, 0, 0.1] + 0.3 * face, _CMD_FACE_RGBA)
-
-    # --- pick stance marker: a disc on the floor + a heading tick ------------
-    def _draw_pick_marker(self):
-        m = self.matcher
-        center = np.array([m.stance_xy[0], m.stance_xy[1], 0.006])
-        g = self._next_geom()
-        if g is None:
-            return
-        mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_CYLINDER,
-                            np.array([_MARK_R, 0.004, 0.0]), center,
-                            np.eye(3).flatten(), _MARK_RGBA)
-        tick = center + _MARK_R * 1.3 * np.array(
-            [np.cos(m.stance_yaw), np.sin(m.stance_yaw), 0.0])
-        self._add_stick(center, tick, _MARK_RGBA)
-
-    def _next_geom(self):
-        if self.scene.ngeom >= self.scene.maxgeom:
-            return None
-        g = self.scene.geoms[self.scene.ngeom]
-        self.scene.ngeom += 1
-        return g
-
-    def _add_sphere(self, pos, radius, rgba=_TRAJ_RGBA):
-        g = self._next_geom()
-        if g is None:
-            return
-        mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_SPHERE,
-                            np.array([radius, 0.0, 0.0]), np.asarray(pos, float),
-                            np.eye(3).flatten(), rgba)
-
-    def _add_stick(self, p0, p1, rgba=_TRAJ_RGBA):
-        g = self._next_geom()
-        if g is None:
-            return
-        mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_CAPSULE,
-                            np.zeros(3), np.zeros(3), np.eye(3).flatten(), rgba)
-        mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_CAPSULE, _STICK_W,
-                             np.asarray(p0, float), np.asarray(p1, float))
 
     def _overlay(self, viewport, speed):
         m = self.matcher

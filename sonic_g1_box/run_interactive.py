@@ -8,6 +8,8 @@ keyboard instead of the script, in a GLFW window with true held-key input:
   Arrow keys       face direction, independent of travel
   Shift (hold)     walk instead of run
   B                box action: pick up (walks over by itself) / set down
+  N                pick up NOW: skip the walk-over, best-matching entry
+  T                toggle the command / approach gizmos
   Left-drag        orbit camera     Right-drag  pan     Scroll  zoom
   Esc              quit
 
@@ -26,6 +28,7 @@ from demo_base import build_argparser
 from run_grasp import GraspDemo, extra_args
 from mm_g1 import config as C
 from mm_g1.states import State
+from mm_g1.viewer import draw_gizmos
 from sonic_tracking import params as P
 
 _MOVE = {glfw.KEY_W, glfw.KEY_A, glfw.KEY_S, glfw.KEY_D}
@@ -109,6 +112,7 @@ class App:
         self.cam.lookat[:] = self.look
         self._mouse_last = None
         self._button = {'left': False, 'right': False}
+        self.show_traj = True
         glfw.set_key_callback(self.window, self._on_key)
         glfw.set_mouse_button_callback(self.window, self._on_mouse_button)
         glfw.set_cursor_pos_callback(self.window, self._on_cursor)
@@ -121,6 +125,10 @@ class App:
                 glfw.set_window_should_close(window, True)
             elif key == glfw.KEY_B:
                 self.demo.matcher.trigger_box()
+            elif key == glfw.KEY_N:
+                self.demo.matcher.trigger_pick_instant()
+            elif key == glfw.KEY_T:
+                self.show_traj = not self.show_traj
             elif key in _MOVE or key in _FACE:
                 self.inp.held.add(key)
         elif action == glfw.RELEASE:
@@ -174,10 +182,12 @@ class App:
                                    self.cam, mujoco.mjtCatBit.mjCAT_ALL,
                                    self.scene)
             demo._draw_ghost(self.scene)
+            if self.show_traj:
+                draw_gizmos(self.scene, demo.matcher)
             mujoco.mjr_render(viewport, self.scene, self.ctx)
             title, body = demo._overlay_text()
             body += ('\nWASD move | arrows face | Shift walk | B box | '
-                     'Esc quit')
+                     'N instant pick | T gizmos | Esc quit')
             mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,
                                mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport,
                                title, body, self.ctx)
