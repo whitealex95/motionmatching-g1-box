@@ -1,4 +1,4 @@
-"""Pick / carry / place segmentation + entry indexing for the box skill (B trigger).
+"""Pick / carry / place segmentation + entry indexing for the box phase (B trigger).
 
 Each OmniRetarget robot-object clip is one continuous pick -> carry -> place sequence.
 `segment_phases` slices it into the three phases from the box's height trajectory and marks
@@ -8,13 +8,13 @@ world, in between it rides the robot's base frame.
 
 `box_entries` (used by the controller) returns the candidate
 ENTRY frames -- the first few frames of each pick / place phase, the reach-down / set-down
-approach -- so a skill is entered from its start (nearest-neighbour matched to the live pose
+approach -- so a phase is entered from its start (nearest-neighbour matched to the live pose
 + box pose) and then ridden to the phase end.
 """
 import numpy as np
 
 from . import config as C
-from .states import Skill
+from .states import Phase
 
 
 def _speed(pos, fps=C.FPS):
@@ -29,8 +29,8 @@ def segment_phases(box_pos):
     """Segment one clip's box-height trajectory into pick / carry / place.
 
     box_pos: (T, 3) world box positions.
-    Returns (skill, attach, info):
-      skill  (T,) int   per-frame phase code (Skill.PICK / Skill.CARRY / Skill.PLACE)
+    Returns (phase, attach, info):
+      phase  (T,) int   per-frame phase code (Phase.PICK / Phase.CARRY / Phase.PLACE)
       attach (T,) bool  box rides the robot (True over [contact .. release])
       info   dict       pick/carry/place (start, stop) half-open spans + contact/release
     """
@@ -47,10 +47,10 @@ def segment_phases(box_pos):
     else:
         carry_s, carry_e = int(above[0]), int(above[-1])
 
-    skill = np.empty(T, np.int32)
-    skill[:carry_s] = Skill.PICK
-    skill[carry_s:carry_e + 1] = Skill.CARRY
-    skill[carry_e + 1:] = Skill.PLACE
+    phase = np.empty(T, np.int32)
+    phase[:carry_s] = Phase.PICK
+    phase[carry_s:carry_e + 1] = Phase.CARRY
+    phase[carry_e + 1:] = Phase.PLACE
 
     # Attached = lifted clear of the floor OR being handled; collapse to one contiguous
     # [contact .. release] interval so a flicker mid-carry can't detach the box.
@@ -66,7 +66,7 @@ def segment_phases(box_pos):
 
     info = dict(pick=(0, carry_s), carry=(carry_s, carry_e + 1), place=(carry_e + 1, T),
                 contact=contact, release=release, z_rest=z_rest, z_peak=z_peak)
-    return skill, attach, info
+    return phase, attach, info
 
 
 def box_entries(lib):
@@ -76,18 +76,18 @@ def box_entries(lib):
     where *_enter are arrays of global frame indices at the start of each phase and *_end_of
     maps each entry frame to the last frame of its phase (where the ride finishes).
     """
-    skill = lib["skill"]
+    phase = lib["phase"]
     fic = lib["frame_in_clip"]
     starts = np.where(fic == 0)[0]
-    stops = np.append(starts[1:], len(skill))
+    stops = np.append(starts[1:], len(phase))
 
     pick_enter, pick_end_of = [], {}
     place_enter, place_end_of = [], {}
     for rs, re in zip(starts, stops):
         for code, enter, end_of, n in (
-                (Skill.PICK, pick_enter, pick_end_of, C.PICK_ENTRY),
-                (Skill.PLACE, place_enter, place_end_of, C.PLACE_ENTRY)):
-            idx = rs + np.where(skill[rs:re] == code)[0]
+                (Phase.PICK, pick_enter, pick_end_of, C.PICK_ENTRY),
+                (Phase.PLACE, place_enter, place_end_of, C.PLACE_ENTRY)):
+            idx = rs + np.where(phase[rs:re] == code)[0]
             if len(idx) == 0:
                 continue
             phase_end = int(idx[-1])
@@ -100,13 +100,13 @@ def box_entries(lib):
 
 def carry_segments(lib):
     """Contiguous CARRY runs as (range_start, range_stop) half-open global spans."""
-    skill = lib["skill"]
+    phase = lib["phase"]
     fic = lib["frame_in_clip"]
     starts = np.where(fic == 0)[0]
-    stops = np.append(starts[1:], len(skill))
+    stops = np.append(starts[1:], len(phase))
     segs = []
     for rs, re in zip(starts, stops):
-        m = skill[rs:re] == Skill.CARRY
+        m = phase[rs:re] == Phase.CARRY
         if not m.any():
             continue
         idx = np.where(m)[0]

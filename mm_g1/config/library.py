@@ -1,5 +1,5 @@
 """What the motion library contains and how it is baked: clips, trims, folds,
-skill segmentation, and the box geometry. Changing anything here changes the
+phase segmentation, and the box geometry. Changing anything here changes the
 data/motion_lib.npz cache -- bump LIB_VERSION when the change is incompatible.
 """
 
@@ -34,7 +34,8 @@ CLIP_TRIM = {
 # v5: jump skill removed. v6: 7 low-quality box clips excluded (BOX_CLIPS_EXCLUDE).
 # v7: single SceneBot pick/drop (clip 11 half-speed + reversed), baked contact labels,
 #     OmniRetarget clips reduced to carry-only, SceneBot 0.3x0.2x0.3 box.
-LIB_VERSION = 7
+# v8: per-frame label renamed skill -> phase (lib key + Phase enum).
+LIB_VERSION = 8
 
 # The locomotion library: GMR-retargeted LAFAN1 clips (subject5) -- walk, run, and
 # push-and-stumble. Each clip is added twice (normal + L/R MIRRORED, GenoView-style) for
@@ -75,7 +76,7 @@ BOX_ROT_FOLDS = 4
 # half speed forward for the pickup and at full speed backward for the put-down; both
 # playbacks are baked as-played into the library at FPS, with the demo's per-frame
 # contact labels (mm_g1/scenebot_pick.py). The OmniRetarget clips then contribute ONLY
-# their carry frames (their own pick/place phases are marked Skill.DISABLED).
+# their carry frames (their own pick/place phases are marked Phase.DISABLED).
 SCENEBOT_PICK = True
 SCENEBOT_CLIP = 11
 SCENEBOT_FRAMES = (0, 120)

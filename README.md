@@ -7,7 +7,7 @@ search stitches GMR-retargeted LAFAN1 **walk**, **run** and **push-and-stumble**
 into one continuous, responsive gait; press **B** next to the box and the controller
 switches to a small **pick → carry → place** state machine driven by
 [OmniRetarget](https://github.com/) robot-object clips — no neural network, no training,
-just nearest-neighbour search over per-skill feature databases.
+just nearest-neighbour search over per-phase feature databases.
 
 This repo is **fully self-contained**: the G1 model, all motion data, and the code live in
 this one folder. Clone it, run `setup.sh`, and go.
@@ -70,7 +70,7 @@ stop, and the demo's own sequence also settles before the squat.
 
 - **PICK** and **PLACE** are *ridden*: entered from the start of the
   phase by a nearest-neighbour match of the live pose **+ box pose**, then played to the
-  phase end with no mid-skill search.
+  phase end with no mid-phase search.
 - **CARRY** is searched every `SEARCH_TIME` like locomotion, but only among `carry` frames,
   with the box pose added to the query.
 - The **only** database transitions ever made are those in the chain above (so e.g. you can
@@ -154,7 +154,7 @@ motionmatching-g1-box/
 │   ├── g1_model.py              # qpos conversion, quaternion yaw, FK for the feet, mirror
 │   ├── data.py                  # build / load + cache the loco + box library
 │   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
-│   ├── features.py              # per-skill feature DBs (loco 27 / carry 36 / pick·place 24)
+│   ├── features.py              # per-phase feature DBs (loco 27 / carry 36 / pick·place 24)
 │   ├── springs.py               # critically-damped trajectory + inertialization springs
 │   ├── controller.py            # real-time matcher + pick/carry/place state machine
 │   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera, box
