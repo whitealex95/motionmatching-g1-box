@@ -2,9 +2,9 @@
 
 Shared machinery for the two variants (run_kinematic / run_grasp):
 the mm_g1 matcher streamed as a 50 Hz reference (mm_stream.MMMotion), the SONIC
-policy tracking it in MuJoCo, a scripted commander that walks to the box, picks
-it up, carries, places, and walks away, plus the five reference-correction
-modes (ref_modes). Subclasses set MODE and override _sync_box / _post_substep
+policy tracking it in MuJoCo, a commander that triggers the pick (the matcher's
+MOVE_TO_PICK walks the approach itself), holds through carry, places, and walks
+away, plus the five reference-correction modes (ref_modes). Subclasses set MODE and override _sync_box / _post_substep
 for their box-handling strategy.
 """
 import argparse
@@ -47,7 +47,6 @@ _EYE3 = np.eye(3).ravel()
 class Demo:
     MODE = None                   # 'kinematic' | 'grasp'
 
-    STAND_DIST = 0.7              # stand this far from the box centre to pick
     WALK_AWAY_DIST = 1.3
 
     def __init__(self, args):
@@ -95,7 +94,6 @@ class Demo:
         d.qpos[self.q_at] = q0[7:36]
         d.qpos[self.bq:self.bq + 7] = q0[36:43]
         mujoco.mj_forward(self.model, d)
-        self.start_xy = d.qpos[0:2].copy()
 
         self.policy = SonicPolicy(variant=args.sonic, device='cpu')
         self.policy.streaming = True
@@ -154,7 +152,6 @@ class Demo:
     def _command(self, mm):
         d = self.data
         robot_xy = d.qpos[0:2].copy()
-        robot_speed = float(np.linalg.norm(d.qvel[0:2]))
         box_xy = d.qpos[self.bq:self.bq + 2].copy()
 
         if self.MODE != 'kinematic':
@@ -198,21 +195,16 @@ class Demo:
             speed = 0.4 if n < 1.0 else 0.7
             return speed * face, face
 
-        to_box = box_xy - robot_xy
-        dist = float(np.linalg.norm(to_box))
-        u_appr = box_xy - self.start_xy
-        u_appr /= max(float(np.linalg.norm(u_appr)), 1e-6)
-        spot = box_xy - self.STAND_DIST * u_appr
-        to_spot = spot - robot_xy
-        far = float(np.linalg.norm(to_spot))
-        face = np.array([to_box[0] / max(dist, 1e-6),
-                         to_box[1] / max(dist, 1e-6), 0.0])
-        if far > 0.06 and dist > self.STAND_DIST + 0.05:
-            speed = float(np.clip(1.4 * far, 0.35, 0.9))
-            return np.array([*(to_spot / far * speed), 0.0]), face
-        if robot_speed < 0.15 and not self.mm_placed:
-            mm.trigger_box()                   # pick it up (retries after a drop)
-        return np.zeros(3), face
+        # The walk to the box is the matcher's own MOVE_TO_PICK: B plans the
+        # approach from the live box pose and self-drives it (the commander's
+        # velocity is ignored while it runs). Pressing B again would CANCEL
+        # it, so only trigger from LOCOMOTION -- once to start, and again
+        # whenever a dropped grip has knocked the matcher back to locomotion.
+        if st is State.MOVE_TO_PICK:
+            return np.zeros(3), np.zeros(3)
+        if not self.mm_placed:
+            mm.trigger_box()
+        return np.zeros(3), np.zeros(3)
 
     def _check_grip(self, mm):
         """The matcher's box is kinematic: once its clip marks the box held it

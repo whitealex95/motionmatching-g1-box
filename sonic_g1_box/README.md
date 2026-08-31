@@ -10,11 +10,12 @@ tracking    SONIC encoder/decoder ONNX (encode mode 0), 50 Hz
 physics     PD + MuJoCo, 200 Hz; NVIDIA 29-DoF G1 scene + the large box
 ```
 
-A scripted commander walks to the box, picks it up (B), holds it, sets it
-down, and walks away. It steers by the physical robot; `--ref-mode` (default
-`snap-all`) keeps the reference root on the robot (see `ref_modes.py`).
-Exit code 0 only if the box was lifted, placed back upright at its resting
-height, and the robot walked away without falling.
+The commander presses B: the matcher's own MOVE_TO_PICK plans and walks the
+approach from the live box pose, the pick/carry/place run, then the
+commander walks the robot away. Decisions use the physical robot;
+`--ref-mode` (default `snap-all`) keeps the reference root on the robot
+(see `ref_modes.py`). Exit code 0 only if the box was lifted, placed back
+upright at its resting height, and the robot walked away without falling.
 
 Two variants, one file each (weld was removed — only kinematic tracking and
 the frictional grasp remain):
@@ -29,9 +30,12 @@ the frictional grasp remain):
 ~/miniconda3/envs/mm-g1-sonic/bin/python run_grasp.py --no-video
 ```
 
-Measured (defaults, headless, 0.5 kg box everywhere): kinematic succeeds in
-~13 s; grasp (arm-gain 6, squeeze 0.4) slips and retries but succeeds in
-~24 s.
+Measured (defaults, headless, 0.5 kg box everywhere, SONIC release
+checkpoint): kinematic succeeds in ~17 s. The frictional grasp of the
+single-SceneBot squat pick currently SLIPS with the default tuning (box
+reaches ~0.36 m, the grip check catches it, immediate retry, no fall over
+60 s) -- tuning it, and trying the other SONIC checkpoints, is open work
+on this branch.
 
 `--sonic {release,low_latency,sonic_v1_1}` picks the SONIC checkpoint
 (default `release` = v1.0). The variants live in
