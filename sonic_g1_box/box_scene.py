@@ -24,6 +24,8 @@ PALM_FRICTION = [1.5, 0.02, 0.0005]
 # the floor/hand defaults for every contact the box is in.
 #   stiffness -40000 N/m: ~1 mm dent per 40 N press
 #   damping      -60 N s/m: ~0.67 of critical for a 0.05 kg box
+# TO TUNE: edit the values below and rerun the demo -- the scene is built
+# fresh at every launch (no CLI flag, no cache to rebuild).
 # Both entries are NEGATIVE magnitudes: toward zero = softer / bouncier,
 # more negative = stiffer / deader. Examples:
 #   squishy box:  [-2000.0, -15.0]   (~2 cm dent per 40 N)
