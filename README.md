@@ -187,6 +187,11 @@ when the bake *code* changes:
   lead-in/out. These mirror GenoView's hand-picked indices
   (its 60 fps starts of walk=160 / run=172 → our 30 fps 80 / 86); add an entry per new clip.
 - `BOX_CLIPS` — which robot-object clips to load (`"all"` or an explicit list of stems).
+- Per-clip label sidecars: `python tools/make_labels.py <stem>` writes
+  `data/robot_object_g1/<stem>.labels.yaml` with the box-height rule's output
+  (phases + hand-contact spans, rule internals in comments). Hand-tune it — the
+  loader prefers the sidecar over the rule, edits rebuild the cache
+  automatically, and deleting the file falls back to the rule.
 - `BOX_CARRY_FRAC`, `BOX_HOLD_DZ`, `BOX_HOLD_SPEED` — phase-segmentation thresholds
   (`mm_g1/boxes.py`): how high the box must rise to count as *carry* / be *attached*.
 
