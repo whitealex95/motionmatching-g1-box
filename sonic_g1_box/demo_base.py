@@ -38,7 +38,7 @@ from mm_stream import MMMotion, MM_FPS, POLICY_FPS
 MARGIN = 50                       # 50 Hz frames kept ahead of the playhead
 LOOKAHEAD_S = MARGIN / POLICY_FPS
 REPLAN_MM_TICKS = 6               # matcher ticks per replan period (0.2 s)
-GRIP_REF_DZ = 0.50                # reference lift before the grip is judged
+GRIP_REF_DZ = 0.40                # reference lift before the grip is judged
 GRIP_PHYS_DZ = 0.04               # physical lift that counts as gripped
 FALL_Z = 0.28                     # pelvis below this counts as fallen (squats go low)
 FALL_TILT = -0.10                 # base-frame gravity z above this = tipped right over
@@ -135,16 +135,20 @@ class Demo:
         self.show_ui = not args.no_ui
         if args.viewer:
             import mujoco.viewer as mj_viewer
-            self.viewer = mj_viewer.launch_passive(self.model, self.data)
-            self.viewer.cam.distance, self.viewer.cam.azimuth = 3.6, -35.0
-            self.viewer.cam.elevation = -16.0
-            self.viewer.cam.lookat[:] = [0.8, 0.0, 0.7]
+            self.viewer = mj_viewer.launch_passive(
+                self.model, self.data,
+                show_left_ui=False, show_right_ui=False)
+            self.viewer.cam.distance, self.viewer.cam.azimuth = 2.8, -35.0
+            self.viewer.cam.elevation = -18.0
+            self._vlook = np.array([0.8, 0.0, 0.7])
+            self.viewer.cam.lookat[:] = self._vlook
 
         self.setup_extra()
         # No plain-PD settle (it tips over): run the policy paused at frame 0.
         for _ in range(int(1.0 / P.CONTROL_DT)):
             self.step_physics()
             if self.viewer is not None:
+                self._follow_cam()
                 self._update_overlay()
                 self.viewer.sync()
         self.policy.start_play()
@@ -389,13 +393,22 @@ class Demo:
             return
         self.viewer.set_texts((None, None, *self._overlay_text()))
 
+    def _focus_point(self):
+        """Camera aim: between the robot and the box, at chest height."""
+        box_xy = self.data.qpos[self.bq:self.bq + 2]
+        return np.array([0.55 * self.data.qpos[0] + 0.45 * box_xy[0],
+                         0.55 * self.data.qpos[1] + 0.45 * box_xy[1], 0.7])
+
+    def _follow_cam(self):
+        """Track the action with the live viewer camera (lookat only, so
+        mouse orbit / zoom still work)."""
+        self._vlook += 0.06 * (self._focus_point() - self._vlook)
+        self.viewer.cam.lookat[:] = self._vlook
+
     def render(self):
         if self.renderer is None:
             return
-        box_xy = self.data.qpos[self.bq:self.bq + 2]
-        focus = np.array([0.55 * self.data.qpos[0] + 0.45 * box_xy[0],
-                          0.55 * self.data.qpos[1] + 0.45 * box_xy[1], 0.7])
-        self.look += 0.06 * (focus - self.look)
+        self.look += 0.06 * (self._focus_point() - self.look)
         self.cam.distance += 0.03 * (3.6 - self.cam.distance)
         self.cam.lookat[:] = self.look
         self.renderer.update_scene(self.data, camera=self.cam)
@@ -446,6 +459,7 @@ class Demo:
                 if scn is not None:
                     scn.ngeom = 0
                     self._draw_ghost(scn)
+                self._follow_cam()
                 self._update_overlay()
                 self.viewer.sync()
             if self.fallen and (self.t - self.fall_time) > 2.0:
