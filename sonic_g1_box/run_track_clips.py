@@ -165,7 +165,7 @@ def track_clip(stem, variant, args):
 
     scene_xml = os.path.join(ROOT, 'assets', 'scenebot', 'scene_robot_only.xml')
     model, ids = box_scene.build_model(scene_xml, 'grasp', box_mass=args.box_mass,
-                                       box_type='carton',
+                                       box_type='carton', box_scale=args.box_scale,
                                        box_friction=args.box_friction)
     model.opt.timestep = P.CONTROL_DT / args.substeps
     data = mujoco.MjData(model)
@@ -269,6 +269,8 @@ def main():
     ap.add_argument('--arm-kd', type=float, default=1.0)
     ap.add_argument('--box-mass', type=float, default=0.25)
     ap.add_argument('--box-friction', type=float, default=1.5)
+    ap.add_argument('--box-scale', type=float, default=1.0,
+                    help='scale the physical carton only (reference unchanged)')
     ap.add_argument('--substeps', type=int, default=20)
     ap.add_argument('--settle', type=float, default=1.0)
     ap.add_argument('--video', action='store_true',
