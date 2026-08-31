@@ -56,7 +56,7 @@ class Demo:
         self.model, self.ids = box_scene.build_model(
             scene_xml, self.MODE, box_mass=args.box_mass,
             off_w=args.width, off_h=args.height,
-            box_scale=args.box_scale)
+            box_scale=args.box_scale, box_type=args.box)
         self.model.opt.timestep = P.SIM_DT
         self.data = mujoco.MjData(self.model)
         m = self.model
@@ -353,12 +353,12 @@ class Demo:
             # the reference box, so grasp tracking error is visible;
             # the carton is tilted in its local frame, so compose its OBB
             gm = scn.geoms[scn.ngeom]
+            gc, gmat, ghalf = self.ids['ghost']
             mat = np.empty(9)
             mujoco.mju_quat2Mat(mat, np.asarray(gq[39:43], float))
-            R = mat.reshape(3, 3) @ box_scene.GHOST_MAT
-            pos = gq[36:39] + mat.reshape(3, 3) @ box_scene.GHOST_CENTER
-            mujoco.mjv_initGeom(gm, mujoco.mjtGeom.mjGEOM_BOX,
-                                box_scene.GHOST_HALF,
+            R = mat.reshape(3, 3) @ gmat
+            pos = gq[36:39] + mat.reshape(3, 3) @ gc
+            mujoco.mjv_initGeom(gm, mujoco.mjtGeom.mjGEOM_BOX, ghalf,
                                 np.asarray(pos, float), R.ravel(), GHOST_RGBA)
             scn.ngeom += 1
 
@@ -508,10 +508,15 @@ def build_argparser(video_name):
                          'flat-hand G1 (assets/scenebot)')
     ap.add_argument('--anchor-gain', type=float, default=0.20)
     ap.add_argument('--replan-gain', type=float, default=0.738)
+    ap.add_argument('--box', choices=['scenebot', 'carton'],
+                    default='scenebot',
+                    help="physical box: the SceneBot free box the library is "
+                         'baked for (C.BOX_HALF), or the OmniRetarget MEDICINE '
+                         'carton mesh (a different, larger size)')
     ap.add_argument('--box-mass', type=float, default=0.5)
     ap.add_argument('--box-scale', type=float, default=1.0,
-                    help='scale the physical carton mesh only (reference '
-                         'motion unchanged)')
+                    help='scale the physical box only (reference motion '
+                         'unchanged)')
     ap.add_argument('--carry-seconds', type=float, default=3.0,
                     help='how long to hold the box before setting it down')
     ap.add_argument('--video', default=os.path.join(HERE, 'out', video_name))

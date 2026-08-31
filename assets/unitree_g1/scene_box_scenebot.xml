@@ -24,7 +24,8 @@
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
     <body name="largebox" pos="1.6 0 0.15">
       <freejoint name="box_joint"/>
-      <geom type="box" size="0.15 0.10 0.15" contype="0" conaffinity="0"
+      <!-- size is overridden from mm_g1 config (BOX_HALF) at load -->
+      <geom name="box_geom" type="box" size="0.15 0.10 0.15" contype="0" conaffinity="0"
             rgba="0.82 0.52 0.22 1"/>
     </body>
   </worldbody>

@@ -4,7 +4,7 @@ mm_g1.states.State; transitions live in mm_g1.controller.)"""
 
 # Desired locomotion speed (m/s) fed to the trajectory springs. Full stick = MAX_SPEED;
 # holding Shift scales it to a walk (GenoView's 0.4 scale).
-MAX_SPEED = 2.5
+MAX_SPEED = 1.0
 WALK_SCALE = 0.4
 
 # Full-stick command speed while CARRYING the box. The carry clips are near-stationary -- the

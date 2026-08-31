@@ -34,6 +34,7 @@ def run(video=None):
         import mujoco
 
         model = mujoco.MjModel.from_xml_path(C.SCENE_BOX_SCENEBOT_XML)
+        model.geom('box_geom').size[:] = C.BOX_HALF   # single source: config
         data = mujoco.MjData(model)
         renderer = mujoco.Renderer(model, 720, 960)
         cam = mujoco.MjvCamera()
