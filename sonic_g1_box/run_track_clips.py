@@ -187,6 +187,14 @@ def track_clip(stem, variant, args):
     yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
     data.qpos[bq] += args.box_offset * math.cos(yaw)
     data.qpos[bq + 1] += args.box_offset * math.sin(yaw)
+    # Rest the (scaled) box flush on the floor: the data z is for scale 1.
+    gc, gmat, ghalf = ids['ghost']
+    corners = (np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1)
+                         for sz in (-1, 1)]) * ghalf) @ gmat.T + gc
+    Rb = np.zeros(9)
+    mujoco.mju_quat2Mat(Rb, data.qpos[bq + 3:bq + 7])
+    lo = (args.box_scale * corners @ Rb.reshape(3, 3).T)[:, 2].min()
+    data.qpos[bq + 2] = -lo + 0.001
     mujoco.mj_forward(model, data)
     # Feet flush with the floor: the clip's root z is data, not this scene.
     foot_lo = min(float(data.geom_xpos[g][2]) - float(model.geom_size[g][2])
