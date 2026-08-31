@@ -30,6 +30,7 @@ from scipy.spatial import cKDTree
 from . import config as C
 from . import quat
 from . import boxes
+from .states import State
 from .features import build_db, yaw_quat, FORWARD, HORIZONS, FPS
 from .springs import (DecaySpringDamperPosition, DecaySpringDamperRotation,
                       TrajectorySpringPosition, TrajectorySpringRotation)
@@ -37,7 +38,6 @@ from .springs import (DecaySpringDamperPosition, DecaySpringDamperRotation,
 DT = C.DT
 NDOF = 29
 IDENTITY = np.array([1.0, 0.0, 0.0, 0.0])
-STATE_MOVE = 100                     # controller-only; frames are LOCO/PICK/CARRY/PLACE
 
 
 def wrap_angle(a):
@@ -111,7 +111,7 @@ class MotionMatcher:
             start_frame = min(self.stops[0] - 1, self.starts[0] + 30)
         self.lo, self.hi = self._clip_bounds(start_frame)
         self.animFrame = int(start_frame)
-        self.state = C.SKILL_LOCO
+        self.state = State.LOCOMOTION
         # Controller root = the smoothed simulation root (ground position + yaw).
         self.rootPos = self.simPosDB[self.animFrame].copy()
         self.rootVel = np.zeros(3); self.rootAcc = np.zeros(3); self.rootAng = np.zeros(3)
@@ -159,18 +159,13 @@ class MotionMatcher:
     def cur(self):
         return self.animFrame
 
-    def state_name(self):
-        return {C.SKILL_LOCO: "LOCOMOTION", C.SKILL_PICK: "PICK",
-                C.SKILL_CARRY: "CARRY", C.SKILL_PLACE: "PLACE",
-                STATE_MOVE: "MOVE-TO-PICK"}[self.state]
-
     # --- triggers ------------------------------------------------------------
     def trigger_box(self):
         """Request the box action (B): walk to the box and pick it up from locomotion, or
         place it while carrying. Pressing B during the walk cancels it. Honoured on the
         next step; a no-op while a pick/place is being ridden."""
-        if self.state == STATE_MOVE:
-            self.state = C.SKILL_LOCO
+        if self.state is State.MOVE_TO_PICK:
+            self.state = State.LOCOMOTION
             return
         if self.box_locked == 0:
             self.box_pending = True
@@ -209,24 +204,24 @@ class MotionMatcher:
         # Move-to-pick drives itself: the player command is replaced by the walk
         # toward the stance planned from the live box pose. If the box moves
         # mid-approach (kicked, or fed from a live physical box), replan.
-        if self.state == STATE_MOVE:
+        if self.state is State.MOVE_TO_PICK:
             self.move_timer += DT
             if float(np.linalg.norm(self.boxPos[0:2] - self._move_box_xy)) > 0.10:
                 self._start_move()
             desiredVel, desiredFace = self._steer_to_stance()
             if self._at_stance():
                 self._enter_skill(self.pick_enter, self.pick_end_of,
-                                  C.SKILL_PICK, "pick")
+                                  State.PICK)
                 desiredVel = np.zeros(3)
                 desiredFace = np.zeros(3)
             elif self.move_timer > C.MOVE_TIMEOUT:
-                self.state = C.SKILL_LOCO
+                self.state = State.LOCOMOTION
 
         desiredVel = np.asarray(desiredVel, float)
         self.cmdVel = desiredVel.copy()
         self.cmdFace = np.asarray(desiredFace, float).copy()
         self._predict_trajectory(desiredVel, desiredFace)
-        if self.state == STATE_MOVE and np.linalg.norm(self.cmdVel) > 1e-6:
+        if self.state is State.MOVE_TO_PICK and np.linalg.norm(self.cmdVel) > 1e-6:
             self._path_taps()          # holding at the stance keeps the spring taps
         return self._query_from_trajectory(desiredVel)
 
@@ -236,10 +231,10 @@ class MotionMatcher:
             self.box_pending = False
             return
         self.box_pending = False
-        if self.state == C.SKILL_LOCO and len(self.pick_enter):
+        if self.state is State.LOCOMOTION and len(self.pick_enter):
             self._start_move()
-        elif self.state == C.SKILL_CARRY:
-            self._enter_skill(self.place_enter, self.place_end_of, C.SKILL_PLACE, "place")
+        elif self.state is State.CARRY:
+            self._enter_skill(self.place_enter, self.place_end_of, State.PLACE)
 
     # --- move-to-pick (approach heuristics, from motionmatching-g1-shelf) ----
     def _start_move(self):
@@ -261,7 +256,7 @@ class MotionMatcher:
                 best = (d, sxy, sy, wp)
         _, self.stance_xy, self.stance_yaw, self.route_wp = best
         self._move_box_xy = self.boxPos[0:2].copy()
-        self.state = STATE_MOVE
+        self.state = State.MOVE_TO_PICK
         self.move_timer = 0.0
         self.move_settle_t = 0.0
         self.on_rail = False
@@ -402,34 +397,35 @@ class MotionMatcher:
                 self.Tdir[k] = np.array([heading[0], heading[1], 0.0])
                 k += 1
 
-    def _enter_skill(self, enter_frames, end_of, skill, dbname):
+    def _enter_skill(self, enter_frames, end_of, state):
         """Nearest-neighbour match the live pose + box pose to the start of a pick/place phase
-        (in that skill's own database `dbname`), inertialize into it, and lock the skill so it
+        (in that skill's own database), inertialize into it, and lock the skill so it
         is ridden to the phase end."""
         if len(enter_frames) == 0:
             return
+        dbname = state.name.lower()                  # State.PICK -> the 'pick' db
         Xq = self._query(dbname)
         Xdb = self.db["dbs"][dbname]["X"]
         entry = int(enter_frames[np.argmin(np.linalg.norm(Xdb[enter_frames] - Xq, axis=1))])
         end = int(end_of[entry])
         lo, _ = self._clip_bounds(entry)
         self._inertialize_into(entry, lo, end + 1)           # hi caps the ride at the phase end
-        self.state = skill
+        self.state = state
         self.box_locked = max(1, end - entry)
         self.searchTimer = C.SEARCH_TIME
 
     def _finish_ride(self):
         """Called when a PICK/PLACE ride ends: transition into the next searchable state."""
-        if self.state == C.SKILL_PICK:                       # pick -> carry
+        if self.state is State.PICK:                       # pick -> carry
             res = self._best_carry()
             if res is not None:
                 f, lo, hi = res
                 self._inertialize_into(f, lo, hi)
-                self.state = C.SKILL_CARRY
+                self.state = State.CARRY
         else:                                                # place -> locomotion
             f, lo, hi = self._best_loco()
             self._inertialize_into(f, lo, hi)
-            self.state = C.SKILL_LOCO
+            self.state = State.LOCOMOTION
         self.searchTimer = C.SEARCH_TIME
 
     # --- predict the desired trajectory (query) ------------------------------
@@ -517,7 +513,7 @@ class MotionMatcher:
     def _query_from_trajectory(self, desiredVel=None):
         # ---- Search (skipped while riding a pick/place skill) ----
         if self.box_locked == 0 and self.searchTimer <= 0.0:
-            if self.state == C.SKILL_CARRY:
+            if self.state is State.CARRY:
                 self._search_carry()
             else:
                 self._search_loco()
@@ -548,7 +544,7 @@ class MotionMatcher:
         # Path snap: on the final approach leg the root is pinned to the rail, in
         # position and in heading -- the cross-track and yaw parts of the matched
         # motion are projected out.
-        if self.state == STATE_MOVE and self.on_rail:
+        if self.state is State.MOVE_TO_PICK and self.on_rail:
             to = self.stance_xy - self.rootPos[0:2]
             if float(np.linalg.norm(to)) < C.SNAP_RADIUS:
                 rail = np.array([np.cos(self.stance_yaw), np.sin(self.stance_yaw)])
@@ -589,7 +585,7 @@ class MotionMatcher:
         captured as a base-local offset too, so the box eases into the hands rather than
         snapping. When not attached the box stays put -- on the floor before pick contact, and
         wherever it was set down after place release."""
-        attached = (self.state in (C.SKILL_PICK, C.SKILL_CARRY, C.SKILL_PLACE)
+        attached = (self.state in (State.PICK, State.CARRY, State.PLACE)
                     and bool(self.box_attach[f]))
         if attached:
             if not self.box_held:                            # grab: seed the base-local offset

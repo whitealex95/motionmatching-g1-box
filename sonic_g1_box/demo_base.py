@@ -27,6 +27,7 @@ from sonic_tracking.policy import SonicPolicy
 from sonic_tracking.rotations import quat_rotate, quat_conjugate
 
 from mm_g1 import config as C
+from mm_g1.states import State
 from mm_g1.data import load_library
 from mm_g1.controller import MotionMatcher
 
@@ -169,18 +170,18 @@ class Demo:
                 self._check_grip(mm)
             self._prev_mm_held = mm.box_held
 
-        st = mm.state_name()
+        st = mm.state
         # Matcher-side placement latch: the matcher runs ~1 s ahead of the
         # tracked frame, so a fresh LOCOMOTION here must not re-trigger a pick
         # while the physical robot is still finishing the place.
-        if self._mm_prev == 'PLACE' and st == 'LOCOMOTION':
+        if self._mm_prev is State.PLACE and st is State.LOCOMOTION:
             if (self.last_up_time is not None
                     and self.t - self.last_up_time < 2.0):
                 self.mm_placed = True
         self._mm_prev = st
-        if st in ('PICK', 'PLACE'):
+        if st in (State.PICK, State.PLACE):
             return np.zeros(3), np.zeros(3)
-        if st == 'CARRY':
+        if st is State.CARRY:
             if (self.carry_start is not None
                     and self.t - self.carry_start > self.args.carry_seconds):
                 mm.trigger_box()               # set it down
@@ -232,7 +233,7 @@ class Demo:
                 and phys_z < C.BOX_REST_Z + GRIP_PHYS_DZ):
             mm.box_locked = 0
             mm.box_pending = False
-            mm.state = C.SKILL_LOCO
+            mm.state = State.LOCOMOTION
             mm.box_held = False
             mm.boxPos[:] = self.data.qpos[self.bq:self.bq + 3]
             mm.boxRot[:] = self.data.qpos[self.bq + 3:self.bq + 7]
@@ -308,13 +309,13 @@ class Demo:
         if box_z > C.BOX_REST_Z + 0.25:
             self.lift_seen = True
             self.last_up_time = self.t
-        if state == 'CARRY' and held and self.carry_start is None:
+        if state is State.CARRY and held and self.carry_start is None:
             self.carry_start = self.t
             self.carry_peak = box_z
             print(f'[{self.t:6.2f}s] CARRY (box z {box_z:.2f} m)')
         if self.carry_start is not None:
             self.carry_peak = max(self.carry_peak, box_z)
-        if state == 'LOCOMOTION' and not held and not self.place_done:
+        if state is State.LOCOMOTION and not held and not self.place_done:
             if (self.carry_start is not None
                     and self.carry_peak > C.BOX_REST_Z + 0.25):
                 self.place_done = True
@@ -379,7 +380,7 @@ class Demo:
         lib = self.matcher.lib
         clip, length = lib['clip_names'][cid], int(lib['lengths'][cid])
         speed = float(np.linalg.norm(self.data.qvel[0:2]))
-        head = state if state != 'LOCOMOTION' else \
+        head = state.name if state is not State.LOCOMOTION else \
             ('WALK' if speed > 0.1 else 'IDLE')
         box_z = float(self.data.qpos[self.bq + 2])
         title = f'{head}   {speed:.1f} m/s   [{self.MODE}]'
@@ -459,7 +460,7 @@ class Demo:
             if self.place_done and self._robot_box_dist() > self.WALK_AWAY_DIST:
                 break
             if tick % 100 == 0:
-                print(f'  t={self.t:5.1f}s mm={self.matcher.state_name():10s} '
+                print(f'  t={self.t:5.1f}s mm={self.matcher.state.name:12s} '
                       f'x={self.data.qpos[0]:5.2f} '
                       f'box_z={self.data.qpos[self.bq + 2]:5.2f} '
                       f'held={self.motion.meta_at(min(int(self.policy.current_frame), self.motion.timesteps - 1))[3]}',

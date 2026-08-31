@@ -113,19 +113,13 @@ BOX_CLIPS_EXCLUDE = [
 # because the box has ~4-fold rotational symmetry about its vertical axis; 1 == no augmentation.
 BOX_ROT_FOLDS = 4
 
-# Per-frame skill codes (lib["skill"]). 0 keeps locomotion exactly as before; any non-zero
-# code keeps that frame out of the locomotion search/normalization. DISABLED frames belong
-# to no database at all (the OmniRetarget pick/place phases when SCENEBOT_PICK is on).
-SKILL_LOCO, SKILL_PICK, SKILL_CARRY, SKILL_PLACE = 0, 1, 2, 3
-SKILL_DISABLED = 4
-
 # --- The single SceneBot pick / drop (this branch) -------------------------------
 # The pick and place skills come from ONE motion: the SceneBot web demo's squat pickup
 # (clip 11 of assets/scenebot/clips.bin, frames 0..120 at 50 Hz). The demo plays it at
 # half speed forward for the pickup and at full speed backward for the put-down; both
 # playbacks are baked as-played into the library at FPS, with the demo's per-frame
 # contact labels (mm_g1/scenebot_pick.py). The OmniRetarget clips then contribute ONLY
-# their carry frames (their own pick/place phases are marked SKILL_DISABLED).
+# their carry frames (their own pick/place phases are marked Skill.DISABLED).
 SCENEBOT_PICK = True
 SCENEBOT_CLIP = 11
 SCENEBOT_FRAMES = (0, 120)
