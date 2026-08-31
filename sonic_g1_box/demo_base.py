@@ -38,7 +38,7 @@ from mm_stream import MMMotion, MM_FPS, POLICY_FPS
 MARGIN = 50                       # 50 Hz frames kept ahead of the playhead
 LOOKAHEAD_S = MARGIN / POLICY_FPS
 REPLAN_MM_TICKS = 6               # matcher ticks per replan period (0.2 s)
-GRIP_REF_DZ = 0.18                # reference lift before the grip is judged
+GRIP_REF_DZ = 0.50                # reference lift before the grip is judged
 GRIP_PHYS_DZ = 0.04               # physical lift that counts as gripped
 FALL_Z = 0.28                     # pelvis below this counts as fallen (squats go low)
 FALL_TILT = -0.10                 # base-frame gravity z above this = tipped right over
