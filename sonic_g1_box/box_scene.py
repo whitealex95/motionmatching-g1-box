@@ -19,6 +19,17 @@ BOX_TEX = os.path.join(ROOT, 'assets', 'largebox', 'medicinebox.png')
 
 PALM_FRICTION = [1.5, 0.02, 0.0005]
 
+# Box contact model (direct units; negative solref = mass-INDEPENDENT, so the
+# light box stays firm under arm/foot forces). PRIORITY makes these win over
+# the floor/hand defaults for every contact the box is in.
+#   stiffness -40000 N/m: ~1 mm dent per 40 N press
+#   damping      -60 N s/m: ~0.67 of critical for a 0.05 kg box
+# Soften (squishy) by lowering |stiffness|; make it elastic (bouncy) by
+# lowering |damping|. Stability: substeps must resolve sqrt(k/m) -- the
+# default --substeps 20 (1 ms) covers these values.
+BOX_SOLREF = [-40000.0, -60.0]
+BOX_PRIORITY = 2
+
 
 def _carton_obb():
     """(centre, axes 3x3 columns, half extents) of the carton in its local frame."""
@@ -57,14 +68,6 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
                            size=[0.012] * 3, rgba=[0.1, 0.9, 0.1, 0.35])
 
     collide = mode != 'kinematic'
-    # Direct (negative solref = mass-INDEPENDENT) contact stiffness/damping for
-    # the box, and priority so it wins over the floor/hand defaults: MuJoCo's
-    # default contacts scale with body mass, so a light box (0.05 kg) is
-    # centimeters-soft under arm/foot forces and visibly interpenetrates.
-    # ~1 mm crush under a 40 N press, critically damped for a light box;
-    # needs the smaller sim timestep below to integrate stably.
-    BOX_SOLREF = [-40000.0, -60.0]       # N/m, N s/m (direct, mass-independent)
-    BOX_PRIORITY = 2
     if box_type == 'carton':
         tex = spec.add_texture()
         tex.name = 'box_tex'
