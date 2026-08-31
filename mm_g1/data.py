@@ -13,7 +13,7 @@ import pickle
 import numpy as np
 
 from . import config as C
-from . import boxes
+from . import labels
 from . import quat
 from .states import Phase
 from .g1_model import G1Model, csv_to_qpos, quat_wxyz_yaw
@@ -103,10 +103,13 @@ def build_library(clips=None, out=C.LIB_PATH):
     folds = max(1, C.BOX_ROT_FOLDS)
     for name in box_clips:                            # OmniRetarget pick/carry/place clips
         robot_q, box_pose = _load_box_npz(name)
+        # Labels: the clip's sidecar if present, else the box-height rule
+        # (identical timing across yaw folds, so resolved once here).
+        ph, at, ct = labels.box_labels(name, box_pose, C.BOX_DATA_DIR)
         for k in range(folds):                        # N-fold box-orientation augmentation
             bp = box_pose if k == 0 else _yaw_box_pose(box_pose, k * 2.0 * np.pi / folds)
             tag = name if k == 0 else f"{name}_rot{k}"
-            loaded.append((tag, robot_q, "box", bp, None, None, None))
+            loaded.append((tag, robot_q, "box", bp, ph, at, ct))
     if C.SCENEBOT_PICK:                               # the single SceneBot pick / drop
         from . import scenebot_pick
         sb_folds = max(1, C.SCENEBOT_ROT_FOLDS)
@@ -123,7 +126,6 @@ def build_library(clips=None, out=C.LIB_PATH):
     for cid, (name, q, kind, bpose, ph, at, ct) in enumerate(loaded):
         n = len(q)
         if kind == "box":
-            ph, at, _info = boxes.segment_phases(bpose[:, 0:3])
             if C.SCENEBOT_PICK:                      # OmniRetarget contributes carry only
                 ph = np.where(np.isin(ph, [Phase.PICK, Phase.PLACE]),
                               Phase.DISABLED, ph).astype(np.int32)
@@ -176,10 +178,14 @@ def build_library(clips=None, out=C.LIB_PATH):
 def bake_fingerprint():
     """Digest of every value in config/library.py -- the full bake recipe.
     A cache built under a different recipe rebuilds automatically, so edits
-    to library settings never need a manual `rm data/motion_lib.npz`.
+    to library settings -- or to any clip's .labels.yaml sidecar -- never
+    need a manual `rm data/motion_lib.npz`.
     (LIB_VERSION still covers CODE changes in the bake pipeline.)"""
     from .config import library
     vals = {k: getattr(library, k) for k in dir(library) if k.isupper()}
+    for p in sorted(glob.glob(os.path.join(C.BOX_DATA_DIR, "*.labels.yaml"))):
+        with open(p, "rb") as f:
+            vals[os.path.basename(p)] = hashlib.sha256(f.read()).hexdigest()
     blob = json.dumps(vals, sort_keys=True, default=repr)
     return hashlib.sha256(blob.encode()).hexdigest()
 
