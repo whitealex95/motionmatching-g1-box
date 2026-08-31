@@ -11,7 +11,14 @@ import sys
 
 from demo_base import Demo, run_main
 
-ARM_JOINTS = slice(15, 29)     # shoulders..wrists in MuJoCo order
+# MuJoCo-order arm indices -- left 15..21 / right 22..28, per arm:
+#   +0 shoulder_pitch  +1 shoulder_roll  +2 shoulder_yaw  +3 elbow
+#   +4 wrist_roll      +5 wrist_pitch    +6 wrist_yaw
+# Scale a subgroup in setup_extra with e.g. `self.kps[WRISTS] *= 2.0`.
+ARM_JOINTS = slice(15, 29)
+SHOULDERS = [15, 16, 17, 22, 23, 24]
+ELBOWS = [18, 25]
+WRISTS = [19, 20, 21, 26, 27, 28]
 L_SHOULDER_ROLL, R_SHOULDER_ROLL = 16, 23
 # Inward = same mirroring as the shoulder rolls (measured in the grab pose:
 # left yaw NEGATIVE / right yaw POSITIVE toe the palms toward the box).
