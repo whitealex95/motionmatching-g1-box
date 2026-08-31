@@ -85,6 +85,22 @@ class _Sampler:
         return np.array([row[0], row[1], row[2], row[3], 0.0])
 
 
+def _erode(track, on_delay, off_advance):
+    """Shrink each contiguous ON interval of a 0/1 track: start `on_delay`
+    frames later, end `off_advance` frames earlier (dropped if it closes)."""
+    if on_delay == 0 and off_advance == 0:
+        return track
+    out = np.zeros_like(track)
+    on = np.flatnonzero(track > 0.5)
+    if len(on):
+        splits = np.split(on, np.flatnonzero(np.diff(on) > 1) + 1)
+        for run in splits:
+            s, e = run[0] + on_delay, run[-1] - off_advance
+            if s <= e:
+                out[s:e + 1] = 1.0
+    return out
+
+
 def _bake(smp, frames):
     """One playback (a sequence of fractional clip frames) -> library arrays.
 
@@ -107,6 +123,11 @@ def _bake(smp, frames):
     for k, f in enumerate(frames):
         qpos[k] = smp.qpos36(f)
         contact[k] = smp.contact5(f)
+    for ch in (2, 3):                                # hand channels only
+        contact[:, ch] = _erode(contact[:, ch],
+                                int(round(C.CONTACT_ONSET_DELAY * C.FPS)),
+                                int(round(C.CONTACT_RELEASE_ADVANCE * C.FPS)))
+    for k, f in enumerate(frames):
         if f >= g:
             attach[k] = True
             hand = smp.hand(f)
