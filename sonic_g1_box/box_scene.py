@@ -57,6 +57,14 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
                            size=[0.012] * 3, rgba=[0.1, 0.9, 0.1, 0.35])
 
     collide = mode != 'kinematic'
+    # Direct (negative solref = mass-INDEPENDENT) contact stiffness/damping for
+    # the box, and priority so it wins over the floor/hand defaults: MuJoCo's
+    # default contacts scale with body mass, so a light box (0.05 kg) is
+    # centimeters-soft under arm/foot forces and visibly interpenetrates.
+    # ~1 mm crush under a 40 N press, critically damped for a light box;
+    # needs the smaller sim timestep below to integrate stably.
+    BOX_SOLREF = [-40000.0, -60.0]       # N/m, N s/m (direct, mass-independent)
+    BOX_PRIORITY = 2
     if box_type == 'carton':
         tex = spec.add_texture()
         tex.name = 'box_tex'
@@ -78,7 +86,8 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
                      mass=float(box_mass),
                      friction=[float(box_friction), 0.02, 0.0005],
                      contype=1 if collide else 0,
-                     conaffinity=1 if collide else 0)
+                     conaffinity=1 if collide else 0,
+                     solref=BOX_SOLREF, priority=BOX_PRIORITY)
         ghost = (GHOST_CENTER, GHOST_MAT, GHOST_HALF)
     else:                                            # scenebot free box
         half = np.array(C.BOX_HALF, float) * float(box_scale)
@@ -90,7 +99,8 @@ def build_model(scene_xml_path, mode, box_mass=0.5, off_w=1280, off_h=720,
                      mass=float(box_mass),
                      friction=[float(box_friction), 0.02, 0.0005],
                      contype=1 if collide else 0,
-                     conaffinity=1 if collide else 0)
+                     conaffinity=1 if collide else 0,
+                     solref=BOX_SOLREF, priority=BOX_PRIORITY)
         ghost = (np.zeros(3), np.eye(3), np.array(C.BOX_HALF, float))
 
     model = spec.compile()
