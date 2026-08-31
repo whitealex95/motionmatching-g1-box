@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Generate the 'MEDICINE' cardboard carton used by the box demo's medicine variant.
-
-It stands in for largebox.obj in scene_box_medicine.xml (`python run.py --medicine`, and the
-/medicine build of the web demo). The default scene keeps the plain scanned box.
+"""Generate the 'MEDICINE' cardboard carton used as the physical box in the
+sonic_g1_box demos (sonic_g1_box/box_scene.py loads the .obj as both the
+collision shape and the visual).
 
 Run from the repo root with any env that has numpy + scipy + pillow, e.g.:
     ~/miniconda3/envs/deploy_mujoco/bin/python tools/make_medicine_box.py
