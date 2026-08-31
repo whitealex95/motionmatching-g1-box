@@ -122,7 +122,6 @@ def build_db(lib):
     footLvel, footRvel = clipwise_vel(footL), clipwise_vel(footR)
     pelvisVel, simVel = clipwise_vel(pelvis), clipwise_vel(simPos)
     dofVel, pelvLocalVel = clipwise_vel(dof), clipwise_vel(pelvLocalPos)
-    boxVelW = clipwise_vel(boxPosW)                       # world box linear velocity
     yawRate = np.zeros(T)
     pelvLocalAng = np.zeros((T, 3))
     for rs, re in spans:
@@ -153,7 +152,6 @@ def build_db(lib):
     # pelvLocalAng) -- the velocity terms the box inertialization matches at a cut.
     boxLocalPos = quat.inv_mul_vec(qh_all, boxPosW - simPos)               # (T,3)
     boxLocalRot = quat.mul(quat.inv(qh_all), boxRotW)                      # (T,4)
-    boxLocalVel = quat.inv_mul_vec(qh_all, boxVelW)                        # (T,3) world vel (query)
     boxLocalAA = quat.to_scaled_angle_axis(quat.abs(boxLocalRot))          # (T,3)
     boxLocalPosVel = clipwise_vel(boxLocalPos)                             # (T,3) d/dt(local pos)
     boxLocalAng = np.zeros((T, 3))
@@ -179,24 +177,24 @@ def build_db(lib):
         scale = np.where(scale < 1e-5, 1.0, scale)
         return ((X - offset) / scale).astype(np.float32), offset, scale
 
-    Wr, Wv = C.BOX_ROT_WEIGHT, C.BOX_VEL_WEIGHT
+    Wr = C.BOX_ROT_WEIGHT
     pose = [(Xpos, 1.0), (Xvel, 1.0)]
     traj = [(XtrajPos, 1.0), (XtrajDir, 1.0)]
     # The SEARCH sees only the box's planar position: its height is a function of
     # the phase (resting / riding the lift), not something to match on. The full
     # 3-D boxLocalPos is still what reconstructs the ridden box at runtime.
     boxSearchPos = boxLocalPos[:, 0:2]                                     # (T,2)
-    box = lambda wp, wr=Wr: [(boxSearchPos, wp), (boxLocalAA, wr), (boxLocalVel, Wv)]
-    # PICK and PLACE share the 23-D (pose + box, no trajectory) feature space but are SEPARATE
+    box = lambda wp, wr=Wr: [(boxSearchPos, wp), (boxLocalAA, wr)]
+    # PICK and PLACE share the 20-D (pose + box, no trajectory) feature space but are SEPARATE
     # databases, so pick can weight the box position AND orientation more
     # (PICK_BOX_POS_WEIGHT / PICK_BOX_ROT_WEIGHT) than place -- the entry is chosen mainly by
     # where the box sits and which way it faces in the base frame.
     dbs = {
         "loco": make_db(pose + traj, masks["loco"]),                        # 27-D (unchanged)
-        "carry": make_db(pose + traj + box(C.BOX_POS_WEIGHT), masks["carry"]),   # 35-D
+        "carry": make_db(pose + traj + box(C.BOX_POS_WEIGHT), masks["carry"]),   # 32-D
         "pick": make_db(pose + box(C.PICK_BOX_POS_WEIGHT,
-                                   C.PICK_BOX_ROT_WEIGHT), masks["pick"]),       # 23-D
-        "place": make_db(pose + box(C.BOX_POS_WEIGHT), masks["place"]),          # 23-D
+                                   C.PICK_BOX_ROT_WEIGHT), masks["pick"]),       # 20-D
+        "place": make_db(pose + box(C.BOX_POS_WEIGHT), masks["place"]),          # 20-D
     }
     dbs = {k: dict(X=Xn, offset=off, scale=sc) for k, (Xn, off, sc) in dbs.items()}
 

@@ -15,11 +15,12 @@ database transitions ever made are exactly those in the chain above (req. 13):
 
 Each searchable database has its own feature space (features.build_db):
   loco  (27)  pose + future trajectory                         -- unchanged genoview features
-  carry (35)  pose + future trajectory + box(xy,ori,vel)       -- box added to the query
-  pick  (23)  pose + box(xy,ori,vel)                            -- NO trajectory; box pos weighted
-  place (23)  pose + box(xy,ori,vel)                            -- NO trajectory
-The box position block is PLANAR (xy in the base frame): box height is a function of the
-phase, not something to match on. pick and place share the 23-D layout but are separate
+  carry (32)  pose + future trajectory + box(xy,ori)           -- box added to the query
+  pick  (20)  pose + box(xy,ori)                                -- NO trajectory; box pos weighted
+  place (20)  pose + box(xy,ori)                                -- NO trajectory
+The box block is its PLANAR position (xy in the base frame) + orientation: box height is a
+function of the phase and box velocity carries no signal the pose blocks lack, so neither
+is matched on. pick and place share the 20-D layout but are separate
 databases, so pick can weight the box
 position more heavily (PICK_BOX_POS_WEIGHT) -- the entry is chosen mainly by where the box is.
 
@@ -145,7 +146,6 @@ class MotionMatcher:
             self.rootRot, np.array([C.BOX_SPAWN_FWD, C.BOX_SPAWN_LAT, 0.0]))
         self.boxPos[2] = C.BOX_REST_Z
         self.boxRot = quat.mul(self.rootRot, self.box_spawn_rot)
-        self.boxVelWorld = np.zeros(3); self.boxPosPrev = self.boxPos.copy()
         self.box_held = False
         self.offBoxP = np.zeros(3); self.offBoxPVel = np.zeros(3)
         self.offBoxR = IDENTITY.copy(); self.offBoxAng = np.zeros(3)
@@ -451,9 +451,7 @@ class MotionMatcher:
         Position is planar (xy): the search ignores box height."""
         bp = quat.inv_mul_vec(qh, self.boxPos - self.rootPos)[0:2]
         br = quat.mul(quat.inv(qh), self.boxRot)
-        baa = quat.to_scaled_angle_axis(quat.abs(br))
-        bv = quat.inv_mul_vec(qh, self.boxVelWorld)
-        return bp, baa, bv
+        return bp, quat.to_scaled_angle_axis(quat.abs(br))
 
     def _query(self, name):
         """Assemble + normalize the search query for database `name`
@@ -609,8 +607,6 @@ class MotionMatcher:
             self.boxRot = quat.mul(self.rootRot, boxLocalRot)
         else:
             self.box_held = False                            # frozen at its current world pose
-        self.boxVelWorld = (self.boxPos - self.boxPosPrev) / DT
-        self.boxPosPrev = self.boxPos.copy()
 
     def box_qpos(self):
         """Box freejoint qpos (7,) = world position + quaternion (wxyz), for the scene."""

@@ -154,7 +154,7 @@ motionmatching-g1-box/
 │   ├── g1_model.py              # qpos conversion, quaternion yaw, FK for the feet, mirror
 │   ├── data.py                  # build / load + cache the loco + box library
 │   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
-│   ├── features.py              # per-phase feature DBs (loco 27 / carry 35 / pick·place 23)
+│   ├── features.py              # per-phase feature DBs (loco 27 / carry 32 / pick·place 20)
 │   ├── springs.py               # critically-damped trajectory + inertialization springs
 │   ├── controller.py            # real-time matcher + pick/carry/place state machine
 │   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera, box
@@ -194,7 +194,7 @@ in `tools/sonic_tracking/params.py`.
 - `SEARCH_TAIL` — frames at each clip's end excluded from the *search only* (GenoView's
   `cKDTree(X[rs:re-30])`): the tail still plays but can't be matched into, so the
   character never runs off the end of a clip.
-- `BOX_POS_WEIGHT` / `BOX_ROT_WEIGHT` / `BOX_VEL_WEIGHT` — how much the box blocks weigh in
+- `BOX_POS_WEIGHT` / `BOX_ROT_WEIGHT` — how much the box blocks weigh in
   the pick/place/carry search vs. the body pose.
 - `BOX_INERT_HALFLIFE` — how quickly the box settles into the hands at grab time.
 

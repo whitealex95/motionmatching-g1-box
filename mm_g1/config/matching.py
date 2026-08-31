@@ -20,8 +20,8 @@ ROOT_DIR_SMOOTH = 31
 # full future trajectory always exists and the playhead can't run off the clip end.
 SEARCH_TAIL = HORIZONS[-1]   # frames excluded from each clip's KD-tree (1.0 s @30fps)
 
-# Box search-feature block weights (box pos / orientation / linear velocity, all expressed
-# in the robot's gravity-aligned base frame). Scaled like the genoview blocks (one shared
+# Box search-feature block weights (planar box position / orientation, expressed in
+# the robot's gravity-aligned base frame). Scaled like the genoview blocks (one shared
 # std per block) then multiplied by these so box placement dominates the pick/place match.
 BOX_POS_WEIGHT = 2.0
 # Box orientation is weighted heavily so the CARRY search stays "sticky" to the box's current
@@ -30,7 +30,6 @@ BOX_POS_WEIGHT = 2.0
 # the box-in-base yaw wanders only ~6 deg over a whole carry (vs ~170 deg at 1.0). Carry body
 # poses are homogeneous, so this barely affects the gait match.
 BOX_ROT_WEIGHT = 2.0
-BOX_VEL_WEIGHT = 0.5
 # PICK has its own (separate) database, so it can weight the box position AND orientation more
 # than carry/place do: when you press B, the entry should be chosen mostly by where the box
 # sits (and which way it faces) relative to the robot, even if the body pose matches a little
