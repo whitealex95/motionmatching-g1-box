@@ -92,9 +92,9 @@ SCENEBOT_ROT_FOLDS = 2
 # applied per hand to each contiguous ON interval of both baked playbacks
 # (pick and drop): ONSET_DELAY moves the label's start later, RELEASE_ADVANCE
 # moves its end earlier. The vendored annotation itself is never modified.
-CONTACT_ONSET_DELAY = 0.5
+CONTACT_ONSET_DELAY = 0.75
 CONTACT_RELEASE_ADVANCE = 0.0
-BOX_HALF = (0.15, 0.10, 0.15)  # SceneBot free_box half extents
+BOX_HALF = (0.2, 0.2, 0.2)  # SceneBot free_box half extents. Default: (0.15, 0.10, 0.15)
 BOX_REST_Z = BOX_HALF[2]       # the SceneBot box rests on the floor at its half height
 
 # Phase segmentation thresholds (box height relative to its resting height on the floor).
