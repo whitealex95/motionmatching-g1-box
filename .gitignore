@@ -7,6 +7,11 @@ __pycache__/
 # Built motion-matching cache (regenerated from the CSVs on first run)
 data/motion_lib.npz
 
+# SONIC low_latency / sonic_v1_1 decoders are ~150 MB (over GitHub's 100 MB
+# file limit); assets/sonic/policy/fetch_models.sh downloads them
+assets/sonic/policy/low_latency/*.onnx
+assets/sonic/policy/sonic_v1_1/*.onnx
+
 # default (unnamed) output of scenebot_g1_box/run_mm_pickup.py; curated
 # renders are committed under explicit names
 scenebot_g1_box/out/scenebot_mm_pickup.mp4
