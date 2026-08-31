@@ -96,7 +96,7 @@ SCENEBOT_ROT_FOLDS = 2
 # pick ends still holding and is untouched). The vendored annotation itself
 # is never modified.
 CONTACT_ONSET_DELAY = 0.75
-CONTACT_RELEASE_ADVANCE = 0.75
+CONTACT_RELEASE_ADVANCE = 1.0
 BOX_HALF = (0.2, 0.2, 0.2)  # SceneBot free_box half extents. Default: (0.15, 0.10, 0.15)
 BOX_REST_Z = BOX_HALF[2]       # the SceneBot box rests on the floor at its half height
 
