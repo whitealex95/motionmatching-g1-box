@@ -1,6 +1,7 @@
 """What the motion library contains and how it is baked: clips, trims, folds,
-phase segmentation, and the box geometry. Changing anything here changes the
-data/motion_lib.npz cache -- bump LIB_VERSION when the change is incompatible.
+phase segmentation, and the box geometry. Every value in this file is part of
+the bake fingerprint (data.bake_fingerprint), so editing anything here makes
+the data/motion_lib.npz cache rebuild automatically on the next load.
 """
 
 FPS = 30
@@ -28,8 +29,8 @@ CLIP_TRIM = {
     "pushAndStumble1_subject5":  (198, 353),   # genoview 397-706  @60fps  (stumble event only)
 }
 
-# Bump when the library build (clips, trims, mirror, labels) changes incompatibly, so a
-# stale data/motion_lib.npz cache is rebuilt automatically. v2: GenoView-matched trims.
+# Bump when the bake CODE (data.py / boxes.py / scenebot_pick.py) changes what gets
+# built; settings changes rebuild automatically via the fingerprint. v2: GenoView-matched trims.
 # v3: robot-object pick/carry/place skill + box features. v4: box orientation N-fold augmentation.
 # v5: jump skill removed. v6: 7 low-quality box clips excluded (BOX_CLIPS_EXCLUDE).
 # v7: single SceneBot pick/drop (clip 11 half-speed + reversed), baked contact labels,
@@ -91,8 +92,7 @@ SCENEBOT_ROT_FOLDS = 2
 # applied per hand to each contiguous ON interval of both baked playbacks
 # (pick and drop): ONSET_DELAY moves the label's start later, RELEASE_ADVANCE
 # moves its end earlier. The vendored annotation itself is never modified.
-# Rebuild the cache after changing (delete data/motion_lib.npz).
-CONTACT_ONSET_DELAY = 0.0
+CONTACT_ONSET_DELAY = 0.5
 CONTACT_RELEASE_ADVANCE = 0.0
 BOX_HALF = (0.15, 0.10, 0.15)  # SceneBot free_box half extents
 BOX_REST_Z = BOX_HALF[2]       # the SceneBot box rests on the floor at its half height

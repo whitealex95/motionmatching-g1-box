@@ -176,8 +176,10 @@ Configuration lives in `mm_g1/config/`, split by concern (all names stay flat:
 controller (SONIC PD gains, joint orderings, rates) is configured separately
 in `tools/sonic_tracking/params.py`.
 
-`config/library.py` — what the motion library contains (changes here rebuild
-`data/motion_lib.npz`; bump `LIB_VERSION` for incompatible changes):
+`config/library.py` — what the motion library contains. Every value in the
+file is fingerprinted into `data/motion_lib.npz`, so any edit rebuilds the
+cache automatically on the next load (~1 s); `LIB_VERSION` only needs a bump
+when the bake *code* changes:
 
 - `CLIPS` — which locomotion clips form the library (drop extra GMR `.pkl` clips into
   `data/gmr_lafan1_g1/` and list them here).
