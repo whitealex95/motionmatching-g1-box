@@ -38,8 +38,11 @@ from mm_stream import MMMotion, MM_FPS, POLICY_FPS
 MARGIN = 50                       # 50 Hz frames kept ahead of the playhead
 LOOKAHEAD_S = MARGIN / POLICY_FPS
 REPLAN_MM_TICKS = 6               # matcher ticks per replan period (0.2 s)
-GRIP_REF_DZ = 0.10                # reference lift before the grip is judged
+GRIP_REF_DZ = 0.18                # reference lift before the grip is judged
 GRIP_PHYS_DZ = 0.04               # physical lift that counts as gripped
+FALL_Z = 0.28                     # pelvis below this counts as fallen (squats go low)
+FALL_TILT = -0.10                 # base-frame gravity z above this = tipped right over
+FALL_REF_TILT = 0.50              # tilt allowed BEYOND the reference pose's own tilt
 GHOST_RGBA = np.array([1.0, 0.75, 0.2, 0.55], np.float32)
 CONTACT_RGBA = np.array([0.25, 0.95, 0.35, 0.55], np.float32)  # ref box while hand contact is labeled
 _EYE3 = np.eye(3).ravel()
@@ -429,9 +432,9 @@ class Demo:
             ref = self.motion.qpos[min(int(self.policy.current_frame),
                                        self.motion.timesteps - 1)]
             gref = quat_rotate(quat_conjugate(ref[3:7]), down)
-            if not self.fallen and (self.data.qpos[2] < 0.35
-                                    or gravity[2] > -0.2
-                                    or gravity[2] - gref[2] > 0.35):
+            if not self.fallen and (self.data.qpos[2] < FALL_Z
+                                    or gravity[2] > FALL_TILT
+                                    or gravity[2] - gref[2] > FALL_REF_TILT):
                 self.fallen, self.fall_time = True, self.t
                 print(f'[{self.t:6.2f}s] ROBOT FELL')
 

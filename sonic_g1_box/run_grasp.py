@@ -4,12 +4,10 @@ hold it. The reference hands merely touch the box surface, so tracking alone
 produces no squeeze pressure. While a hand's SceneBot contact label is on at
 the tracked frame, --shoulder-squeeze biases that shoulder-roll PD target
 inward (palm pressure) and --wrist-squeeze toes the wrist yaw in (fingers
-press toward the box); --arm-gain stiffens the arms so the biases become
-real force.
+press toward the box); --arm-kp / --arm-kd scale the arm PD so the biases
+become real force.
 """
 import sys
-
-import numpy as np
 
 from demo_base import Demo, run_main
 
@@ -24,8 +22,8 @@ class GraspDemo(Demo):
     MODE = 'grasp'
 
     def setup_extra(self):
-        self.kps[ARM_JOINTS] *= self.args.arm_gain
-        self.kds[ARM_JOINTS] *= 1 # np.sqrt(self.args.arm_gain)
+        self.kps[ARM_JOINTS] *= self.args.arm_kp
+        self.kds[ARM_JOINTS] *= self.args.arm_kd
 
     def _adjust_target(self, target, f):
         lc, rc = self.motion.meta_at(f)[4]
@@ -41,8 +39,10 @@ class GraspDemo(Demo):
 
 
 def extra_args(ap):
-    ap.add_argument('--arm-gain', type=float, default=1.0,
+    ap.add_argument('--arm-kp', type=float, default=1.0,
                     help='scale on the arm PD stiffness (squeeze strength)')
+    ap.add_argument('--arm-kd', type=float, default=1.0,
+                    help='scale on the arm PD damping')
     ap.add_argument('--shoulder-squeeze', type=float, default=0.2,
                     help='inward shoulder-roll bias (rad) while that '
                          "hand's contact label is on (palm pressure)")
