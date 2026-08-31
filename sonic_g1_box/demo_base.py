@@ -267,9 +267,6 @@ class Demo:
     def _post_substep(self, f):
         """After each mj_step."""
 
-    def ref_attached(self, f):
-        return self.motion.meta_at(f)[3]
-
     def step_physics(self):
         d = self.data
         if self.seeder is not None and self.started:

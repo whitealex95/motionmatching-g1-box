@@ -1,9 +1,9 @@
 """Variant (c): true frictional grasp. Nothing attaches the box -- only
 contact friction between the palm pads (and forearms) and the box can lift and
 hold it. The reference hands merely touch the box surface, so tracking alone
-produces no squeeze pressure: --squeeze biases the shoulder-roll PD targets
-inward while the reference holds the box, and --arm-gain stiffens the arms so
-the bias becomes real force.
+produces no squeeze pressure: --squeeze biases each shoulder-roll PD target
+inward while that hand's SceneBot contact label is on at the tracked frame,
+and --arm-gain stiffens the arms so the bias becomes real force.
 """
 import sys
 
@@ -23,19 +23,22 @@ class GraspDemo(Demo):
         self.kds[ARM_JOINTS] *= np.sqrt(self.args.arm_gain)
 
     def _adjust_target(self, target, f):
-        if self.ref_attached(f):
+        lc, rc = self.motion.meta_at(f)[4]
+        if lc or rc:
             target = target.copy()
-            target[L_SHOULDER_ROLL] -= self.args.squeeze
-            target[R_SHOULDER_ROLL] += self.args.squeeze
+            if lc:
+                target[L_SHOULDER_ROLL] -= self.args.squeeze
+            if rc:
+                target[R_SHOULDER_ROLL] += self.args.squeeze
         return target
 
 
 def extra_args(ap):
     ap.add_argument('--arm-gain', type=float, default=1.0,
                     help='scale on the arm PD stiffness (squeeze strength)')
-    ap.add_argument('--squeeze', type=float, default=0.4,
-                    help='inward shoulder-roll bias (rad) while the '
-                         'reference holds the box')
+    ap.add_argument('--squeeze', type=float, default=0.2,
+                    help='inward shoulder-roll bias (rad) while that '
+                         "hand's contact label is on")
     ap.set_defaults(max_seconds=60.0)
 
 
