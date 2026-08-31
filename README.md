@@ -154,7 +154,7 @@ motionmatching-g1-box/
 │   ├── g1_model.py              # qpos conversion, quaternion yaw, FK for the feet, mirror
 │   ├── data.py                  # build / load + cache the loco + box library
 │   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
-│   ├── features.py              # per-phase feature DBs (loco 27 / carry 36 / pick·place 24)
+│   ├── features.py              # per-phase feature DBs (loco 27 / carry 35 / pick·place 23)
 │   ├── springs.py               # critically-damped trajectory + inertialization springs
 │   ├── controller.py            # real-time matcher + pick/carry/place state machine
 │   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera, box
