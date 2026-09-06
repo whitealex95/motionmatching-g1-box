@@ -27,9 +27,9 @@ The window shows two characters, like run_interactive.py:
   - a stick figure = the kinematic target the matcher is streaming. Its color
     is the bridge mode: gray before any control (and after stop), blue in
     planner mode, orange in POSE (tracking). It starts pelvis-aligned with the
-    robot, and the default --ref-mode anchor-xy keeps pulling the reference's
-    tracked frame toward the robot's xy (robot-centric view; display only,
-    the v1 pose stream carries no root xy).
+    robot; --ref-mode anchor-xy (off by default) additionally keeps pulling
+    the reference's tracked frame toward the robot's xy (robot-centric view;
+    display only, the v1 pose stream carries no root xy).
 
 The matcher runs LOOKAHEAD frames ahead of wall-clock time, so every chunk
 carries real future frames for the SONIC encoder (it looks 45 frames ahead).
@@ -681,7 +681,7 @@ def main():
                     help='WASD frame: heading = relative to the reference\'s '
                          'current heading (default; "body" is a legacy alias), '
                          'camera = relative to the view. Key F toggles at runtime')
-    ap.add_argument('--ref-mode', choices=('anchor-xy', 'none'), default='anchor-xy',
+    ap.add_argument('--ref-mode', choices=('anchor-xy', 'none'), default='none',
                     help='anchor-xy: pull the reference xy toward the displayed '
                          'robot every matcher tick (ContinuousAnchor; display '
                          'only, the pose stream carries no root xy)')
