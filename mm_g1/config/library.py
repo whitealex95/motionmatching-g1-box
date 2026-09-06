@@ -79,7 +79,7 @@ BOX_ROT_FOLDS = 4
 # playbacks are baked as-played into the library at FPS, with the demo's per-frame
 # contact labels (mm_g1/scenebot_pick.py). The OmniRetarget clips then contribute ONLY
 # their carry frames (their own pick/place phases are marked Phase.DISABLED).
-SCENEBOT_PICK = False
+SCENEBOT_PICK = True
 SCENEBOT_CLIP = 11
 SCENEBOT_FRAMES = (0, 120)
 SCENEBOT_FPS = 50
