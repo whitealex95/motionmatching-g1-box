@@ -70,3 +70,27 @@ frame, tools/make_medicine_box.py).
 The amber stick figure is the reference frame the policy is tracking; in the
 grasp variant the amber box outline is the reference box, so tracking
 error and slip are visible.
+
+## Real robot: `run_hardware.py`
+
+Streams the matcher to the C++ deploy node in
+[`motionmatching-g1-deploy`](https://github.com/whitealex95/motionmatching-g1-deploy)
+instead of the local SONIC port. It binds a ZMQ PUB socket on port 5556 and sends
+what the lab's Pico manager sends to `--input-type zmq_manager`: a `command`
+message (`start`, `stop`, `planner=0`) and 50 Hz `pose` chunks (protocol v1:
+`joint_pos` / `joint_vel` `[N,29]` IsaacLab order, `body_quat` `[N,4]` wxyz,
+`frame_index` int64). The matcher runs `--lookahead` frames (default 50 = 1 s)
+ahead of the clock so the encoder sees real future frames.
+
+```bash
+# terminal 1 (deploy repo): ./deploy.sh --input-type zmq_manager real ...
+# terminal 2:
+~/miniconda3/envs/mm-g1-sonic/bin/python run_hardware.py [--frame body] [--box-fwd 1.6]
+#   ] start control on the robot   O stop (damping)   WASD/arrows/B as in run.py
+python run_hardware.py --headless 8      # no window: protocol smoke test
+```
+
+No root-position feedback exists on hardware (SONIC never observes root XY and
+the robot has no odometry here), so the reference is open loop: steer by
+watching the robot, and press `i` in the deploy terminal to re-align heading
+while standing still.
