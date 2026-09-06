@@ -78,6 +78,21 @@ class MMMotion:
 
     # Replan support: time_mark/time_restore let a roll-forward past the
     # committed period be undone.
+    def shift_xy(self, off):
+        """Translate every generated frame (root and box columns) by -off.
+        The caller shifts the matcher's own world state to match."""
+        off = np.asarray(off, float)
+        for q in self._frames:
+            q[0:2] -= off
+            q[36:38] -= off
+        done = set()
+        for arr in (self._mm_t0, self._mm_t1):
+            if arr is not None and id(arr) not in done:
+                arr[0:2] -= off
+                arr[36:38] -= off
+                done.add(id(arr))
+        self._rebuild()
+
     def truncate(self, n):
         del self._frames[n:]
         del self._meta[n:]
