@@ -10,7 +10,7 @@ switches to a small **pick → carry → place** state machine driven by
 just nearest-neighbour search over per-phase feature databases.
 
 This repo is **fully self-contained**: the G1 model, all motion data, and the code live in
-this one folder. Clone it, run `setup.sh`, and go.
+this one folder. Clone it, create the conda env, and go.
 
 ```
 W / A / S / D    move (relative to the camera)
@@ -93,10 +93,11 @@ inertialization offset captured at grab time hides the pop from its resting spot
 ## Quick start
 
 ```bash
-git clone <this-repo> motionmatching-g1
-cd motionmatchin-g1
-./setup.sh                      # makes .venv, installs deps, builds the cache
-source .venv/bin/activate
+git clone https://github.com/whitealex95/motionmatching-g1-box.git
+cd motionmatching-g1-box
+conda create -n mm-g1-sonic python=3.10 -y
+conda activate mm-g1-sonic
+pip install -r requirements.txt
 python run.py                   # opens the window — WASD to move
 ```
 
@@ -104,12 +105,8 @@ The first launch builds a feature cache (`data/motion_lib.npz`, ~1 s); later lau
 start instantly. The viewer needs a display — run it on a desktop or an X-forwarded
 session with `MUJOCO_GL=glfw` (the default).
 
-Already have a MuJoCo Python environment? Skip `setup.sh`:
-
-```bash
-pip install -r requirements.txt
-python run.py
-```
+Full install notes (the SONIC sim extras and the real-robot bridge) are in
+[`INSTALL.md`](INSTALL.md).
 
 ## How it works
 
@@ -146,7 +143,6 @@ a lower speed back into the **walk** clip.
 ```
 motionmatching-g1-box/
 ├── run.py                       # entry point: python run.py
-├── setup.sh                     # venv + install + build cache (self-contained)
 ├── requirements.txt
 ├── mm_g1/
 │   ├── config/                  # split by concern: paths / library / matching / state_machine
