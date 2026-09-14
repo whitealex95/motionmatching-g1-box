@@ -20,21 +20,38 @@ ROOT_DIR_SMOOTH = 31
 # full future trajectory always exists and the playhead can't run off the clip end.
 SEARCH_TAIL = HORIZONS[-1]   # frames excluded from each clip's KD-tree (1.0 s @30fps)
 
-# Box search-feature block weights (planar box position / orientation, expressed in
-# the robot's gravity-aligned base frame). Scaled like the genoview blocks (one shared
-# std per block) then multiplied by these so box placement dominates the pick/place match.
-BOX_POS_WEIGHT = 2.0
-# Box orientation is weighted heavily so the CARRY search stays "sticky" to the box's current
-# orientation. The carry clips genuinely hold the (near-square) box at orientations up to ~90
-# apart, so a light weight lets the search hop between them and the box visibly spins; at 5.0
-# the box-in-base yaw wanders only ~6 deg over a whole carry (vs ~170 deg at 1.0). Carry body
-# poses are homogeneous, so this barely affects the gait match.
-BOX_ROT_WEIGHT = 2.0
-# PICK has its own (separate) database, so it can weight the box position AND orientation more
-# than carry/place do: when you press B, the entry should be chosen mostly by where the box
-# sits (and which way it faces) relative to the robot, even if the body pose matches a little
-# worse -- the pose pop is inertialized away, but a bad box placement is visible. With the
-# single SceneBot pick these weights select the entry frame and the box-yaw fold.
+# --- Box search-feature block weights, per phase ------------------------------------
+# The planar box position / orientation blocks (expressed in the robot's gravity-aligned
+# base frame). Scaled like the genoview blocks (one shared std per block, over that
+# phase's own frames) then divided by these, so a heavier block contributes more to that
+# phase's L2 distance. Each searchable box database names its own pair: no shared
+# default, so a new database has to state what it wants.
+# Ordered along the state-machine chain: pick -> carry -> place.
+
+# PICK: when you press B the entry should be chosen mostly by where the box sits (and
+# which way it faces) relative to the robot, even if the body pose matches a little worse.
+# The pose pop is inertialized away, but a bad box placement is visible. With the single
+# SceneBot pick, the ROT weight does the real work: all 16 entries sit at the same recorded
+# stance-to-box offset (xy spread < 3 mm), so the position block is near-constant across
+# candidates and barely moves the argmin. It goes live again if the OmniRetarget clips'
+# own pick/place phases are re-enabled, where entries differ in stance-to-box offset.
 PICK_BOX_POS_WEIGHT = 5.0
 PICK_BOX_ROT_WEIGHT = 5.0
+
+# CARRY is searched continuously, so orientation is weighted heavily to keep the search
+# "sticky" to the box's current orientation. The carry clips genuinely hold the
+# (near-square) box at orientations up to ~90 apart, so a light weight lets the search hop
+# between them and the box visibly spins; at 5.0 the box-in-base yaw wanders only ~6 deg
+# over a whole carry (vs ~170 deg at 1.0). Carry body poses are homogeneous, so this
+# barely affects the gait match.
+CARRY_BOX_POS_WEIGHT = 2.0
+CARRY_BOX_ROT_WEIGHT = 5.0
+
+# PLACE is entry-matched then ridden, like pick. Its 16 entries are 2 box-yaw folds x 8
+# adjacent frames, and the box is ALREADY in the hands, so the position block varies by
+# < 3 mm across candidates and is effectively inert: the rot weight is what picks the fold.
+# Kept as its own pair for symmetry and for when multi-clip place data is re-enabled.
+PLACE_BOX_POS_WEIGHT = 1.0
+PLACE_BOX_ROT_WEIGHT = 5.0
+
 BOX_INERT_HALFLIFE = 0.1  # box pose-transition (attach) inertialization half-life

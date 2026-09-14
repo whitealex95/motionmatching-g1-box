@@ -197,8 +197,10 @@ when the bake *code* changes:
 - `SEARCH_TAIL` — frames at each clip's end excluded from the *search only* (GenoView's
   `cKDTree(X[rs:re-30])`): the tail still plays but can't be matched into, so the
   character never runs off the end of a clip.
-- `BOX_POS_WEIGHT` / `BOX_ROT_WEIGHT` — how much the box blocks weigh in
-  the pick/place/carry search vs. the body pose.
+- `PICK_` / `CARRY_` / `PLACE_BOX_POS_WEIGHT` and `..._ROT_WEIGHT` — how much the box
+  blocks weigh against the body pose, named per phase so each database is tuned on its
+  own. For the ridden phases (pick, place) the ROT weight is the one that matters: it
+  picks the box-yaw fold, while every entry shares the same stance-to-box offset.
 - `BOX_INERT_HALFLIFE` — how quickly the box settles into the hands at grab time.
 
 `config/state_machine.py` — the B-driven behavior:

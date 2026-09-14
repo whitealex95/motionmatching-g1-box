@@ -177,24 +177,25 @@ def build_db(lib):
         scale = np.where(scale < 1e-5, 1.0, scale)
         return ((X - offset) / scale).astype(np.float32), offset, scale
 
-    Wr = C.BOX_ROT_WEIGHT
     pose = [(Xpos, 1.0), (Xvel, 1.0)]
     traj = [(XtrajPos, 1.0), (XtrajDir, 1.0)]
     # The SEARCH sees only the box's planar position: its height is a function of
     # the phase (resting / riding the lift), not something to match on. The full
     # 3-D boxLocalPos is still what reconstructs the ridden box at runtime.
     boxSearchPos = boxLocalPos[:, 0:2]                                     # (T,2)
-    box = lambda wp, wr=Wr: [(boxSearchPos, wp), (boxLocalAA, wr)]
-    # PICK and PLACE share the 20-D (pose + box, no trajectory) feature space but are SEPARATE
-    # databases, so pick can weight the box position AND orientation more
-    # (PICK_BOX_POS_WEIGHT / PICK_BOX_ROT_WEIGHT) than place -- the entry is chosen mainly by
-    # where the box sits and which way it faces in the base frame.
+    # wr is required (no default): every box database states its own weights, so none can
+    # silently inherit another phase's tuning. PICK and PLACE share the 20-D (pose + box, no
+    # trajectory) feature space but are SEPARATE databases, so each weights the box blocks
+    # independently -- see config/matching.py for what each pair is doing.
+    box = lambda wp, wr: [(boxSearchPos, wp), (boxLocalAA, wr)]
     dbs = {
         "loco": make_db(pose + traj, masks["loco"]),                        # 27-D (unchanged)
-        "carry": make_db(pose + traj + box(C.BOX_POS_WEIGHT), masks["carry"]),   # 32-D
+        "carry": make_db(pose + traj + box(C.CARRY_BOX_POS_WEIGHT,
+                                           C.CARRY_BOX_ROT_WEIGHT), masks["carry"]),  # 32-D
         "pick": make_db(pose + box(C.PICK_BOX_POS_WEIGHT,
                                    C.PICK_BOX_ROT_WEIGHT), masks["pick"]),       # 20-D
-        "place": make_db(pose + box(C.BOX_POS_WEIGHT), masks["place"]),          # 20-D
+        "place": make_db(pose + box(C.PLACE_BOX_POS_WEIGHT,
+                                    C.PLACE_BOX_ROT_WEIGHT), masks["place"]),    # 20-D
     }
     dbs = {k: dict(X=Xn, offset=off, scale=sc) for k, (Xn, off, sc) in dbs.items()}
 

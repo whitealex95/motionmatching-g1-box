@@ -20,9 +20,12 @@ Each searchable database has its own feature space (features.build_db):
   place (20)  pose + box(xy,ori)                                -- NO trajectory
 The box block is its PLANAR position (xy in the base frame) + orientation: box height is a
 function of the phase and box velocity carries no signal the pose blocks lack, so neither
-is matched on. pick and place share the 20-D layout but are separate
-databases, so pick can weight the box
-position more heavily (PICK_BOX_POS_WEIGHT) -- the entry is chosen mainly by where the box is.
+is matched on. pick and place share the 20-D layout but are separate databases, and carry,
+pick and place each name their own box block weights (<PHASE>_BOX_POS_WEIGHT /
+<PHASE>_BOX_ROT_WEIGHT in config/matching.py). For the ridden phases the ROT weight is what
+selects the entry: _enter_ride is an argmin over the entry frames, and every entry sits at
+the same recorded stance-to-box offset, so the position block is near-constant across
+candidates and the box-yaw fold decides the match.
 
 The box rides the robot's gravity-aligned base frame while held (stored per frame as
 boxLocal{Pos,Rot}); before pick contact and after place release it rests in the world.
