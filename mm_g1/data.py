@@ -119,6 +119,10 @@ def build_library(clips=None, out=C.LIB_PATH):
                 bpk = bp if k == 0 else _yaw_box_pose(bp, k * 2.0 * np.pi / sb_folds)
                 tag = name if k == 0 else f"{name}_rot{k}"
                 loaded.append((tag, q, "scenebot", bpk, ph, at, ct))
+    if C.EMM_CLIPS:                                   # EMM walking-while-carry spans
+        from . import emm_clips
+        for name, q, bp, ct, at, code in emm_clips.build():
+            loaded.append((name, q, "emm", bp, np.full(len(q), code, np.int32), at, ct))
 
     qpos, clip_id, frame_in_clip, lengths, names = [], [], [], [], []
     phase, box_pose_all, box_attach, contact_all = [], [], [], []
@@ -131,7 +135,7 @@ def build_library(clips=None, out=C.LIB_PATH):
                               Phase.DISABLED, ph).astype(np.int32)
             bp = bpose
             n_box += 1
-        elif kind == "scenebot":
+        elif kind in ("scenebot", "emm"):
             bp = bpose
             n_box += 1
         else:                                        # locomotion

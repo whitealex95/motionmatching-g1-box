@@ -188,10 +188,14 @@ def build_db(lib):
     # trajectory) feature space but are SEPARATE databases, so each weights the box blocks
     # independently -- see config/matching.py for what each pair is doing.
     box = lambda wp, wr: [(boxSearchPos, wp), (boxLocalAA, wr)]
+    # CARRY is box-AGNOSTIC: same 27-D pose + trajectory space as loco. The carry data is
+    # a mimed hold with no captured box (emm_clips) plus the OmniRetarget carry plateaus, so
+    # the box pose carries no signal to match on -- and leaving it out is what lets a WASD
+    # command steer the carry the same way it steers locomotion. The box still RIDES the
+    # robot: controller._update_box reconstructs it from boxLocal{Pos,Rot} either way.
     dbs = {
-        "loco": make_db(pose + traj, masks["loco"]),                        # 27-D (unchanged)
-        "carry": make_db(pose + traj + box(C.CARRY_BOX_POS_WEIGHT,
-                                           C.CARRY_BOX_ROT_WEIGHT), masks["carry"]),  # 32-D
+        "loco": make_db(pose + traj, masks["loco"]),                        # 27-D
+        "carry": make_db(pose + traj, masks["carry"]),                      # 27-D (box-agnostic)
         "pick": make_db(pose + box(C.PICK_BOX_POS_WEIGHT,
                                    C.PICK_BOX_ROT_WEIGHT), masks["pick"]),       # 20-D
         "place": make_db(pose + box(C.PLACE_BOX_POS_WEIGHT,

@@ -15,7 +15,7 @@ database transitions ever made are exactly those in the chain above (req. 13):
 
 Each searchable database has its own feature space (features.build_db):
   loco  (27)  pose + future trajectory                         -- unchanged genoview features
-  carry (32)  pose + future trajectory + box(xy,ori)           -- box added to the query
+  carry (27)  pose + future trajectory                         -- box-AGNOSTIC (same space)
   pick  (20)  pose + box(xy,ori)                                -- NO trajectory; box pos weighted
   place (20)  pose + box(xy,ori)                                -- NO trajectory
 The box block is its PLANAR position (xy in the base frame) + orientation: box height is a
@@ -150,6 +150,7 @@ class MotionMatcher:
         self.boxPos[2] = C.BOX_REST_Z
         self.boxRot = quat.mul(self.rootRot, self.box_spawn_rot)
         self.box_held = False
+        self.carry_local = None          # frozen box-in-base pose while CARRYing
         self.offBoxP = np.zeros(3); self.offBoxPVel = np.zeros(3)
         self.offBoxR = IDENTITY.copy(); self.offBoxAng = np.zeros(3)
         self.Tpos = np.tile(self.rootPos, (len(HORIZONS), 1))   # command-trajectory viz
@@ -200,7 +201,7 @@ class MotionMatcher:
         # to b (position + rotation, with their local velocity terms) so it never pops at a
         # carry search cut or a pick->carry / carry->place hand-off. When the box is resting
         # (not held) there is nothing to carry across -- the grab in _update_box re-seeds it.
-        if self.box_held:
+        if self.box_held and self.carry_local is None:
             self.offBoxP = (self.offBoxP + self.boxLocalPos[a]) - self.boxLocalPos[b]
             self.offBoxPVel = (self.offBoxPVel + self.boxLocalPosVel[a]) - self.boxLocalPosVel[b]
             self.offBoxR = quat.abs(quat.mul_inv(
@@ -418,6 +419,12 @@ class MotionMatcher:
         phase is ridden to its end."""
         if len(enter_frames) == 0:
             return
+        # Leaving a frozen carry: drop the freeze and the held flag so _update_box re-seeds
+        # the grab offset against the ride's own recorded box pose, easing the box from where
+        # the carry held it into the place clip rather than snapping.
+        if self.carry_local is not None:
+            self.carry_local = None
+            self.box_held = False
         dbname = state.name.lower()                  # State.PICK -> the 'pick' db
         Xq = self._query(dbname)
         Xdb = self.db["dbs"][dbname]["X"]
@@ -437,6 +444,16 @@ class MotionMatcher:
                 f, lo, hi = res
                 self._inertialize_into(f, lo, hi)
                 self.state = State.CARRY
+                # Freeze the box where the pick left it, in the base frame. The carry
+                # search is box-agnostic and its frames come from two sources whose
+                # recorded box poses disagree by up to 160 deg (the EMM spans have no
+                # captured box at all), so reading the box off the matched frame makes it
+                # flip at every cut. Frozen, it simply rides the robot.
+                self.carry_local = (
+                    quat.inv_mul_vec(self.rootRot, self.boxPos - self.rootPos),
+                    quat.mul(quat.inv(self.rootRot), self.boxRot))
+                self.offBoxP = np.zeros(3); self.offBoxPVel = np.zeros(3)
+                self.offBoxR = IDENTITY.copy(); self.offBoxAng = np.zeros(3)
         else:                                                # place -> locomotion
             f, lo, hi = self._best_loco()
             self._inertialize_into(f, lo, hi)
@@ -470,15 +487,15 @@ class MotionMatcher:
         """Assemble + normalize the search query for database `name`
         ('loco'/'carry'/'pick'/'place'). Pose blocks come from the current frame, trajectory
         from the command springs, box from the live box -- in the exact block order
-        features.build_db concatenated them (trajectory only for loco/carry; box for
-        carry/pick/place)."""
+        features.build_db concatenated them (trajectory for loco/carry; box for pick/place
+        only, since carry is box-agnostic)."""
         d = self.db["dbs"][name]
         qh = yaw_quat(self.rootYaw)
         parts = [self.rawXpos[self.animFrame], self.rawXvel[self.animFrame]]
         if name in ("loco", "carry"):
             parts.append(quat.inv_mul_vec(qh, self.Tpos - self.rootPos)[:, 0:2].ravel())
             parts.append(quat.inv_mul_vec(qh, self.Tdir)[:, 0:2].ravel())
-        if name in ("carry", "pick", "place"):
+        if name in ("pick", "place"):                 # carry is box-agnostic
             parts.extend(self._box_local_live(qh))
         q = np.concatenate(parts)
         return (q - d["offset"]) / d["scale"]
@@ -605,17 +622,23 @@ class MotionMatcher:
             if not self.box_held:                            # grab: seed the base-local offset
                 localP = quat.inv_mul_vec(self.rootRot, self.boxPos - self.rootPos)
                 localR = quat.mul(quat.inv(self.rootRot), self.boxRot)
-                self.offBoxP = localP - self.boxLocalPos[f]
+                refP, refR = ((self.carry_local) if self.carry_local is not None
+                              else (self.boxLocalPos[f], self.boxLocalRot[f]))
+                self.offBoxP = localP - refP
                 self.offBoxPVel = np.zeros(3)
-                self.offBoxR = quat.abs(quat.mul_inv(localR, self.boxLocalRot[f]))
+                self.offBoxR = quat.abs(quat.mul_inv(localR, refR))
                 self.offBoxAng = np.zeros(3)
                 self.box_held = True
             self.offBoxP, self.offBoxPVel = DecaySpringDamperPosition(
                 self.offBoxP, self.offBoxPVel, C.BOX_INERT_HALFLIFE, DT)
             self.offBoxR, self.offBoxAng = DecaySpringDamperRotation(
                 self.offBoxR, self.offBoxAng, C.BOX_INERT_HALFLIFE, DT)
-            boxLocalPos = self.boxLocalPos[f] + self.offBoxP
-            boxLocalRot = quat.mul(self.offBoxR, self.boxLocalRot[f])
+            if self.carry_local is not None:
+                refP, refR = self.carry_local
+            else:
+                refP, refR = self.boxLocalPos[f], self.boxLocalRot[f]
+            boxLocalPos = refP + self.offBoxP
+            boxLocalRot = quat.mul(self.offBoxR, refR)
             self.boxPos = self.rootPos + quat.mul_vec(self.rootRot, boxLocalPos)
             self.boxRot = quat.mul(self.rootRot, boxLocalRot)
         else:

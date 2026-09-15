@@ -37,7 +37,8 @@ CLIP_TRIM = {
 #     OmniRetarget clips reduced to carry-only, SceneBot 0.3x0.2x0.3 box.
 # v8: per-frame label renamed skill -> phase (lib key + Phase enum).
 # v9: contact-label erosion is boundary-aware (playback-edge holds stay put).
-LIB_VERSION = 9
+# v10: EMM walking-carry spans added; the carry search is now box-agnostic.
+LIB_VERSION = 10
 
 # The locomotion library: GMR-retargeted LAFAN1 clips (subject5) -- walk, run, and
 # push-and-stumble. Each clip is added twice (normal + L/R MIRRORED, GenoView-style) for
@@ -119,3 +120,24 @@ BOX_HOLD_SPEED = 0.05    # m/s box speed to count as being handled
 # then ridden to the phase end.
 PICK_ENTRY = 8           # candidate entry frames at the start of each PICK phase
 PLACE_ENTRY = 8          # candidate entry frames at the start of each PLACE phase
+
+# --- EMM walking-while-carry clips ------------------------------------------------
+# Robot-only (36-D) takes from Environment-aware Motion Matching, vendored under
+# data/emm_g1/. The actor carries a box but the box was never captured, so only the
+# CARRY spans are baked and the box is synthesized at the wrist midpoint for drawing
+# (mm_g1/emm_clips.py). This is what lets CARRY actually walk: the OmniRetarget carry
+# clips are essentially in-place, these are not.
+EMM_CLIPS = ["emm_extra__box"]
+
+# Two-handed-hold test, in the robot's base frame (metres). The clip also contains
+# overhead arm raises, which pass every test except the height band -- MAX_Z is what
+# rejects them, so do not raise it much.
+EMM_HOLD_MIN_FWD = 0.12    # both wrists at least this far ahead of the pelvis
+EMM_HOLD_MAX_DZ = 0.10     # max height difference between the two wrists
+EMM_HOLD_MAX_ASYM = 0.10   # max |yL + yR|: the hold has to straddle the sagittal plane
+EMM_HOLD_MIN_SEP = 0.20    # wrist separation band (a box's width)
+EMM_HOLD_MAX_SEP = 0.60
+EMM_HOLD_MIN_Z = -0.10     # wrist-midpoint height band relative to the pelvis
+EMM_HOLD_MAX_Z = 0.35
+EMM_HOLD_GAP = 7           # frames of dropout bridged before a span is cut (~0.23 s)
+EMM_MIN_SPAN = 60          # shortest span kept (2 s); SEARCH_TAIL trims 30 of them

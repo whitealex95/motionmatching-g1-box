@@ -38,14 +38,9 @@ SEARCH_TAIL = HORIZONS[-1]   # frames excluded from each clip's KD-tree (1.0 s @
 PICK_BOX_POS_WEIGHT = 5.0
 PICK_BOX_ROT_WEIGHT = 5.0
 
-# CARRY is searched continuously, so orientation is weighted heavily to keep the search
-# "sticky" to the box's current orientation. The carry clips genuinely hold the
-# (near-square) box at orientations up to ~90 apart, so a light weight lets the search hop
-# between them and the box visibly spins; at 5.0 the box-in-base yaw wanders only ~6 deg
-# over a whole carry (vs ~170 deg at 1.0). Carry body poses are homogeneous, so this
-# barely affects the gait match.
-CARRY_BOX_POS_WEIGHT = 2.0
-CARRY_BOX_ROT_WEIGHT = 5.0
+# CARRY has no box weights: its database is box-agnostic (features.build_db gives it the
+# same 27-D pose + trajectory space as loco), so a WASD command steers the carry exactly
+# the way it steers locomotion. The box still rides the robot, it is just not matched on.
 
 # PLACE is entry-matched then ridden, like pick. Its 16 entries are 2 box-yaw folds x 8
 # adjacent frames, and the box is ALREADY in the hands, so the position block varies by

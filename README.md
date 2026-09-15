@@ -82,8 +82,15 @@ in the smoothed sim-root (gravity-aligned base) frame:
 | database | dims | contents                                                       |
 |----------|------|----------------------------------------------------------------|
 | `loco`   | 27   | pose (15) + future trajectory (12)        — unchanged genoview  |
-| `carry`  | 36   | pose + future trajectory + **box** pos/orient/vel (9)          |
-| `pick`/`place` (`pp`) | 24 | pose + **box** pos/orient/vel — **no** future trajectory |
+| `carry`  | 27   | pose + future trajectory — **box-agnostic**, the same space as `loco` |
+| `pick` / `place` | 20 | pose + **box** planar pos/orient — **no** future trajectory |
+
+`carry` is deliberately box-agnostic: a WASD command steers it exactly the way it steers
+locomotion. The box is not matched on, it simply **rides** the robot — frozen in the
+gravity-aligned base frame at the pose the pick left it in (`carry_local` in
+`mm_g1/controller.py`). That freeze matters because the carry frames come from two sources
+whose recorded box poses disagree by up to 160°, and the EMM spans have no captured box at
+all, so reading the box off the matched frame made it flip at every search cut.
 
 The box block is `[ position (3) · orientation as scaled-angle-axis (3) · linear velocity
 (3) ]` in the base frame. While the box is held it is reconstructed each frame as
@@ -152,6 +159,8 @@ motionmatching-g1-box/
 │   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
 │   ├── features.py              # per-phase feature DBs (loco 27 / carry 32 / pick·place 20)
 │   ├── springs.py               # critically-damped trajectory + inertialization springs
+│   ├── scenebot_pick.py         # SceneBot clip 11 baked as the pick / drop pair
+│   ├── emm_clips.py             # EMM walking-carry spans: hold detection + box synthesis
 │   ├── controller.py            # real-time matcher + pick/carry/place state machine
 │   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera, box
 ├── sonic_g1_box/                # the motion-matched motion tracked by SONIC in physics
@@ -162,7 +171,8 @@ motionmatching-g1-box/
 ├── assets/scenebot/             # SceneBot policy, clips, motion graph, flat-hand G1 (vendored)
 ├── assets/largebox/             # the box mesh (largebox.obj)
 ├── data/gmr_lafan1_g1/          # GMR-retargeted LAFAN1 clips (walk / run / pushAndStumble, .pkl)
-└── data/robot_object_g1/        # OmniRetarget robot-object pick/carry/place clips (.npz)
+├── data/robot_object_g1/        # OmniRetarget robot-object pick/carry/place clips (.npz)
+└── data/emm_g1/                 # EMM walking-carry clips (.npz) + preview videos
 ```
 
 ## Tuning
@@ -190,6 +200,11 @@ when the bake *code* changes:
   automatically, and deleting the file falls back to the rule.
 - `BOX_CARRY_FRAC`, `BOX_HOLD_DZ`, `BOX_HOLD_SPEED` — phase-segmentation thresholds
   (`mm_g1/boxes.py`): how high the box must rise to count as *carry* / be *attached*.
+- `EMM_CLIPS` and the `EMM_HOLD_*` band — which EMM takes contribute walking-carry frames,
+  and the two-handed-hold test that finds them (`mm_g1/emm_clips.py`). The clips are
+  robot-only, so a box is synthesized at the wrist midpoint for drawing. `EMM_HOLD_MAX_Z`
+  is the load-bearing one: the source take also contains overhead arm raises, which pass
+  every other test.
 
 `config/matching.py` — the search:
 
@@ -211,10 +226,10 @@ when the bake *code* changes:
 - `BOX_SPAWN_FWD` / `BOX_SPAWN_LAT` — where the box spawns, in the robot's start frame.
 
 > **Note on the carry data.** The OmniRetarget carry clips are essentially in-place (the
-> robot holds the box and barely translates), so while *carrying* the character mostly
-> stands/shuffles — WASD has limited effect until you set the box down. This follows the
-> spec faithfully (carry searches only `carry` frames); swap in walking-while-carrying data
-> and the same machinery would steer it.
+> robot holds the box and barely translates). The **EMM** spans (`data/emm_g1/`) are the
+> walking-while-carrying data that fixes this: 25.3 s over three spans in which the actor
+> walks and turns while holding a box. Holding a 1.2 m/s forward command through a 10 s
+> carry travels **8.0 m**, against 6.0 m with those spans removed.
 
 ## Credits
 
