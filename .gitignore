@@ -12,14 +12,11 @@ data/motion_lib.npz
 assets/sonic/policy/low_latency/*.onnx
 assets/sonic/policy/sonic_v1_1/*.onnx
 
-# default (unnamed) output of scenebot_g1_box/run_mm_pickup.py; curated
-# renders are committed under explicit names
-scenebot_g1_box/out/scenebot_mm_pickup.mp4
+# Rendered demo videos under any <project>/out/. They are regenerable from the
+# runners, and they do not delta-compress: 19 re-records of one grasp video alone
+# put 277 MB into .git. Reports, plots, metrics and stills under out/ still commit.
+*/out/*.mp4
+*/out/**/*.mp4
 
-# stress-test videos stay on disk only (44 x ~7 MB); report/plots/metrics are committed
-scenebot_g1_box/out/stress/*.mp4
-scenebot_g1_box/out/stress_shape/*.mp4
-scenebot_g1_box/out/stress_single/*.mp4
-
-# per-clip tracking sweep videos (2 variants x 20 clips x ~7 MB) stay on disk
+# per-clip tracking sweep videos + their logs stay on disk
 sonic_g1_box/out/track_clips/
