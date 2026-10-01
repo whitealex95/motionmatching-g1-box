@@ -37,7 +37,7 @@ def wrist_box(model, data, qpos, rest_z=0.15):
 
 
 def render(qpos, box_pose, out_path, fps=30, box_size=(0.3, 0.2, 0.3), width=960, height=720,
-           side_by_side_with=None, labels=None):
+           side_by_side_with=None, quality=8):
     import imageio
     import mujoco
 
@@ -52,7 +52,7 @@ def render(qpos, box_pose, out_path, fps=30, box_size=(0.3, 0.2, 0.3), width=960
 
     clips = [(qpos, box_pose)] + ([side_by_side_with] if side_by_side_with else [])
     n = min(len(c[0]) for c in clips)
-    with imageio.get_writer(out_path, fps=int(fps), codec="libx264", quality=8,
+    with imageio.get_writer(out_path, fps=int(fps), codec="libx264", quality=quality,
                             macro_block_size=1) as w:
         for t in range(n):
             frames = []
@@ -78,6 +78,8 @@ def main():
     ap.add_argument("--wrist-box", action="store_true", help="draw a box at the wrist midpoint")
     ap.add_argument("--compare", default=None, help="second npz rendered side by side (right)")
     ap.add_argument("--box-size", type=float, nargs=3, default=(0.3, 0.2, 0.3))
+    ap.add_argument("--size", type=int, nargs=2, default=(960, 720), help="frame width height")
+    ap.add_argument("--quality", type=int, default=8, help="imageio/ffmpeg quality 0..10")
     args = ap.parse_args()
 
     import mujoco
@@ -97,7 +99,8 @@ def main():
 
     q, bp, fps = load(args.npz)
     other = load(args.compare)[:2] if args.compare else None
-    render(q, bp, args.out, fps=fps, box_size=args.box_size, side_by_side_with=other)
+    render(q, bp, args.out, fps=fps, box_size=args.box_size, side_by_side_with=other,
+           width=args.size[0], height=args.size[1], quality=args.quality)
 
 
 if __name__ == "__main__":

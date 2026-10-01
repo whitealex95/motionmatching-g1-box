@@ -204,7 +204,9 @@ when the bake *code* changes:
   and the two-handed-hold test that finds them (`mm_g1/emm_clips.py`). The clips are
   robot-only, so a box is synthesized at the wrist midpoint for drawing. `EMM_HOLD_MAX_Z`
   is the load-bearing one: the source take also contains overhead arm raises, which pass
-  every other test.
+  every other test. The default clip, `emm_extra__box_omni`, is the EMM take re-retargeted
+  with OmniRetargeting and the carried box shrunk to this project's box, palms facing it
+  (`tools/omniretarget_emm/`); the GMR retarget `emm_extra__box` is kept for comparison.
 
 `config/matching.py` — the search:
 
@@ -227,9 +229,12 @@ when the bake *code* changes:
 
 > **Note on the carry data.** The OmniRetarget carry clips are essentially in-place (the
 > robot holds the box and barely translates). The **EMM** spans (`data/emm_g1/`) are the
-> walking-while-carrying data that fixes this: 25.3 s over three spans in which the actor
-> walks and turns while holding a box. Holding a 1.2 m/s forward command through a 10 s
-> carry travels **8.0 m**, against 6.0 m with those spans removed.
+> walking-while-carrying data that fixes this: the actor walks and turns while holding a
+> box. With the GMR retarget only 25.3 s over three spans passed the hold test, because the
+> actor's box was ~0.52 m wide and the hands 0.6 m apart; the OmniRetargeting clip holds the
+> project's box with the wrists 0.42 m apart like the pick, and **142.5 s over nine spans**
+> pass. (With the old spans, a 1.2 m/s forward command through a 10 s carry travelled
+> 8.0 m against 6.0 m with no EMM data at all.)
 
 ## Credits
 

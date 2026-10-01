@@ -20,7 +20,13 @@ re-implementation of OmniRetarget) and **shrinks the carried box** on the way:
    robot-side mesh locks to (`MotionData.target_object_points`, see the patch below).
    The Laplacian coordinates still say "wrists just outside the box faces", so the
    wrists close in on the smaller box and the rest of the body follows the actor.
-4. The result is saved in the layout `mm_g1/emm_clips.py` already reads: `qpos` (T, 36)
+4. OmniRetargeting only matches the wrist *position*, so on its own the palms end up
+   facing anywhere (on the full take they mostly faced away from the box). Two virtual
+   targets per hand fix that: a palm-centre point and a fingertip point, defined in the
+   robot's wrist link frame (`HAND_TARGETS`) and laid out in the box frame on the human
+   side. Matching them aligns the hand frame with the box frame: fingers forward along
+   the side face, palm on it (`--no-hand-targets` turns this off).
+5. The result is saved in the layout `mm_g1/emm_clips.py` already reads: `qpos` (T, 36)
    in the `g1.xml` joint order, `fps`, plus the target `box_pose` (T, 7) for playback.
 
 The scaling alone does most of the work (0.6 m x 0.714 = 0.43 m); the box term pins the
@@ -70,7 +76,22 @@ MUJOCO_GL=egl python tools/omniretarget_emm/render_clip.py \
 
 Knobs: `--wrist-sep` (robot wrist separation to aim for, default 0.42 from the SceneBot
 hold), `--hand-clearance` (actor wrist joint to box face, 0.04), `--target-box` (the real
-box, x forward, y across the hands, only drawn), `--no-box` (plain retarget, for A/B).
+box, x forward, y across the hands, only drawn), `--no-box` (plain retarget, for A/B),
+`--no-hand-targets` (drop the palm / fingertip targets), `--penetration-resolver xyz_nudge`
+(12x faster and far less foot sliding, but it drops the feet 3.5 cm into the floor because
+the stabilizer uses the mapped ankle points rather than the sole; not used yet).
+
+The runner prints, for the result, the wrist separation, the wrist-midpoint error to the
+box centre, and the hand-facing cosines (palm normal towards the box, finger axis along
+the box's forward edge).
+
+**Experimental: `--hold-offset X Z`.** The actor carries the box high (wrist midpoint
+0.20 m forward and 0.18 m above the pelvis) while the SceneBot pick leaves it at
+0.265 / 0.06, and during CARRY the box is frozen at the pick's pose in the base frame, so
+the hands float above the drawn box. This flag edits the actor so the box (and the hands
+on it) sit at the requested offset. On the 4 s test the hands do go there (x 0.285,
+z 0.049) but the palm-facing cosines drop from 0.93 / 1.00 to 0.36 / 0.46 and the
+wrist-midpoint error grows to 7 cm, so it is off by default.
 
 `mm_g1/config/library.py` points `EMM_CLIPS` at the clip to bake; the hold detector in
 `mm_g1/emm_clips.py` is unchanged and finds the carry spans in the new clip the same way.

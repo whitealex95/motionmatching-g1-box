@@ -6,8 +6,9 @@ G1 and exported as MuJoCo qpos. Copied here so this repo stays self-contained.
     clips/<stem>.npz          the motion
     clip_videos/<stem>.mp4    kinematic playback preview
 
-Source of truth: `~/Projects/Environment-aware-Motion-Matching/resources/g1/{clips,clip_videos}/`
+Source of truth for `emm_extra__box`: `~/Projects/Environment-aware-Motion-Matching/resources/g1/{clips,clip_videos}/`
 (originally exported from `~/Projects/GenoViewPython-MotionMatching/resources/g1/emm_clips/`).
+`emm_extra__box_omni` is generated here from the source BVH by `tools/omniretarget_emm/`.
 
 ## Format
 
@@ -30,7 +31,34 @@ d.qpos[:] = q[t]; mujoco.mj_forward(m, d)                # kinematic playback
 
 ## Clips
 
-### `emm_extra__box`
+### `emm_extra__box_omni` (the clip the library bakes)
+
+The same take, retargeted with [OmniRetargeting](https://github.com/project-instinct/omniretargeting)
+by `tools/omniretarget_emm/retarget_emm_box.py` instead of GMR, with the carried box put
+back into the retarget: a box rebuilt from the actor's hands joins the interaction mesh,
+and the robot-side mesh locks to a copy shrunk to this project's 0.3 x 0.2 x 0.3 m box.
+Virtual palm / fingertip targets make the hands face the box. Same `qpos` layout; extra
+keys `box_pose` (T, 7) (the target box, centre + quat wxyz, for playback), `dof_names`,
+`scale`, `settings`. 5273 frames, 30 fps, 0.25 s of solver time per frame.
+
+Measured against the GMR clip (wrist = `*_wrist_yaw_link` origin, base frame = pelvis heading):
+
+| | GMR `emm_extra__box` | OmniRetargeting `emm_extra__box_omni` | SceneBot hold |
+|---|---|---|---|
+| wrist separation (mean, p5..p95) | 0.596 (0.41..0.65) | **0.419** (0.41..0.43) | 0.419 |
+| wrist midpoint ahead of / above pelvis | 0.22 / 0.19 | 0.22 / 0.18 | 0.27 / 0.06 |
+| palm normal towards the box (cos, L / R, inside spans) | 0.91 / 0.87 | 0.78 / 0.95 | |
+| finger axis along the box's forward edge (cos, L / R) | 0.93 / 0.93 | 1.00 / 1.00 | |
+| carry spans found by `emm_clips.py` | 3 spans, 25.3 s | **9 spans, 142.5 s** | |
+| stance-foot slide (m/s, lowest 10% of foot height) | 0.17 | 0.26 | |
+
+The hold test used to reject 70% of the GMR frames on wrist separation alone. The spans
+now cover most of the take; what is left out are the overhead lifts (`EMM_HOLD_MAX_Z`)
+and a few frames held off-centre (`EMM_HOLD_MAX_ASYM`). The hands still ride ~0.18 m
+above the pelvis, where the actor held them, while the pick leaves the box at 0.06 m
+(see the experimental `--hold-offset` in the tool README).
+
+### `emm_extra__box` (GMR retarget, kept for comparison)
 
 5273 frames, 175.8 s at 30 fps, one continuous take, no trims and no mirroring.
 Source BVH: `Unity/Assets/EnvironmentMotionMatching/Animations/BVH/emm_extra/box.txt`.

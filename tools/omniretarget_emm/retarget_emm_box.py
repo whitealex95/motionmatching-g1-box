@@ -74,6 +74,20 @@ EMM_MAPPING = {
 EMM_BASE_ORIENTATION = {"pelvis": "Hips", "left_hip": "LeftHip",
                         "right_hip": "RightHip", "spine": "Chest2"}
 
+# Virtual hand targets that make the palms FACE the box: a palm-centre point and a
+# fingertip point on each hand, expressed in the robot's wrist_yaw_link frame (G1 rubber
+# hand: fingers along +x, 0.04..0.17; palm surface at y = -0.02 on the left hand and
+# +0.02 on the right, the thumb side). The source counterparts are the same offsets
+# in the BOX frame (x forward, y right->left, z up) so matching them aligns the hand
+# frame with the box frame: fingers forward along the side face, palm on it.
+HAND_PALM_X, HAND_PALM_Y, HAND_FINGER_X = 0.10, 0.02, 0.17
+HAND_TARGETS = {
+    "LeftPalm":    ("LeftWrist", "left_wrist_yaw_link", (HAND_PALM_X, -HAND_PALM_Y, 0.0)),
+    "RightPalm":   ("RightWrist", "right_wrist_yaw_link", (HAND_PALM_X, HAND_PALM_Y, 0.0)),
+    "LeftFinger":  ("LeftWrist", "left_wrist_yaw_link", (HAND_FINGER_X, 0.0, 0.0)),
+    "RightFinger": ("RightWrist", "right_wrist_yaw_link", (HAND_FINGER_X, 0.0, 0.0)),
+}
+
 # 3x3x3 lattice on the box surface (centre dropped): 26 points per frame.
 _u = np.array([-1.0, 0.0, 1.0])
 BOX_LATTICE = np.array([[x, y, z] for x in _u for y in _u for z in _u
@@ -103,9 +117,21 @@ def lattice_points(center, rot, half):
     return np.einsum("tij,tnj->tni", rot, local) + center[:, None, :]
 
 
-def build_retargeter(terrain_path, retargeting_cfg, source_names):
+def hand_target_points(pos, names, rot):
+    """(T, 4, 3) virtual palm / fingertip points: the robot offsets laid out in the box frame."""
+    j = {n: k for k, n in enumerate(names)}
+    out = []
+    for wrist, _, off in HAND_TARGETS.values():
+        out.append(pos[:, j[wrist]] + np.einsum("tij,j->ti", rot, np.asarray(off)))
+    return np.stack(out, 1)
+
+
+def build_retargeter(terrain_path, retargeting_cfg, source_names, hand_targets=True):
     mapping = {src: {"robot_link": link, "offset": list(off)}
                for src, (link, off) in EMM_MAPPING.items()}
+    if hand_targets:
+        mapping.update({src: {"robot_link": link, "offset": list(off)}
+                        for src, (_, link, off) in HAND_TARGETS.items()})
     return OmniRetargeter(
         robot_urdf_path=os.path.join(OMNI_ROOT, "robot_models", "unitree_g1", "g1_29dof_popsicle.urdf"),
         terrain_mesh_path=terrain_path,
@@ -128,6 +154,23 @@ def fk_wrists(model, data, qpos):
     return out
 
 
+def hand_facing(model, data, qpos, box_rot):
+    """Mean cosines of (palm normal, towards box) and (finger axis, box forward) per hand."""
+    import mujoco
+    ids = [model.body("left_wrist_yaw_link").id, model.body("right_wrist_yaw_link").id]
+    palm_sign = (-1.0, 1.0)                     # palm normal in the link frame: -y left, +y right
+    toward = (-1.0, 1.0)                        # box centre lies at -y_box of the left hand, +y_box of the right
+    acc = np.zeros(4)
+    for t, q in enumerate(qpos):
+        data.qpos[:] = q
+        mujoco.mj_kinematics(model, data)
+        for k in range(2):
+            Rw = data.xmat[ids[k]].reshape(3, 3)
+            acc[k] += np.dot(palm_sign[k] * Rw[:, 1], toward[k] * box_rot[t][:, 1])
+            acc[2 + k] += np.dot(Rw[:, 0], box_rot[t][:, 0])
+    return acc / len(qpos)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bvh", default=EMM_BVH)
@@ -144,7 +187,13 @@ def main():
                     help="actor's box depth (fore-aft) and height (m); width comes from the hands")
     ap.add_argument("--target-box", type=float, nargs=3, default=(0.30, 0.20, 0.30),
                     help="the robot's real box x y z (m), x forward, y across the hands")
+    ap.add_argument("--hold-offset", type=float, nargs=2, default=None, metavar=("X", "Z"),
+                    help="place the target box at this forward / up offset from the pelvis "
+                         "(m, heading frame) instead of where the actor held it; the SceneBot "
+                         "pick leaves it at 0.265 0.06")
     ap.add_argument("--no-box", action="store_true", help="plain retarget, no object in the mesh")
+    ap.add_argument("--no-hand-targets", action="store_true",
+                    help="drop the virtual palm / fingertip targets (hands then face anywhere)")
     ap.add_argument("--penetration-resolver", default=None,
                     choices=("hard_constraint", "hard_constraint_slack", "xyz_nudge"),
                     help="override the G1 profile's resolver (xyz_nudge adds batch foot stabilization)")
@@ -170,7 +219,9 @@ def main():
     retargeting_cfg = dict(profile.get("retargeting") or {})
     if args.penetration_resolver:
         retargeting_cfg["penetration_resolver"] = args.penetration_resolver
-    retargeter = build_retargeter(terrain_path, retargeting_cfg, names)
+    hand_targets = not args.no_hand_targets
+    all_names = names + (list(HAND_TARGETS) if hand_targets else [])
+    retargeter = build_retargeter(terrain_path, retargeting_cfg, all_names, hand_targets)
     scale = retargeter.robot_height / human_height
     print(f"human height {human_height:.3f} m, robot {retargeter.robot_height:.3f} m -> scale {scale:.4f}")
 
@@ -180,6 +231,24 @@ def main():
     sep = np.linalg.norm(lw - rw, axis=1)                             # (T,)
     center = 0.5 * (lw + rw)
     rot = box_frames(lw, rw)
+    if args.hold_offset is not None:
+        # Edit the ACTOR: carry the box (and the hands on it) at the requested forward /
+        # height offset from the pelvis, keeping the lateral offset and yaw. The source
+        # mesh then has hands-on-box consistent with where the robot must hold it.
+        pelvis = pos[:, j["Hips"]]
+        rel = np.einsum("tji,tj->ti", rot, center - pelvis)           # (T, 3) in the box frame
+        print(f"actor held the box at x {rel[:, 0].mean():.3f} z {(center[:, 2] - pelvis[:, 2]).mean():.3f} "
+              f"from the pelvis; moving it to {args.hold_offset}")
+        rel[:, 0] = args.hold_offset[0]
+        moved = pelvis + np.einsum("tij,tj->ti", rot, rel)
+        moved[:, 2] = pelvis[:, 2] + args.hold_offset[1]
+        delta = moved - center                                        # (T, 3)
+        pos[:, j["LeftWrist"]] += delta
+        pos[:, j["RightWrist"]] += delta
+        lw, rw = pos[:, j["LeftWrist"]], pos[:, j["RightWrist"]]
+        center = moved
+    if hand_targets:
+        pos = np.concatenate([pos, hand_target_points(pos, names, rot)], 1)   # (T, J+4, 3)
     clearance = args.hand_clearance * scale
     src_half = np.stack([np.full(T, 0.5 * args.source_box[0] * scale),
                          0.5 * (sep - 2 * clearance),
@@ -192,7 +261,7 @@ def main():
 
     motion = MotionData(
         positions=pos,
-        target_names=names,
+        target_names=all_names,
         root_translations=pos[:, j["Hips"]].copy(),
         framerate=src_fps,
         source_height=human_height * scale,
@@ -221,6 +290,9 @@ def main():
           f"p95 {np.percentile(rsep, 95):.3f}  (target {args.wrist_sep})")
     hand_err = np.linalg.norm(0.5 * (fk[:, 0] + fk[:, 1]) - box_c, axis=1)
     print(f"robot wrist-mid vs box centre: mean {hand_err.mean():.3f} m")
+    facing = hand_facing(retargeter.robot_model, retargeter.robot_data, out, box_frames(lw_r, rw_r))
+    print("hand facing (cosines, 1 = perfect): palm->box  L %.2f R %.2f   fingers forward  L %.2f R %.2f"
+          % tuple(facing))
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     np.savez(args.out, qpos=qpos, fps=int(args.fps), source=args.bvh, dof_names=np.array(names_out),

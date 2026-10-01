@@ -190,6 +190,13 @@ def bake_fingerprint():
     for p in sorted(glob.glob(os.path.join(C.BOX_DATA_DIR, "*.labels.yaml"))):
         with open(p, "rb") as f:
             vals[os.path.basename(p)] = hashlib.sha256(f.read()).hexdigest()
+    # EMM clips are regenerated in place by tools/omniretarget_emm/, so their bytes
+    # are part of the recipe too.
+    for stem in C.EMM_CLIPS:
+        p = os.path.join(C.EMM_DATA_DIR, stem + ".npz")
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                vals["emm:" + stem] = hashlib.sha256(f.read()).hexdigest()
     blob = json.dumps(vals, sort_keys=True, default=repr)
     return hashlib.sha256(blob.encode()).hexdigest()
 
