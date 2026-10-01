@@ -210,6 +210,10 @@ class SlamBoxBridge:
         c = np.asarray(o['bbox_center_world'], float)
         T = np.asarray(o['T_world_object'], float).reshape(4, 4)
         yaw = float(np.arctan2(T[1, 0], T[0, 0]))
+        # the box's symmetry (BOX_ROT_FOLDS, 4 for the cube): the fold nearest the belief's
+        # orientation, so the detected yaw does not send the approach round the side
+        period = 2.0 * np.pi / max(int(getattr(C, 'BOX_ROT_FOLDS', 1)), 1)
+        yaw = (yaw + 0.5 * period) % period - 0.5 * period
         size = [float(v) for v in o['bbox_size_xyz']]
         m.boxPos = np.array([c[0], c[1], C.BOX_REST_Z])
         m.boxRot = quat.mul(yaw_quat(yaw - yaw_of(m.box_spawn_rot)), m.box_spawn_rot)
@@ -561,7 +565,8 @@ def main():
                     help='headless: s to wait for a reported box (Boxer loads its models for some 40 s)')
     ap.add_argument('--pose-after', type=float, default=12.0, help='headless: s after start, P -> POSE')
     ap.add_argument('--walk-after', type=float, default=3.0, help='headless: s in POSE before the box action')
-    ap.add_argument('--carry-s', type=float, default=6.0, help='headless: s walking forward with the box')
+    ap.add_argument('--carry-s', type=float, default=1.5,
+                    help='headless: s walking forward with the box (about 1 m at --walk-speed; the sim room is small)')
     ap.add_argument('--auto-stop', action='store_true')
     args = ap.parse_args()
     if args.headless is not None:
