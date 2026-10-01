@@ -63,6 +63,7 @@ L_SHOULDER_ROLL, R_SHOULDER_ROLL, L_WRIST_YAW, R_WRIST_YAW = 16, 23, 21, 28
 L_SHOULDER_PITCH, R_SHOULDER_PITCH = 15, 22
 L_ELBOW, R_ELBOW = 18, 25
 ARMS = slice(7 + 15, 7 + 29)                 # both arms in qpos (MuJoCo order)
+UPPER = slice(7 + 12, 7 + 29)                # the waist (3) and both arms: held through the carry
 
 
 class SqueezedMotion(MMMotion):
@@ -79,7 +80,7 @@ class SqueezedMotion(MMMotion):
                  elbow=0.0, hold_arms=True, center_hands=True):
         self.bias = (shoulder_squeeze, wrist_squeeze, shoulder_open, shoulder_pitch, elbow)
         self.hold_arms = hold_arms
-        self.held_arms = None                  # the pick clip's final arm pose, kept through the carry
+        self.held_arms = None                  # the pick clip's final upper body, kept through the carry
         self.center_hands = center_hands
         self.center_roll = 0.0                 # both shoulder rolls, from the box's lateral offset at the pick entry
         self._last_state = None
@@ -117,9 +118,12 @@ class SqueezedMotion(MMMotion):
                 # in other clips' arms and the box drops, so the arms stay where the pick
                 # left them until the reverse clip (the place) takes over
                 if state is State.CARRY and prev_state is State.PICK and self.held_arms is None:
-                    self.held_arms = q[i - 1, ARMS].copy()
+                    # the waist and both arms of the pick's last frame: the carry frames' torso
+                    # moved the hands off the box once the arms alone were held (the pelvis
+                    # orientation stays the carry frames': frozen, the robot walked off)
+                    self.held_arms = q[i - 1, UPPER].copy()
                 if state is State.CARRY and self.held_arms is not None:
-                    q[i, ARMS] = self.held_arms
+                    q[i, UPPER] = self.held_arms
                 elif state is not State.CARRY:
                     self.held_arms = None if state is not State.PICK else self.held_arms
                 prev_state = state
@@ -449,10 +453,12 @@ class SlamBoxBridge:
         m = self.matcher
         if self.grip is None:
             if m.state is State.CARRY and m.box_locked == 0 and not getattr(self, 'grip_done', False):
-                # the window opens --grip-check-delay after the pick: Boxer keeps a track of the
-                # box on the floor for a few seconds after it was lifted
+                # the window opens --grip-check-delay after the pick; only a box MEASURED after
+                # this moment counts (Boxer keeps the lifted box's track at its old floor spot)
                 self.grip = [now + self.args.grip_check_delay, 0, 0]
                 self.pick_spot = m.boxPos[0:2].copy() if not m.box_held else self._pick_spot
+                objs = self.objects() or []
+                self.grip_stamp = max([int(o.get('bbox_stamp_ns', 0)) for o in objs] + [0])
             return
         t_start, seen, asked = self.grip
         if now < t_start:
@@ -476,8 +482,11 @@ class SlamBoxBridge:
             return
         root = self.matcher.rootPos[0:2]
         rest = self.box.get('bottom') or 0.0               # where the box's bottom rested (a stand counts)
+        # a box on the floor near the robot, measured after the pick (the sim's truth objects carry
+        # no measurement stamp and always count)
         on_floor = any(np.hypot(*(np.asarray(o['bbox_center_world'][:2]) - root)) < 1.0
                        and o.get('z_range', [1.0])[0] < rest + 0.12 and o.get('track_state', 'active') != 'inactive'
+                       and int(o.get('bbox_stamp_ns', self.grip_stamp + 1)) > self.grip_stamp
                        for o in objs)
         self.grip = [t_start, seen + int(on_floor), asked + 1]
 
