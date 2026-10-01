@@ -343,10 +343,14 @@ class SlamBoxBridge:
         m = self.matcher
         if self.grip is None:
             if m.state is State.CARRY and m.box_locked == 0 and not getattr(self, 'grip_done', False):
-                self.grip = [now, 0, 0]
+                # the window opens --grip-check-delay after the pick: Boxer keeps a track of the
+                # box on the floor for a few seconds after it was lifted
+                self.grip = [now + self.args.grip_check_delay, 0, 0]
                 self.pick_spot = m.boxPos[0:2].copy() if not m.box_held else self._pick_spot
             return
         t_start, seen, asked = self.grip
+        if now < t_start:
+            return
         if now - t_start > self.args.grip_check_s:
             self.grip_done, self.grip = True, None
             self.lost = asked >= 2 and seen >= 0.5 * asked
@@ -365,7 +369,8 @@ class SlamBoxBridge:
         if objs is None:
             return
         on_floor = any(np.hypot(*(np.asarray(o['bbox_center_world'][:2]) - self.pick_spot)) < 0.4
-                       and o.get('z_range', [1.0])[0] < 0.12 for o in objs)
+                       and o.get('z_range', [1.0])[0] < 0.12 and o.get('track_state', 'active') == 'active'
+                       for o in objs)
         self.grip = [t_start, seen + int(on_floor), asked + 1]
 
     def _publish_state(self):
@@ -541,6 +546,8 @@ def main():
                     help='m/s while carrying forward (default the full stick of the carry data, 0.75: '
                          'slower commands match its near-stationary frames and the robot stands)')
     ap.add_argument('--grip-check-s', type=float, default=1.5)
+    ap.add_argument('--grip-check-delay', type=float, default=4.0,
+                    help="s after the pick before the grip check: Boxer's track of the box on the floor outlives the lift")
     ap.add_argument('--shoulder-squeeze', type=float, default=0.30,
                     help='rad of inward shoulder roll in the reference while a hand contact label is on')
     ap.add_argument('--wrist-squeeze', type=float, default=0.20, help='rad of inward wrist yaw, the same way')
