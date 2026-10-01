@@ -28,6 +28,17 @@ MOVE_OVERSHOOT = 0.35    # route/tap target past the stance (m), keeps the walk 
 # stance, holds inside the arrive radius, and the entry waits for the root to
 # settle below the arrive speed.
 MOVE_ARRIVE_NEAR = 0.12  # hold-still radius around the stance (m)
+MOVE_ARRIVE_LOOSE = 0.30 # a settled stop this near the stance also counts, after MOVE_ARRIVE_LOOSE_S
+MOVE_ARRIVE_LOOSE_S = 1.0
+# Approach speeds: the route walk is clipped to (MOVE_ROUTE_SPEED_MIN, MOVE_ROUTE_SPEED_MAX);
+# inside 0.8 m the endgame servo runs between MOVE_END_SPEED_MIN and _MAX and stops
+# commanding MOVE_STOP_DIST before the stance. A tracking policy lags decelerations, so a
+# real robot overshoots a fast reference stop into the box: scale these down for it.
+MOVE_ROUTE_SPEED_MIN = 0.25
+MOVE_ROUTE_SPEED_MAX = 1.2
+MOVE_END_SPEED_MIN = 0.35
+MOVE_END_SPEED_MAX = 0.55
+MOVE_STOP_DIST = 0.18
 MOVE_ARRIVE_YAW = 0.6    # yaw tolerance at the stance (rad)
 MOVE_ARRIVE_SPEED = 0.25  # root speed below this counts as settled (m/s)
 MOVE_TIMEOUT = 8.0       # per-leg give-up (s)

@@ -333,9 +333,9 @@ class MotionMatcher:
             # robot overshoot into the box (its feet kick it away).
             self.route_pts = [self.rootPos[0:2].copy(), self.stance_xy.copy()]
             vel = np.zeros(3)
-            if stance_d > 0.18:
+            if stance_d > C.MOVE_STOP_DIST:
                 vel[0:2] = -rel / stance_d * float(
-                    np.clip(1.2 * stance_d, 0.35, 0.55))
+                    np.clip(1.2 * stance_d, C.MOVE_END_SPEED_MIN, C.MOVE_END_SPEED_MAX))
             return vel, face
 
         route = self._route_points()
@@ -360,7 +360,7 @@ class MotionMatcher:
         dist = float(np.linalg.norm(to))
         vel = np.zeros(3)
         if dist > 1e-6:
-            speed = float(np.clip(1.8 * total, 0.25, 1.2))
+            speed = float(np.clip(1.8 * total, C.MOVE_ROUTE_SPEED_MIN, C.MOVE_ROUTE_SPEED_MAX))
             vel[0:2] = to / dist * speed
             face = vel / (np.linalg.norm(vel) + 1e-9)
         return vel, face
@@ -374,13 +374,13 @@ class MotionMatcher:
         dist = float(np.linalg.norm(rel))
         dyaw = abs(wrap_angle(self.stance_yaw - self.rootYaw))
         settled = float(np.linalg.norm(self.rootVel[0:2])) < C.MOVE_ARRIVE_SPEED
-        if settled and dist < 0.30 and dyaw < C.MOVE_ARRIVE_YAW:
+        if settled and dist < C.MOVE_ARRIVE_LOOSE and dyaw < C.MOVE_ARRIVE_YAW:
             self.move_settle_t += DT
         else:
             self.move_settle_t = 0.0
         if dist < C.MOVE_ARRIVE_NEAR and dyaw < C.MOVE_ARRIVE_YAW and settled:
             return True
-        return self.move_settle_t > 1.0
+        return self.move_settle_t > C.MOVE_ARRIVE_LOOSE_S
 
     def _path_taps(self):
         """The future taps read straight off the planned route: walk the remaining path

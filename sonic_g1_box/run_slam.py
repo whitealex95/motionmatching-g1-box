@@ -60,32 +60,84 @@ STATE_TOPIC = '/mm_driver/state'        # what UI 1 and the demo recorder read
 GRID_DIM = 17 * 11
 # MuJoCo joint order within qpos[7:36] (run_grasp.py): the joints the squeeze biases
 L_SHOULDER_ROLL, R_SHOULDER_ROLL, L_WRIST_YAW, R_WRIST_YAW = 16, 23, 21, 28
+L_SHOULDER_PITCH, R_SHOULDER_PITCH = 15, 22
+L_ELBOW, R_ELBOW = 18, 25
+ARMS = slice(7 + 15, 7 + 29)                 # both arms in qpos (MuJoCo order)
 
 
 class SqueezedMotion(MMMotion):
     """The stream with the grasp bias of the box repo's run_grasp.py applied to the
-    reference joints: while either hand's contact label is on, the shoulder rolls
-    press inward and the wrist yaws toe in, so tracking the reference clamps the
-    box instead of only touching it; during a pick or place ride with both labels
-    off the shoulders swing out to clear the box."""
+    reference joints: while either hand's contact label is on, or the matcher holds
+    the box (the carry frames carry no hand labels), the shoulder rolls press inward
+    and the wrist yaws toe in, so tracking the reference clamps the box instead of
+    only touching it; during a pick or place ride with both labels off and no box
+    held the shoulders swing out to clear the box."""
 
-    def __init__(self, matcher, commander, shoulder_squeeze, wrist_squeeze, shoulder_open):
-        self.bias = (shoulder_squeeze, wrist_squeeze, shoulder_open)
+    ARM_LEVER = 0.30                       # m of lateral wrist shift per rad of shoulder roll (measured on the model)
+
+    def __init__(self, matcher, commander, shoulder_squeeze, wrist_squeeze, shoulder_open, shoulder_pitch=0.0,
+                 elbow=0.0, hold_arms=True, center_hands=True):
+        self.bias = (shoulder_squeeze, wrist_squeeze, shoulder_open, shoulder_pitch, elbow)
+        self.hold_arms = hold_arms
+        self.held_arms = None                  # the pick clip's final arm pose, kept through the carry
+        self.center_hands = center_hands
+        self.center_roll = 0.0                 # both shoulder rolls, from the box's lateral offset at the pick entry
+        self._last_state = None
         super().__init__(matcher, commander)
+
+    def _step_matcher(self):
+        m = self.matcher
+        before = m.state
+        super()._step_matcher()
+        if self.center_hands and m.state is State.PICK and before is not State.PICK:
+            # the robot stops beside the stance, not on it: the box's lateral offset from the
+            # pelvis at this moment (the SLAM pose against the fixed box) becomes a roll on
+            # both shoulders, so the clamp closes where the box is
+            left = float(quat.inv_mul_vec(m.rootRot, m.boxPos - m.rootPos)[1])
+            self.center_roll = float(np.clip(left / self.ARM_LEVER, -0.5, 0.5))
+            print(f'[slam-box] pick entry: the box is {left:+.2f} m left of the pelvis, '
+                  f'shoulder rolls {self.center_roll:+.2f} rad to centre the hands', flush=True)
+        elif m.state in (State.LOCOMOTION, State.MOVE_TO_PICK):
+            self.center_roll = 0.0
 
     def _rebuild(self):
         super()._rebuild()
-        sq, wq, op = self.bias
-        if not self._meta or (sq == 0.0 and wq == 0.0 and op == 0.0):
+        sq, wq, op, sp, eb = self.bias
+        if not self._meta or not (any(self.bias) or self.hold_arms):
             return
         q = self._qpos.copy()
-        for i, (_, _, state, _, (lc, rc)) in enumerate(self._meta[:len(q)]):
-            if lc or rc:
+        prev_state = None
+        cr = self.center_roll
+        for i, (_, _, state, held, (lc, rc)) in enumerate(self._meta[:len(q)]):
+            if cr and (state in (State.PICK, State.PLACE) or (state is State.CARRY and held)):
+                q[i, 7 + L_SHOULDER_ROLL] += cr      # both arms toward the box (+: left)
+                q[i, 7 + R_SHOULDER_ROLL] += cr
+            if self.hold_arms:
+                # the single SceneBot motion: after its pick the carry search would swap
+                # in other clips' arms and the box drops, so the arms stay where the pick
+                # left them until the reverse clip (the place) takes over
+                if state is State.CARRY and prev_state is State.PICK and self.held_arms is None:
+                    self.held_arms = q[i - 1, ARMS].copy()
+                if state is State.CARRY and self.held_arms is not None:
+                    q[i, ARMS] = self.held_arms
+                elif state is not State.CARRY:
+                    self.held_arms = None if state is not State.PICK else self.held_arms
+                prev_state = state
+            if state in (State.PICK, State.PLACE):
+                # the pelvis ends some 20 cm behind the clip's during the squat and the pose
+                # stream carries no root position, so only the arms can close the gap: a
+                # positive pitch bias swings the reaching arms down, a negative elbow bias
+                # straightens them (forward and down along the forearm)
+                q[i, 7 + L_SHOULDER_PITCH] += sp
+                q[i, 7 + R_SHOULDER_PITCH] += sp
+                q[i, 7 + L_ELBOW] += eb
+                q[i, 7 + R_ELBOW] += eb
+            if lc or rc or held:                 # the carry frames carry no hand labels: keep clamping
                 q[i, 7 + L_SHOULDER_ROLL] -= sq
                 q[i, 7 + R_SHOULDER_ROLL] += sq
                 q[i, 7 + L_WRIST_YAW] -= wq
                 q[i, 7 + R_WRIST_YAW] += wq
-            elif state in (State.PICK, State.PLACE):
+            elif state in (State.PICK, State.PLACE) and not held:
                 q[i, 7 + L_SHOULDER_ROLL] += op
                 q[i, 7 + R_SHOULDER_ROLL] -= op
         from sonic_tracking import params as P
@@ -161,10 +213,43 @@ def pick_object(objects, expect_xy, radius):
 class SlamBoxBridge:
     def __init__(self, args):
         self.args = args
+        if args.approach_scale != 1.0:
+            # the real robot lags the reference's decelerations and overshoots a fast stop
+            # into the box: slower approach speeds, and the servo stops commanding earlier
+            k = float(args.approach_scale)
+            C.MOVE_ROUTE_SPEED_MAX *= k
+            C.MOVE_END_SPEED_MIN *= k
+            C.MOVE_END_SPEED_MAX *= k
+            # the route aims MOVE_OVERSHOOT past the stance to keep the walk alive: with the
+            # SceneBot box that is the box itself, and the robot runs into it. The slow walk
+            # needs no overshoot, and the servo stops commanding earlier so the robot's lag
+            # lands it on the stance
+            C.MOVE_OVERSHOOT = 0.10
+            C.MOVE_STOP_DIST = 0.30
+            print(f'[slam-box] approach speeds x{k:.2f} (route up to {C.MOVE_ROUTE_SPEED_MAX:.2f} m/s, endgame '
+                  f'{C.MOVE_END_SPEED_MIN:.2f} to {C.MOVE_END_SPEED_MAX:.2f} m/s, overshoot {C.MOVE_OVERSHOOT:.2f} m, '
+                  f'commands stop {C.MOVE_STOP_DIST:.2f} m before the stance)', flush=True)
+        if args.arrive_near is not None:
+            # a physical grasp needs the robot where the clip's stance is: the pick fires
+            # only inside this radius (and the loose fallback at twice it, after 2 s)
+            C.MOVE_ARRIVE_NEAR = float(args.arrive_near)
+            C.MOVE_ARRIVE_LOOSE = 2.0 * float(args.arrive_near)
+            C.MOVE_ARRIVE_LOOSE_S = 2.0
+            C.MOVE_ARRIVE_SPEED = min(C.MOVE_ARRIVE_SPEED, 0.12)
+            print(f'[slam-box] the pick fires within {C.MOVE_ARRIVE_NEAR:.2f} m of the stance '
+                  f'(settled under {C.MOVE_ARRIVE_SPEED:.2f} m/s), or within {C.MOVE_ARRIVE_LOOSE:.2f} m after 2 s', flush=True)
         self.matcher = build_matcher(args)            # world = the map frame: start pose at the origin, +x
+        if args.stance_bias:
+            # the robot drifts back from the reference while it squats; a stance this much
+            # closer puts the hands round the box's middle instead of its near top edge
+            self.matcher.stance_box_off[0] += args.stance_bias
+            print(f'[slam-box] pick stance {-args.stance_bias:+.2f} m closer to the box '
+                  f'(box {self.matcher.stance_box_off[0]:.2f} m ahead of the stance)', flush=True)
         self.cmd_vel, self.cmd_face = np.zeros(3), np.zeros(3)
         self.motion = SqueezedMotion(self.matcher, lambda m: (self.cmd_vel.copy(), self.cmd_face.copy()),
-                                     args.shoulder_squeeze, args.wrist_squeeze, args.shoulder_open)
+                                     args.shoulder_squeeze, args.wrist_squeeze, args.shoulder_open,
+                                     args.shoulder_pitch_bias, args.elbow_bias, not args.no_hold_arms,
+                                     not args.no_center_hands)
         self.link = DeployLink(args.bind, args.port)
         self.robot = RobotState(args.robot_host, args.robot_port)
         self.map = MapLink(args.map_rep)
@@ -178,6 +263,7 @@ class SlamBoxBridge:
         self.slam = None
         self.sync_err = self.heading_err = None
         self.snaps_skipped = 0
+        self.last_slam_xy = None
         self.box = {'fixed': False, 'source': None, 'size': None, 'detected_yaw': None}
         self.lost = False
         self.grip = None                                # (t_start, sightings) while the grip is judged
@@ -218,7 +304,7 @@ class SlamBoxBridge:
         m.boxPos = np.array([c[0], c[1], C.BOX_REST_Z])
         m.boxRot = quat.mul(yaw_quat(yaw - yaw_of(m.box_spawn_rot)), m.box_spawn_rot)
         self.box.update(fixed=True, source=str(o.get('language_label') or 'object'), size=size,
-                        detected_yaw=yaw, track_id=o.get('track_id'))
+                        detected_yaw=yaw, track_id=o.get('track_id'), bottom=float(c[2] - 0.5 * size[2]))
         lib_size = [2.0 * v for v in C.BOX_HALF]
         note = '' if max(abs(a - b) for a, b in zip(sorted(size), sorted(lib_size))) < 0.1 else \
             f' (the motion library is baked for a {lib_size[0]:.2f} x {lib_size[1]:.2f} x {lib_size[2]:.2f} m box)'
@@ -279,17 +365,16 @@ class SlamBoxBridge:
             xy, yaw = np.asarray(p['root_xy'], float), float(p['root_yaw'])
             self.sync_err = float(np.linalg.norm(xy - m.rootPos[0:2]))
             self.heading_err = math.degrees(wrap(yaw - m.rootYaw))
-            if self.sync_err > self.args.max_snap_jump:
-                # SLAM jumped (the box fills the camera during the lift): hold the reference
-                # root instead; the snap resumes once SLAM is back within reach
+            jump = 0.0 if self.last_slam_xy is None else float(np.linalg.norm(xy - self.last_slam_xy))
+            self.last_slam_xy = xy
+            if jump > self.args.max_snap_jump:
+                # SLAM jumped between two poses 0.2 s apart (the box fills the camera during
+                # the lift): hold the reference root this time; the next pose is compared
+                # against this one, so the snap resumes once SLAM holds still again
                 self.snaps_skipped += 1
-                if self.snaps_skipped in (1, 10, 50):
-                    print(f'[slam-box] SLAM pose {self.sync_err:.2f} m from the reference root: not snapping '
-                          f'({self.snaps_skipped} skipped)', flush=True)
+                print(f'[slam-box] SLAM pose jumped {jump:.2f} m in {self.args.replan_s:.1f} s: not snapping '
+                      f'({self.snaps_skipped} skipped so far)', flush=True)
             else:
-                if self.snaps_skipped:
-                    print(f'[slam-box] SLAM back within {self.args.max_snap_jump:.1f} m: snapping again', flush=True)
-                self.snaps_skipped = 0
                 seed_from_slam(m, xy, yaw)
         m.searchTimer = 0.0
         period = int(round(self.args.replan_s * POLICY_FPS))
@@ -342,8 +427,8 @@ class SlamBoxBridge:
         return newest
 
     def _judge_grip(self, now):
-        """Once, right after the pick: an object still on the floor at the pick spot
-        for most of --grip-check-s means the box was not lifted."""
+        """Once, after the pick: an object on the floor within 1 m of the robot for most
+        of --grip-check-s means the box was not lifted (or was pushed along)."""
         m = self.matcher
         if self.grip is None:
             if m.state is State.CARRY and m.box_locked == 0 and not getattr(self, 'grip_done', False):
@@ -372,8 +457,10 @@ class SlamBoxBridge:
         objs = self.objects()
         if objs is None:
             return
-        on_floor = any(np.hypot(*(np.asarray(o['bbox_center_world'][:2]) - self.pick_spot)) < 0.4
-                       and o.get('z_range', [1.0])[0] < 0.12 and o.get('track_state', 'active') == 'active'
+        root = self.matcher.rootPos[0:2]
+        rest = self.box.get('bottom') or 0.0               # where the box's bottom rested (a stand counts)
+        on_floor = any(np.hypot(*(np.asarray(o['bbox_center_world'][:2]) - root)) < 1.0
+                       and o.get('z_range', [1.0])[0] < rest + 0.12 and o.get('track_state', 'active') != 'inactive'
                        for o in objs)
         self.grip = [t_start, seen + int(on_floor), asked + 1]
 
@@ -541,8 +628,8 @@ def main():
     ap.add_argument('--lookahead', type=int, default=50, help='50 Hz frames the stream runs ahead')
     ap.add_argument('--replan-s', type=float, default=0.2, help='s between cuts that re-anchor the root to SLAM')
     ap.add_argument('--max-snap-jump', type=float, default=0.5,
-                    help='m: a SLAM pose farther than this from the reference root is not snapped to (a jump '
-                         'while the box fills the camera); the reference is held until SLAM is back')
+                    help='m: a SLAM pose this far from the previous one (0.2 s earlier) is a jump, not a step '
+                         '(the box fills the camera during the lift): the reference root is held that time')
     ap.add_argument('--box-fwd', type=float, default=2.0, help='box belief: m ahead of the start pose')
     ap.add_argument('--box-lat', type=float, default=0.0, help='box belief: m to the left of the start pose')
     ap.add_argument('--box-radius', type=float, default=1.0, help='m around the belief a reported object may be')
@@ -552,9 +639,28 @@ def main():
     ap.add_argument('--grip-check-s', type=float, default=1.5)
     ap.add_argument('--grip-check-delay', type=float, default=4.0,
                     help="s after the pick before the grip check: Boxer's track of the box on the floor outlives the lift")
-    ap.add_argument('--shoulder-squeeze', type=float, default=0.30,
+    ap.add_argument('--shoulder-squeeze', type=float, default=0.45,
                     help='rad of inward shoulder roll in the reference while a hand contact label is on')
-    ap.add_argument('--wrist-squeeze', type=float, default=0.20, help='rad of inward wrist yaw, the same way')
+    ap.add_argument('--wrist-squeeze', type=float, default=0.30, help='rad of inward wrist yaw, the same way')
+    ap.add_argument('--arrive-near', type=float, default=None, metavar='M',
+                    help='tighten the pick entry: fire within this radius of the stance (default the data\'s 0.12 m, '
+                         'loose fallback 0.30 m after 1 s)')
+    ap.add_argument('--approach-scale', type=float, default=0.5,
+                    help='scale on the walk-over speeds: the real robot overshoots a fast reference stop into the box')
+    ap.add_argument('--stance-bias', type=float, default=0.0,
+                    help='m added to the box-ahead-of-stance offset of the data (negative: stand closer), '
+                         'to absorb the drift back from the reference during the squat')
+    ap.add_argument('--shoulder-pitch-bias', type=float, default=0.3,
+                    help='rad added to both shoulder pitches during a pick or place ride (positive swings '
+                         'the reaching arms down: the robot squats shallower than the clip)')
+    ap.add_argument('--elbow-bias', type=float, default=0.0,
+                    help='rad added to both elbows during a pick or place ride (negative straightens the arms: '
+                         'the hands reach farther forward and down)')
+    ap.add_argument('--no-center-hands', action='store_true',
+                    help="do not shift the arms sideways by the box's lateral offset at the pick entry")
+    ap.add_argument('--no-hold-arms', action='store_true',
+                    help="let the carry search move the arms after the pick (default: the arms stay in the pick "
+                         "clip's final pose until the place, the single SceneBot motion)")
     ap.add_argument('--shoulder-open', type=float, default=0.0,
                     help='rad of outward shoulder roll during a pick or place ride while both labels are off')
     ap.add_argument('--headless', type=float, default=None, metavar='SECONDS')
@@ -565,8 +671,9 @@ def main():
                     help='headless: s to wait for a reported box (Boxer loads its models for some 40 s)')
     ap.add_argument('--pose-after', type=float, default=12.0, help='headless: s after start, P -> POSE')
     ap.add_argument('--walk-after', type=float, default=3.0, help='headless: s in POSE before the box action')
-    ap.add_argument('--carry-s', type=float, default=1.5,
-                    help='headless: s walking forward with the box (about 1 m at --walk-speed; the sim room is small)')
+    ap.add_argument('--carry-s', type=float, default=0.0,
+                    help='headless: s walking forward with the box before the place (default 0: the single SceneBot '
+                         'motion, pick then hold then place, which holds the box; the carry search drops it)')
     ap.add_argument('--auto-stop', action='store_true')
     args = ap.parse_args()
     if args.headless is not None:
