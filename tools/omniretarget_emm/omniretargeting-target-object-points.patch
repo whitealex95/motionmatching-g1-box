@@ -1,0 +1,171 @@
+From 7919a0f3914b881156fd767d392916c7fbd6b98a Mon Sep 17 00:00:00 2001
+From: Jeonghwan Kim <whitealex9514@gmail.com>
+Date: Thu, 1 Oct 2026 12:44:06 -0400
+Subject: [PATCH] MotionData.target_object_points: lock the robot-side mesh to
+ a resized / moved object
+
+The source interaction mesh and its Laplacian coordinates are still built from
+object_points; when target_object_points is given (same shape and order) the robot
+mesh locks those instead. Lets a carried object be shrunk to the robot's object while
+the human-object relation is preserved. Not scene-scaled (already in robot space).
+
+Claude-Session: https://claude.ai/code/session_01D858hdHCxWUitZnGc68kFf
+---
+ omniretargeting/core.py              |  7 +++++++
+ omniretargeting/data_sources/base.py | 21 +++++++++++++++++++++
+ omniretargeting/retargeting.py       |  6 +++++-
+ 3 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/omniretargeting/core.py b/omniretargeting/core.py
+index c98e5e8..778b827 100644
+--- a/omniretargeting/core.py
++++ b/omniretargeting/core.py
+@@ -217,6 +217,8 @@ class OmniRetargeter:
+                 framerate=framerate if framerate is not None else motion_data.framerate,
+                 source_height=motion_data.source_height,
+                 object_points=motion_data.object_points,
++                object_mesh=motion_data.object_mesh,
++                target_object_points=motion_data.target_object_points,
+                 metadata=dict(motion_data.metadata),
+             )
+         elif framerate is not None and motion_data.framerate is None:
+@@ -244,6 +246,9 @@ class OmniRetargeter:
+                 if enable_scene_scaling and motion_data.object_points is not None
+                 else motion_data.object_points
+             ),
++            object_mesh=motion_data.object_mesh,
++            # Target points are already in robot space: never scene-scaled.
++            target_object_points=motion_data.target_object_points,
+             metadata=dict(motion_data.metadata),
+         )
+ 
+@@ -497,6 +502,7 @@ class OmniRetargeter:
+ 
+         # Extract object points if present
+         object_points = frame.object_points if isinstance(frame, MotionFrame) else None
++        target_object_points = frame.target_object_points if isinstance(frame, MotionFrame) else None
+ 
+         solver_max_iter = self.retargeting_config.get("solver_max_iter")
+         if isinstance(solver_max_iter, dict):
+@@ -515,6 +521,7 @@ class OmniRetargeter:
+                 target_base_orientation=target_quat_wxyz,
+                 object_points=object_points,
+                 root_translation=root_translation,
++                target_object_points=target_object_points,
+             )
+ 
+         q_opt = solve(q_init)
+diff --git a/omniretargeting/data_sources/base.py b/omniretargeting/data_sources/base.py
+index 1ff7ac8..0f77bd0 100644
+--- a/omniretargeting/data_sources/base.py
++++ b/omniretargeting/data_sources/base.py
+@@ -19,6 +19,7 @@ class MotionFrame:
+     timestamp: float | None = None
+     object_points: np.ndarray | None = None
+     object_mesh: Any | None = None  # trimesh.Trimesh object for visualization
++    target_object_points: np.ndarray | None = None
+     metadata: dict[str, Any] = field(default_factory=dict)
+ 
+     def __post_init__(self) -> None:
+@@ -39,6 +40,11 @@ class MotionData:
+     human_height: float | None = None
+     object_points: np.ndarray | None = None
+     object_mesh: Any | None = None  # trimesh.Trimesh object for visualization
++    # Optional (T, N, 3) replacement for object_points on the ROBOT side only: the source
++    # interaction mesh is built from object_points, the robot mesh locks these instead.
++    # Same N and point order as object_points. Lets the object be resized / moved while
++    # the Laplacian coordinates still encode the original human-object relation.
++    target_object_points: np.ndarray | None = None
+     metadata: dict[str, Any] = field(default_factory=dict)
+ 
+     def __post_init__(self) -> None:
+@@ -63,6 +69,11 @@ class MotionData:
+                 )
+             if not np.isfinite(self.object_points).all():
+                 raise ValueError("MotionData.object_points must contain finite values.")
++        if self.target_object_points is not None:
++            if self.object_points is None or self.target_object_points.shape != self.object_points.shape:
++                raise ValueError("MotionData.target_object_points must match object_points in shape.")
++            if not np.isfinite(self.target_object_points).all():
++                raise ValueError("MotionData.target_object_points must contain finite values.")
+         if self.source_height is None:
+             self.source_height = self.human_height
+         if self.human_height is None:
+@@ -85,6 +96,7 @@ class MotionData:
+                 human_height=self.human_height,
+                 object_points=self.object_points.copy() if self.object_points is not None else None,
+                 object_mesh=self.object_mesh,
++                target_object_points=self.target_object_points.copy() if self.target_object_points is not None else None,
+                 metadata=dict(self.metadata),
+             )
+ 
+@@ -98,6 +110,10 @@ class MotionData:
+         new_root_orientations = slerp_interpolate(self.root_orientations, dst_indices, axis=0) if self.root_orientations is not None else None
+         new_root_translations = linear_interpolate(self.root_translations, dst_indices, axis=0) if self.root_translations is not None else None
+         new_object_points = linear_interpolate(self.object_points, dst_indices, axis=0) if self.object_points is not None else None
++        new_target_object_points = (
++            linear_interpolate(self.target_object_points, dst_indices, axis=0)
++            if self.target_object_points is not None else None
++        )
+ 
+         new_metadata = dict(self.metadata)
+         jo = new_metadata.get("joint_orientations")
+@@ -131,6 +147,7 @@ class MotionData:
+             human_height=self.human_height,
+             object_points=new_object_points,
+             object_mesh=self.object_mesh,
++            target_object_points=new_target_object_points,
+             metadata=new_metadata,
+         )
+ 
+@@ -139,12 +156,16 @@ class MotionData:
+             root_orientation = self.root_orientations[frame_idx] if self.root_orientations is not None else None
+             root_translation = self.root_translations[frame_idx] if self.root_translations is not None else None
+             object_points_frame = self.object_points[frame_idx] if self.object_points is not None else None
++            target_points_frame = (
++                self.target_object_points[frame_idx] if self.target_object_points is not None else None
++            )
+             yield MotionFrame(
+                 positions=positions,
+                 root_orientation=root_orientation,
+                 root_translation=root_translation,
+                 timestamp=(frame_idx / self.framerate) if self.framerate else None,
+                 object_points=object_points_frame,
++                target_object_points=target_points_frame,
+                 metadata={"frame_index": frame_idx, **self.metadata},
+             )
+ 
+diff --git a/omniretargeting/retargeting.py b/omniretargeting/retargeting.py
+index af11476..2a684b8 100644
+--- a/omniretargeting/retargeting.py
++++ b/omniretargeting/retargeting.py
+@@ -787,6 +787,7 @@ class GenericInteractionRetargeter:
+         target_base_orientation: Optional[np.ndarray] = None,
+         object_points: Optional[np.ndarray] = None,
+         root_translation: Optional[np.ndarray] = None,
++        target_object_points: Optional[np.ndarray] = None,
+     ) -> np.ndarray:
+         """
+         Retarget a single frame of source target positions to robot motion.
+@@ -799,6 +800,9 @@ class GenericInteractionRetargeter:
+             object_points: Optional object surface points (K, 3)
+             root_translation: Optional source root translation (3,) for base
+                 position tracking.
++            target_object_points: Optional (K, 3) points the ROBOT-side mesh locks to
++                instead of object_points (same order). The source Laplacian is still
++                computed from object_points.
+ 
+         Returns:
+             Optimized robot configuration
+@@ -856,7 +860,7 @@ class GenericInteractionRetargeter:
+             max_iter=max_iter,
+             q_last=q_last,
+             target_base_orientation=target_base_orientation,
+-            object_points=object_points,
++            object_points=object_points if target_object_points is None else target_object_points,
+             bone_targets=bone_targets,
+             root_translation=root_translation,
+         )
+-- 
+2.43.0
+

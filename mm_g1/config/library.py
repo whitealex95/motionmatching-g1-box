@@ -127,6 +127,10 @@ PLACE_ENTRY = 8          # candidate entry frames at the start of each PLACE pha
 # CARRY spans are baked and the box is synthesized at the wrist midpoint for drawing
 # (mm_g1/emm_clips.py). This is what lets CARRY actually walk: the OmniRetarget carry
 # clips are essentially in-place, these are not.
+# `emm_extra__box_omni` is the same take re-retargeted with OmniRetargeting and the
+# carried box shrunk to this project's box (tools/omniretarget_emm/): the wrists are
+# 0.42 m apart like the SceneBot hold, instead of the 0.6 m GMR hold of `emm_extra__box`.
+# Switch to it once data/emm_g1/clips/emm_extra__box_omni.npz is generated (see the tool README).
 EMM_CLIPS = ["emm_extra__box"]
 
 # Two-handed-hold test, in the robot's base frame (metres). The clip also contains

@@ -80,6 +80,13 @@ python tools/zmq_pose_monitor.py --seconds 10
 python sonic_g1_box/run_hardware.py --headless 8
 ```
 
+## 5. Extras for re-retargeting the EMM carry clip (`tools/omniretarget_emm/`)
+
+Only needed to regenerate `data/emm_g1/clips/emm_extra__box_omni.npz` (it is
+committed). It runs in its own `omniretargeting` env (Python 3.11, numpy 2) against a
+patched clone of OmniRetargeting; the steps are in
+[`tools/omniretarget_emm/README.md`](tools/omniretarget_emm/README.md).
+
 ## Common problems
 
 - **`ModuleNotFoundError: mm_g1`** when running a script in `sonic_g1_box/`.
