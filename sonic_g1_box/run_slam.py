@@ -177,6 +177,7 @@ class SlamBoxBridge:
         self.next_replan = None
         self.slam = None
         self.sync_err = self.heading_err = None
+        self.snaps_skipped = 0
         self.box = {'fixed': False, 'source': None, 'size': None, 'detected_yaw': None}
         self.lost = False
         self.grip = None                                # (t_start, sightings) while the grip is judged
@@ -274,7 +275,18 @@ class SlamBoxBridge:
             xy, yaw = np.asarray(p['root_xy'], float), float(p['root_yaw'])
             self.sync_err = float(np.linalg.norm(xy - m.rootPos[0:2]))
             self.heading_err = math.degrees(wrap(yaw - m.rootYaw))
-            seed_from_slam(m, xy, yaw)
+            if self.sync_err > self.args.max_snap_jump:
+                # SLAM jumped (the box fills the camera during the lift): hold the reference
+                # root instead; the snap resumes once SLAM is back within reach
+                self.snaps_skipped += 1
+                if self.snaps_skipped in (1, 10, 50):
+                    print(f'[slam-box] SLAM pose {self.sync_err:.2f} m from the reference root: not snapping '
+                          f'({self.snaps_skipped} skipped)', flush=True)
+            else:
+                if self.snaps_skipped:
+                    print(f'[slam-box] SLAM back within {self.args.max_snap_jump:.1f} m: snapping again', flush=True)
+                self.snaps_skipped = 0
+                seed_from_slam(m, xy, yaw)
         m.searchTimer = 0.0
         period = int(round(self.args.replan_s * POLICY_FPS))
         horizon = f + 1 + self.args.lookahead + period
@@ -519,6 +531,9 @@ def main():
     ap.add_argument('--bus-pub', default=wire.BUS_PUB)
     ap.add_argument('--lookahead', type=int, default=50, help='50 Hz frames the stream runs ahead')
     ap.add_argument('--replan-s', type=float, default=0.2, help='s between cuts that re-anchor the root to SLAM')
+    ap.add_argument('--max-snap-jump', type=float, default=0.5,
+                    help='m: a SLAM pose farther than this from the reference root is not snapped to (a jump '
+                         'while the box fills the camera); the reference is held until SLAM is back')
     ap.add_argument('--box-fwd', type=float, default=2.0, help='box belief: m ahead of the start pose')
     ap.add_argument('--box-lat', type=float, default=0.0, help='box belief: m to the left of the start pose')
     ap.add_argument('--box-radius', type=float, default=1.0, help='m around the belief a reported object may be')
@@ -535,7 +550,8 @@ def main():
     ap.add_argument('--auto-start', action='store_true', help='headless: ] once the node is up (moves the robot!)')
     ap.add_argument('--start-after-anchor', action='store_true', help='headless: ] only once the map server is anchored')
     ap.add_argument('--settle', type=float, default=5.0, help='headless: s standing before the box fix')
-    ap.add_argument('--fix-timeout', type=float, default=30.0, help='headless: s to wait for a reported box')
+    ap.add_argument('--fix-timeout', type=float, default=90.0,
+                    help='headless: s to wait for a reported box (Boxer loads its models for some 40 s)')
     ap.add_argument('--pose-after', type=float, default=12.0, help='headless: s after start, P -> POSE')
     ap.add_argument('--walk-after', type=float, default=3.0, help='headless: s in POSE before the box action')
     ap.add_argument('--carry-s', type=float, default=6.0, help='headless: s walking forward with the box')
