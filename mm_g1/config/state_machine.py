@@ -39,6 +39,10 @@ MOVE_ROUTE_SPEED_MAX = 1.2
 MOVE_END_SPEED_MIN = 0.35
 MOVE_END_SPEED_MAX = 0.55
 MOVE_STOP_DIST = 0.18
+# The pick fires only with the root within MOVE_FWD_TOL of the stance ALONG the approach
+# rail (a lateral miss is absorbed by the arms, a forward miss is not); short of that the
+# endgame servo keeps commanding, even inside MOVE_STOP_DIST. None: no such gate.
+MOVE_FWD_TOL = None
 MOVE_ARRIVE_YAW = 0.6    # yaw tolerance at the stance (rad)
 MOVE_ARRIVE_SPEED = 0.25  # root speed below this counts as settled (m/s)
 MOVE_TIMEOUT = 8.0       # per-leg give-up (s)

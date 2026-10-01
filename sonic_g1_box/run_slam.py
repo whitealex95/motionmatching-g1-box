@@ -218,8 +218,10 @@ class SlamBoxBridge:
             # into the box: slower approach speeds, and the servo stops commanding earlier
             k = float(args.approach_scale)
             C.MOVE_ROUTE_SPEED_MAX *= k
-            C.MOVE_END_SPEED_MIN *= k
-            C.MOVE_END_SPEED_MAX *= k
+            # the endgame floor stays at the data's 0.35 m/s: below it the matcher picks
+            # near-standing frames (the slow-walk dead zone) and the robot stops short
+            C.MOVE_END_SPEED_MAX = max(C.MOVE_END_SPEED_MAX * k, C.MOVE_END_SPEED_MIN)
+            C.MOVE_FWD_TOL = args.fwd_tol
             # the route aims MOVE_OVERSHOOT past the stance to keep the walk alive: with the
             # SceneBot box that is the box itself, and the robot runs into it. The slow walk
             # needs no overshoot, and the servo stops commanding earlier so the robot's lag
@@ -228,7 +230,9 @@ class SlamBoxBridge:
             C.MOVE_STOP_DIST = 0.30
             print(f'[slam-box] approach speeds x{k:.2f} (route up to {C.MOVE_ROUTE_SPEED_MAX:.2f} m/s, endgame '
                   f'{C.MOVE_END_SPEED_MIN:.2f} to {C.MOVE_END_SPEED_MAX:.2f} m/s, overshoot {C.MOVE_OVERSHOOT:.2f} m, '
-                  f'commands stop {C.MOVE_STOP_DIST:.2f} m before the stance)', flush=True)
+                  f'commands stop {C.MOVE_STOP_DIST:.2f} m before the stance'
+                  + (f', the pick waits for the root within {C.MOVE_FWD_TOL:.2f} m along the rail' if C.MOVE_FWD_TOL else '')
+                  + ')', flush=True)
         if args.arrive_near is not None:
             # a physical grasp needs the robot where the clip's stance is: the pick fires
             # only inside this radius (and the loose fallback at twice it, after 2 s)
@@ -294,13 +298,26 @@ class SlamBoxBridge:
         if o is None:
             return False
         c = np.asarray(o['bbox_center_world'], float)
+        if self.args.fix_range_bias:
+            # the detector puts the box's centre toward the camera (the sim: 4 to 5 cm at 2 m):
+            # push the fix away from where the robot stands by that much
+            away = c[0:2] - m.rootPos[0:2]
+            c = c.copy()
+            c[0:2] += self.args.fix_range_bias * away / (np.linalg.norm(away) + 1e-9)
         T = np.asarray(o['T_world_object'], float).reshape(4, 4)
         yaw = float(np.arctan2(T[1, 0], T[0, 0]))
-        # the box's symmetry (BOX_ROT_FOLDS, 4 for the cube): the fold nearest the belief's
-        # orientation, so the detected yaw does not send the approach round the side
-        period = 2.0 * np.pi / max(int(getattr(C, 'BOX_ROT_FOLDS', 1)), 1)
-        yaw = (yaw + 0.5 * period) % period - 0.5 * period
         size = [float(v) for v in o['bbox_size_xyz']]
+        if size[1] > size[0] * 1.15:
+            # the detector's box has its long side along its own y: the library's box is long
+            # along x (the SceneBot box, 0.3 x 0.2), so turn it a quarter and swap the extents
+            yaw += 0.5 * np.pi
+            size = [size[1], size[0], size[2]]
+        # the box's symmetry: the fold nearest the belief's orientation (2 folds for the
+        # SceneBot box, 4 for a cube), so the detected yaw does not send the approach round the side
+        folds = int(getattr(C, 'SCENEBOT_ROT_FOLDS', 2)) if getattr(C, 'SCENEBOT_PICK', False) \
+            else int(getattr(C, 'BOX_ROT_FOLDS', 1))
+        period = 2.0 * np.pi / max(folds, 1)
+        yaw = (yaw + 0.5 * period) % period - 0.5 * period
         m.boxPos = np.array([c[0], c[1], C.BOX_REST_Z])
         m.boxRot = quat.mul(yaw_quat(yaw - yaw_of(m.box_spawn_rot)), m.box_spawn_rot)
         self.box.update(fixed=True, source=str(o.get('language_label') or 'object'), size=size,
@@ -633,6 +650,9 @@ def main():
     ap.add_argument('--box-fwd', type=float, default=2.0, help='box belief: m ahead of the start pose')
     ap.add_argument('--box-lat', type=float, default=0.0, help='box belief: m to the left of the start pose')
     ap.add_argument('--box-radius', type=float, default=1.0, help='m around the belief a reported object may be')
+    ap.add_argument('--fix-range-bias', type=float, default=0.0, metavar='M',
+                    help="m the fixed box is pushed away from the robot: Boxer's centre sits toward the camera "
+                         '(4 to 5 cm at 2 m in the sim; measure it on the robot)')
     ap.add_argument('--walk-speed', type=float, default=C.CARRY_MAX_SPEED,
                     help='m/s while carrying forward (default the full stick of the carry data, 0.75: '
                          'slower commands match its near-stationary frames and the robot stands)')
@@ -642,12 +662,16 @@ def main():
     ap.add_argument('--shoulder-squeeze', type=float, default=0.45,
                     help='rad of inward shoulder roll in the reference while a hand contact label is on')
     ap.add_argument('--wrist-squeeze', type=float, default=0.30, help='rad of inward wrist yaw, the same way')
+    ap.add_argument('--fwd-tol', type=float, default=None, metavar='M',
+                    help='the pick fires only with the root this close to the stance along the approach rail '
+                         '(short of it the servo keeps creeping). Off by default: at 0.06 the robot hovered round '
+                         'the stance and the pick timed out; a lateral miss is absorbed by the hands anyway')
     ap.add_argument('--arrive-near', type=float, default=None, metavar='M',
                     help='tighten the pick entry: fire within this radius of the stance (default the data\'s 0.12 m, '
                          'loose fallback 0.30 m after 1 s)')
     ap.add_argument('--approach-scale', type=float, default=0.5,
                     help='scale on the walk-over speeds: the real robot overshoots a fast reference stop into the box')
-    ap.add_argument('--stance-bias', type=float, default=0.0,
+    ap.add_argument('--stance-bias', type=float, default=-0.05,
                     help='m added to the box-ahead-of-stance offset of the data (negative: stand closer), '
                          'to absorb the drift back from the reference during the squat')
     ap.add_argument('--shoulder-pitch-bias', type=float, default=0.3,
