@@ -2,10 +2,11 @@
 approach, and the interactive box spawn. (The states themselves are
 mm_g1.states.State; transitions live in mm_g1.controller.)"""
 
-# Desired locomotion speed (m/s) fed to the trajectory springs. Full stick = MAX_SPEED;
-# holding Shift scales it to a walk (GenoView's 0.4 scale).
-MAX_SPEED = 1.0
-WALK_SCALE = 0.4
+# Desired locomotion speed (m/s) fed to the trajectory springs. Full stick = MAX_SPEED,
+# a walk; holding Shift scales it by RUN_SCALE, a run (1.2 m/s). Same as the loco
+# repo's live.mm_driver.
+MAX_SPEED = 0.8
+RUN_SCALE = 1.5
 
 # Full-stick command speed while CARRYING the box. The carry clips are near-stationary -- the
 # root translates at ~0.5 m/s on average (p95 ~0.75, max ~0.97), so commanding the locomotion

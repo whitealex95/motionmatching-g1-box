@@ -222,7 +222,7 @@ when the bake *code* changes:
 
 `config/state_machine.py` — the B-driven behavior:
 
-- `MAX_SPEED` / `WALK_SCALE` — full-stick command speed and the Shift walk scale.
+- `MAX_SPEED` / `RUN_SCALE` — full-stick command speed (walk, 0.8 m/s) and the Shift run scale (1.5).
 - `MOVE_*` / `SNAP_*` — the move-to-pick approach (way-in point, arrive tolerances,
   rail pin).
 - `BOX_SPAWN_FWD` / `BOX_SPAWN_LAT` — where the box spawns, in the robot's start frame.

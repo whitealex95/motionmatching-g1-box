@@ -40,7 +40,7 @@ Window keys:
   W / A / S / D    move, relative to the reference's current heading (default;
                    press F or use --frame camera for view-relative)
   Arrow keys       face direction
-  Shift (hold)     walk instead of run
+  Shift (hold)     run instead of walk
   F                toggle the WASD frame: heading <-> camera
   B                box action: walk over + pick up / set down
   N                pick up NOW (skip the walk-over)
@@ -568,7 +568,7 @@ def run_window(args):
                       're-send mode command\n'
                       'move\n'
                       'face direction\n'
-                      'hold to walk\n'
+                      'hold to run\n'
                       'toggle WASD frame (heading/camera)\n'
                       'box pick: walk-over / instant\n'
                       'toggle gizmos\n'
@@ -583,7 +583,7 @@ def run_window(args):
             }[self.mode]
             s = self.matcher.state
             head = s.name if s is not State.LOCOMOTION else (
-                'RUN' if self._speed > C.MAX_SPEED * (1 + C.WALK_SCALE) / 2
+                'RUN' if self._speed > C.MAX_SPEED * (1 + C.RUN_SCALE) / 2
                 else ('WALK' if self._speed > 1e-3 else 'IDLE'))
             ref_line = (f'{head}  {self._speed:.1f} m/s   frames {first}..{newest}'
                         f'   (robot lags {args.lookahead / POLICY_FPS:.1f} s)'

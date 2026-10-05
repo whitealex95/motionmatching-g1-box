@@ -9,7 +9,7 @@ resulting qpos into MjData and draw. A follow-camera keeps the character centred
 Controls
   W / A / S / D ........ move (forward / left / back / right), relative to the camera
   Arrow keys ........... face direction, independent of travel (GenoView-style)
-  Shift (hold) ......... walk instead of run (full stick is run pace, GenoView-style)
+  Shift (hold) ......... run instead of walk (full stick is walk pace)
   B .................... box action: pick up when near the box, set down while carrying
   N .................... pick up NOW: skip the walk-over, best-matching entry
   Space ................ reset to the start pose
@@ -234,10 +234,10 @@ class InteractiveViewer:
         if glfw.KEY_LEFT in self.held:  face -= rdir
 
         m = np.linalg.norm(move)
-        if m > 1e-6:   # full stick = MAX_SPEED; while carrying, the slower CARRY cap (the
-            top = (C.CARRY_MAX_SPEED if self.matcher.state is State.CARRY  # box data is slow)
-                   else C.MAX_SPEED)
-            move = move / m * (top * (C.WALK_SCALE if self.shift else 1.0))
+        if m > 1e-6:   # full stick = MAX_SPEED, Shift = run; while carrying, the slower CARRY
+            top = (C.CARRY_MAX_SPEED if self.matcher.state is State.CARRY  # cap (box data is slow)
+                   else C.MAX_SPEED * (C.RUN_SCALE if self.shift else 1.0))
+            move = move / m * top
         else:
             move = np.zeros(3)
         f = np.linalg.norm(face)
@@ -290,7 +290,7 @@ class InteractiveViewer:
         # Box state machine takes precedence in the HUD; otherwise show the loco gait.
         state = m.state
         if state is State.LOCOMOTION:
-            head = ("RUN" if speed > C.MAX_SPEED * (1 + C.WALK_SCALE) / 2 else
+            head = ("RUN" if speed > C.MAX_SPEED * (1 + C.RUN_SCALE) / 2 else
                     ("WALK" if speed > 1e-3 else "IDLE"))
             if self.has_box:
                 head += "  [B: walk over + pick up]"
@@ -311,7 +311,7 @@ class InteractiveViewer:
                 f"  contact [{'L' if lib['contact'][cur][2] > 0.5 else '-'}"
                 f"{'R' if lib['contact'][cur][3] > 0.5 else '-'}]"
                 f"   command gizmo: {'on' if self.show_traj else 'off'} (T)\n"
-                "WASD move | arrows face | Shift walk | B box | Space reset\n"
+                "WASD move | arrows face | Shift run | B box | Space reset\n"
                 "drag orbit | right-drag pan | scroll zoom | Esc quit")
         mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,
                            mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport,

@@ -6,7 +6,7 @@ keyboard instead of the script, in a GLFW window with true held-key input:
 
   W / A / S / D    move, relative to the camera
   Arrow keys       face direction, independent of travel
-  Shift (hold)     walk instead of run
+  Shift (hold)     run instead of walk
   B                box action: pick up (walks over by itself) / set down
   N                pick up NOW: skip the walk-over, best-matching entry
   T                toggle the command / approach gizmos
@@ -62,9 +62,7 @@ class InputState:
         if glfw.KEY_LEFT in self.held:  face -= rdir
         m = float(np.linalg.norm(move))
         if m > 1e-6:
-            top = C.CARRY_MAX_SPEED if carry else C.MAX_SPEED
-            if self.shift:
-                top *= C.WALK_SCALE
+            top = C.CARRY_MAX_SPEED if carry else C.MAX_SPEED * (C.RUN_SCALE if self.shift else 1.0)
             move = move / m * top
         f = float(np.linalg.norm(face))
         if f > 1e-6:
@@ -186,7 +184,7 @@ class App:
                 draw_gizmos(self.scene, demo.matcher)
             mujoco.mjr_render(viewport, self.scene, self.ctx)
             title, body = demo._overlay_text()
-            body += ('\nWASD move | arrows face | Shift walk | B box | '
+            body += ('\nWASD move | arrows face | Shift run | B box | '
                      'N instant pick | T gizmos | Esc quit')
             mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,
                                mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport,
