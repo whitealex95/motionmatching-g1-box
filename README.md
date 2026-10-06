@@ -4,7 +4,7 @@ Steer a **Unitree G1** humanoid around a MuJoCo scene in real time with the keyb
 **pick up, carry, and set down a box** on command. Hold **WASD** and a
 [motion-matching](https://www.gdcvault.com/play/1023280/Motion-Matching-and-The-Road)
 search stitches GMR-retargeted LAFAN1 **walk**, **run** and **push-and-stumble** clips
-into one continuous, responsive gait; press **B** next to the box and the controller
+into one continuous, responsive gait; press **B** at the box (or **M** to walk over to it) and the controller
 switches to a small **pick → carry → place** state machine driven by
 [OmniRetarget](https://github.com/) robot-object clips — no neural network, no training,
 just nearest-neighbour search over per-phase feature databases.
@@ -15,7 +15,8 @@ this one folder. Clone it, create the conda env, and go.
 ```
 W / A / S / D    move (relative to the camera)
 Shift (hold)     run instead of walk
-B                box action: pick up when near the box, set down while carrying
+B                pick up right here (the box pose plays no part), set down while carrying
+M                walk over to the box and pick it up (M again cancels the walk)
 Space            reset to the start pose
 T                toggle the command trajectory gizmo
 left-drag        orbit camera
@@ -24,11 +25,14 @@ scroll           zoom
 Esc              quit
 ```
 
-A box spawns a short distance in front of the character. **Press B from anywhere**: the
+A box spawns a short distance in front of the character. **Press M from anywhere**: the
 controller plans a walking route to the pick stance in front of the box (green line),
 walks it, settles, and rides the pick clip; the box then rides along in its hands. You are
-now **carrying** — move around (the box follows), then press **B** again to play the
-put-down and set the box back on the floor. B during the walk-over cancels it.
+now **carrying** — move around (the box follows), then press **B** to play the
+put-down and set the box back on the floor. M during the walk-over cancels it. **B** plays
+the pick right where the character stands, whatever the box pose: there is one pick
+motion, so it needs no walk-over (the box eases into the hands from wherever it rests;
+B during the walk-over picks there and then).
 
 A red **command gizmo** (à la GenoView's `DrawTrajectory`) is drawn on the ground: a
 sphere at each predicted future position with a short stick pointing in the predicted
@@ -52,11 +56,12 @@ clips contribute **only their carry frames** (their own pick/place phases are di
 A state machine with a shelf-style approach drives it (`mm_g1/controller.py`):
 
 ```
-LOCOMOTION --B--> MOVE-TO-PICK (walk the planned route, settle) --> PICK (ride)
+LOCOMOTION --M--> MOVE-TO-PICK (walk the planned route, settle) --> PICK (ride)
+LOCOMOTION --B--> PICK (ride)
     --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
 ```
 
-**MOVE-TO-PICK** (approach heuristics, ported from `motionmatching-g1-shelf`): B inverts
+**MOVE-TO-PICK** (approach heuristics, ported from `motionmatching-g1-shelf`): M inverts
 the recorded stance-to-box offset at the LIVE box pose (the box's 2-fold symmetry gives
 two stance candidates; the nearer way-in point wins), plans a polyline route — straight to
 a way-in point 0.6 m behind the stance, a rounded corner, then in along the stance heading
@@ -70,7 +75,8 @@ stop, and the demo's own sequence also settles before the squat.
 
 - **PICK** and **PLACE** are *ridden*: entered from the start of the
   phase by a nearest-neighbour match of the live pose **+ box pose**, then played to the
-  phase end with no mid-phase search.
+  phase end with no mid-phase search. B's pick matches the pose alone: the box pose
+  plays no part, and the two box-yaw folds are the same motion.
 - **CARRY** is searched every `SEARCH_TIME` like locomotion, but only among `carry` frames,
   with the box pose added to the query.
 - The **only** database transitions ever made are those in the chain above (so e.g. you can
@@ -220,7 +226,7 @@ when the bake *code* changes:
   picks the box-yaw fold, while every entry shares the same stance-to-box offset.
 - `BOX_INERT_HALFLIFE` — how quickly the box settles into the hands at grab time.
 
-`config/state_machine.py` — the B-driven behavior:
+`config/state_machine.py` — the B / M-driven behavior:
 
 - `MAX_SPEED` / `RUN_SCALE` — full-stick command speed (walk, 0.8 m/s) and the Shift run scale (1.5).
 - `MOVE_*` / `SNAP_*` — the move-to-pick approach (way-in point, arrive tolerances,

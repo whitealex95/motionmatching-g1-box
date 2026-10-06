@@ -202,15 +202,15 @@ class Demo:
             speed = 0.4 if n < 1.0 else 0.7
             return speed * face, face
 
-        # The walk to the box is the matcher's own MOVE_TO_PICK: B plans the
+        # The walk to the box is the matcher's own MOVE_TO_PICK: M plans the
         # approach from the live box pose and self-drives it (the commander's
-        # velocity is ignored while it runs). Pressing B again would CANCEL
+        # velocity is ignored while it runs). Pressing M again would CANCEL
         # it, so only trigger from LOCOMOTION -- once to start, and again
         # whenever a dropped grip has knocked the matcher back to locomotion.
         if st is State.MOVE_TO_PICK:
             return np.zeros(3), np.zeros(3)
         if not self.mm_placed:
-            mm.trigger_box()
+            mm.trigger_move_pick()
         return np.zeros(3), np.zeros(3)
 
     def _check_grip(self, mm):

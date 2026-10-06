@@ -1,5 +1,5 @@
-"""The box task (walk over, pick, carry, place) on the real G1 with SLAM
-localization from motionmatching-g1-loco's live stack.
+"""The box task (pick, carry, place, with or without the walk over) on the real
+G1 with SLAM localization from motionmatching-g1-loco's live stack.
 
 The scenario: the box stands about 2 m in front of the start pose. SLAM is
 initialized and the map server anchors its frame at the start pose (that frame
@@ -8,23 +8,27 @@ mapped. Once, after the anchor, the box pose is fixed from what the map server
 reports (`objects`: Boxer's boxes in the map frame, or the sim's true box with
 `live.server --objects truth`). From then on the box relative to the robot
 follows from that fixed pose and the SLAM pose, so the lift needs no camera.
-Every --replan-s the stream is cut at the frame the robot plays and the
+`m` walks over to that fixed box and picks it; `b` plays the pick, carry and
+put-down where the robot stands and needs no box pose (nor the fix, nor
+Boxer). Every --replan-s the stream is cut at the frame the robot plays and the
 matcher's root is put on the SLAM pelvis (not during the ridden pick and place:
-those play open loop from the committed pose). After the pick the grip is
+those play open loop from the committed pose). After m's pick the grip is
 judged once from what the server still sees on the floor at the pick spot:
-lost means stand still, no second try.
+lost means stand still, no second try (b's pick is not judged).
 
     python sonic_g1_box/run_slam.py                       # terminal keys
     python sonic_g1_box/run_slam.py --headless 240 --auto-start --start-after-anchor
 
 Terminal keys (type the letter, then Enter):
   ]  start (planner mode, the robot stands)    p  planner <-> POSE
-  x  fix the box from the map server           b  box action (walk over + pick, or place)
+  x  fix the box from the map server           b  pick right here (no box pose needed), or place
+  m  walk over to the fixed box + pick (m again cancels the walk)
   w  walk forward (--walk-speed) / stop        o  stop (damping, final)       q  quit
 
-Headless: waits for the node and the anchor, starts, settles, fixes the box,
-enters POSE, triggers the pick, judges the grip, carries --carry-s seconds
-forward, places, stands.
+Headless: waits for the node and the anchor, starts, settles, fixes the box
+(not with --pick-here), enters POSE, triggers the pick (m, or b with
+--pick-here), judges the grip (m's pick), carries --carry-s seconds forward,
+places, stands.
 """
 
 import argparse
@@ -90,10 +94,11 @@ class SqueezedMotion(MMMotion):
         m = self.matcher
         before = m.state
         super()._step_matcher()
-        if self.center_hands and m.state is State.PICK and before is not State.PICK:
+        if self.center_hands and m.state is State.PICK and before is not State.PICK and m.pick_at_stance:
             # the robot stops beside the stance, not on it: the box's lateral offset from the
             # pelvis at this moment (the SLAM pose against the fixed box) becomes a roll on
-            # both shoulders, so the clamp closes where the box is
+            # both shoulders, so the clamp closes where the box is (m's pick only: b's pick
+            # does not use the box pose)
             left = float(quat.inv_mul_vec(m.rootRot, m.boxPos - m.rootPos)[1])
             self.center_roll = float(np.clip(left / self.ARM_LEVER, -0.5, 0.5))
             print(f'[slam-box] pick entry: the box is {left:+.2f} m left of the pelvis, '
@@ -361,11 +366,30 @@ class SlamBoxBridge:
         print('[slam-box] stop=1 -> damping', flush=True)
 
     def box_action(self):
+        """b: the pick right where the robot stands, or the place while carrying."""
         if self.lost:
             print('[slam-box] the box was lost: standing, no second try', flush=True)
             return
+        m = self.matcher
         self.matcher.trigger_box()
-        print(f'[slam-box] box action requested (state {self.matcher.state.name})', flush=True)
+        print('[slam-box] ' + ('place' if m.state is State.CARRY else 'pick right here (the box pose is not used)')
+              + f' requested (state {m.state.name})', flush=True)
+
+    def move_pick(self):
+        """m: walk over to the fixed box and pick it; m during the walk cancels it."""
+        if self.lost:
+            print('[slam-box] the box was lost: standing, no second try', flush=True)
+            return
+        m = self.matcher
+        if m.state not in (State.LOCOMOTION, State.MOVE_TO_PICK):
+            print(f'[slam-box] m only from locomotion (state {m.state.name}); b places while carrying', flush=True)
+            return
+        if m.state is State.LOCOMOTION and not self.box['fixed']:
+            print('[slam-box] the box is not fixed (x): walking over to the belief '
+                  f'{C.BOX_SPAWN_FWD:.2f} m ahead', flush=True)
+        walking = m.state is State.MOVE_TO_PICK
+        m.trigger_move_pick()
+        print('[slam-box] ' + ('walk over cancelled' if walking else 'walk over + pick requested'), flush=True)
 
     def walk(self, on):
         self.walking = on
@@ -448,10 +472,15 @@ class SlamBoxBridge:
         return newest
 
     def _judge_grip(self, now):
-        """Once, after the pick: an object on the floor within 1 m of the robot for most
+        """Once, after m's pick: an object on the floor within 1 m of the robot for most
         of --grip-check-s means the box was not lifted (or was pushed along)."""
         m = self.matcher
         if self.grip is None:
+            if m.state is State.CARRY and not m.pick_at_stance and not getattr(self, 'grip_done', False):
+                # b's pick plays without the box pose, so it is not judged either: b puts it down
+                self.grip_done = True
+                print('[slam-box] picked right here: no grip check (b puts it down)', flush=True)
+                return
             if m.state is State.CARRY and m.box_locked == 0 and not getattr(self, 'grip_done', False):
                 # the window opens --grip-check-delay after the pick; only a box MEASURED after
                 # this moment counts (Boxer keeps the lifted box's track at its old floor spot)
@@ -547,7 +576,7 @@ def run_headless(args):
                         time.sleep(0.1)
                     started, t_start = True, now
                     br.phase = 'standing (settle)'
-            elif not br.box['fixed'] and now - t_start > args.settle:
+            elif not br.box['fixed'] and not args.pick_here and now - t_start > args.settle:
                 br.phase = 'fixing the box from the map server'
                 if int(now * 2) != int((now - 0.004) * 2):
                     fix_tries += 1
@@ -563,9 +592,13 @@ def run_headless(args):
                 posed, t_pose = True, now
                 br.phase = 'POSE, about to walk over'
             elif posed and not triggered and now - t_pose > args.walk_after:
-                br.box_action()
+                if args.pick_here:
+                    br.box_action()
+                    br.phase = 'picking right here'
+                else:
+                    br.move_pick()
+                    br.phase = 'walking over and picking'
                 triggered = True
-                br.phase = 'walking over and picking'
             elif triggered and not carried and getattr(br, 'grip_done', False):
                 if br.lost:
                     br.phase = 'lost the box: standing'
@@ -626,8 +659,8 @@ def run_terminal(args):
                         print('[slam-box] no object near the belief: is Boxer running, is the map anchored?', flush=True)
                 elif k == 'b':
                     br.box_action()
-                elif k == 'n':
-                    br.matcher.trigger_pick_instant()
+                elif k == 'm':
+                    br.move_pick()
                 elif k == 'w':
                     br.walk(not br.walking)
                     print(f'[slam-box] walking {"on" if br.walking else "off"}', flush=True)
@@ -704,6 +737,9 @@ def main():
                     help='headless: s to wait for a reported box (Boxer loads its models for some 40 s)')
     ap.add_argument('--pose-after', type=float, default=12.0, help='headless: s after start, P -> POSE')
     ap.add_argument('--walk-after', type=float, default=3.0, help='headless: s in POSE before the box action')
+    ap.add_argument('--pick-here', action='store_true',
+                    help='headless: pick right where the robot stands (b) instead of walking over first (m), '
+                         'with no box fix')
     ap.add_argument('--carry-s', type=float, default=0.0,
                     help='headless: s walking forward with the box before the place (default 0: the single SceneBot '
                          'motion, pick then hold then place, which holds the box; the carry search drops it)')

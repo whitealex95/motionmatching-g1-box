@@ -7,8 +7,8 @@ keyboard instead of the script, in a GLFW window with true held-key input:
   W / A / S / D    move, relative to the camera
   Arrow keys       face direction, independent of travel
   Shift (hold)     run instead of walk
-  B                box action: pick up (walks over by itself) / set down
-  N                pick up NOW: skip the walk-over, best-matching entry
+  B                pick up right here (the box pose plays no part) / set down
+  M                walk over to the box and pick it up (M again cancels the walk)
   T                toggle the command / approach gizmos
   Left-drag        orbit camera     Right-drag  pan     Scroll  zoom
   Esc              quit
@@ -123,8 +123,8 @@ class App:
                 glfw.set_window_should_close(window, True)
             elif key == glfw.KEY_B:
                 self.demo.matcher.trigger_box()
-            elif key == glfw.KEY_N:
-                self.demo.matcher.trigger_pick_instant()
+            elif key == glfw.KEY_M:
+                self.demo.matcher.trigger_move_pick()
             elif key == glfw.KEY_T:
                 self.show_traj = not self.show_traj
             elif key in _MOVE or key in _FACE:
@@ -184,8 +184,8 @@ class App:
                 draw_gizmos(self.scene, demo.matcher)
             mujoco.mjr_render(viewport, self.scene, self.ctx)
             title, body = demo._overlay_text()
-            body += ('\nWASD move | arrows face | Shift run | B box | '
-                     'N instant pick | T gizmos | Esc quit')
+            body += ('\nWASD move | arrows face | Shift run | B pick/place | '
+                     'M walk + pick | T gizmos | Esc quit')
             mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,
                                mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport,
                                title, body, self.ctx)
@@ -208,7 +208,8 @@ def main():
     inp = InputState()
     demo = InteractiveGrasp(args, inp)
     app = App(demo, inp)
-    print('Window open -- WASD to move, B to pick up / set down, Esc to quit.')
+    print('Window open -- WASD to move, B to pick up here / set down, M to walk over and pick up, '
+          'Esc to quit.')
     app.run(max_frames=args.smoke_frames)
     return 0
 

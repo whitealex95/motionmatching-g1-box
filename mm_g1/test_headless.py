@@ -1,10 +1,12 @@
 """Headless regression test of the single-pick kinematic demo.
 
 Drives the matcher exactly like the viewer does (30 Hz, no physics): spawn the
-box off to the side at an angle, press B, and assert the whole chain runs:
+box off to the side at an angle, press M, and assert the whole chain runs:
 MOVE-TO-PICK walks the planned route to the stance, PICK rides the baked
-SceneBot squat, CARRY holds the box (OmniRetarget frames), B again rides the
+SceneBot squat, CARRY holds the box (OmniRetarget frames), B rides the
 reversed drop, and the box ends back at rest with the robot in locomotion.
+Then B picks the box up again right where the robot stands (no walk-over)
+and B sets it down.
 
     python -m mm_g1.test_headless [--video out.mp4]
 """
@@ -74,9 +76,10 @@ def run(video=None):
         return False
 
     assert step_until(State.LOCOMOTION, 1.0), "did not settle"
-    m.trigger_box()
-    assert step_until(State.MOVE_TO_PICK, 1.0), "B did not start the approach"
+    m.trigger_move_pick()
+    assert step_until(State.MOVE_TO_PICK, 1.0), "M did not start the approach"
     assert step_until(State.PICK, C.MOVE_TIMEOUT + 2.0), "approach never reached the stance"
+    assert m.pick_at_stance, "M's pick not marked as entered at the stance"
     assert step_until(State.CARRY, 8.0), "pick ride did not hand off to carry"
     assert m.box_held, "box not held after pick"
     fwd = np.array([1.0, 0.0, 0.0])
@@ -92,6 +95,23 @@ def run(video=None):
     assert abs(box_z - C.BOX_REST_Z) < 0.03, f"box not back at rest (z {box_z:.2f})"
     assert stance_err_at_pick is not None and stance_err_at_pick < 0.25, \
         f"pick entered {stance_err_at_pick} m off the stance"
+
+    # B: the pick right where the robot stands, no walk-over, then B sets it down
+    max_box_z = 0.0
+    m.trigger_box()
+    assert step_until(State.PICK, 0.2), "B did not enter the pick at once"
+    assert not m.pick_at_stance, "B's pick marked as entered at the stance"
+    assert step_until(State.CARRY, 8.0), "B's pick ride did not hand off to carry"
+    assert m.box_held and max_box_z > 0.5, f"B's pick did not lift the box (max z {max_box_z:.2f})"
+    m.trigger_move_pick()                                 # M is ignored while carrying
+    step_until(None, 0.5)
+    assert m.state is State.CARRY, "M while carrying left the carry"
+    m.trigger_box()
+    assert step_until(State.PLACE, 2.0), "B while carrying did not enter place"
+    assert step_until(State.LOCOMOTION, 6.0), "place ride did not finish"
+    step_until(None, 1.5)
+    box_z = float(m.boxPos[2])
+    assert abs(box_z - C.BOX_REST_Z) < 0.03, f"box not back at rest after B's pick (z {box_z:.2f})"
 
     if video:
         import imageio

@@ -10,8 +10,8 @@ Controls
   W / A / S / D ........ move (forward / left / back / right), relative to the camera
   Arrow keys ........... face direction, independent of travel (GenoView-style)
   Shift (hold) ......... run instead of walk (full stick is walk pace)
-  B .................... box action: pick up when near the box, set down while carrying
-  N .................... pick up NOW: skip the walk-over, best-matching entry
+  B .................... pick up right here (the box pose plays no part), set down while carrying
+  M .................... walk over to the box and pick it up (M again cancels the walk)
   Space ................ reset to the start pose
   T .................... toggle the command trajectory gizmo (GenoView-style)
   Left-drag ............ orbit camera     Right-drag ... pan     Scroll ... zoom
@@ -179,8 +179,8 @@ class InteractiveViewer:
                 self.show_traj = not self.show_traj
             elif key == glfw.KEY_B:
                 self.matcher.trigger_box()
-            elif key == glfw.KEY_N:
-                self.matcher.trigger_pick_instant()
+            elif key == glfw.KEY_M:
+                self.matcher.trigger_move_pick()
             elif key in _MOVE_KEYS or key in _FACE_KEYS:
                 self.held.add(key)
         elif action == glfw.RELEASE:
@@ -293,9 +293,9 @@ class InteractiveViewer:
             head = ("RUN" if speed > C.MAX_SPEED * (1 + C.RUN_SCALE) / 2 else
                     ("WALK" if speed > 1e-3 else "IDLE"))
             if self.has_box:
-                head += "  [B: walk over + pick up]"
+                head += "  [B: pick up here | M: walk over + pick up]"
         elif state is State.MOVE_TO_PICK:
-            head = "WALKING TO THE BOX  [B: cancel]"
+            head = "WALKING TO THE BOX  [M: cancel | B: pick up here]"
         else:
             head = state.name
             if state is State.CARRY:
@@ -311,7 +311,7 @@ class InteractiveViewer:
                 f"  contact [{'L' if lib['contact'][cur][2] > 0.5 else '-'}"
                 f"{'R' if lib['contact'][cur][3] > 0.5 else '-'}]"
                 f"   command gizmo: {'on' if self.show_traj else 'off'} (T)\n"
-                "WASD move | arrows face | Shift run | B box | Space reset\n"
+                "WASD move | arrows face | Shift run | B pick/place | M walk + pick | Space reset\n"
                 "drag orbit | right-drag pan | scroll zoom | Esc quit")
         mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,
                            mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport,

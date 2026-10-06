@@ -42,8 +42,8 @@ Window keys:
   Arrow keys       face direction
   Shift (hold)     run instead of walk
   F                toggle the WASD frame: heading <-> camera
-  B                box action: walk over + pick up / set down
-  N                pick up NOW (skip the walk-over)
+  B                pick up right here (the box pose plays no part) / set down
+  M                walk over to the box and pick it up (M again cancels the walk)
   T                toggle gizmos
   ]                START: enter PLANNER mode (upstream A+B+X+Y)
   P                toggle PLANNER <-> POSE   (upstream A+X)

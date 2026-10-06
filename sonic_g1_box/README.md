@@ -10,7 +10,7 @@ tracking    SONIC encoder/decoder ONNX (encode mode 0), 50 Hz
 physics     PD + MuJoCo, 200 Hz; NVIDIA 29-DoF G1 scene + the large box
 ```
 
-The commander presses B: the matcher's own MOVE_TO_PICK plans and walks the
+The commander presses M: the matcher's own MOVE_TO_PICK plans and walks the
 approach from the live box pose, the pick/carry/place run, then the
 commander walks the robot away. Decisions use the physical robot;
 `--ref-mode` (default `snap-all`) keeps the reference root on the robot
@@ -86,7 +86,7 @@ ahead of the clock so the encoder sees real future frames.
 # terminal 1 (deploy repo): ./deploy.sh --input-type zmq_manager real ...
 # terminal 2:
 ~/miniconda3/envs/mm-g1-sonic/bin/python run_hardware.py [--frame body] [--box-fwd 1.6]
-#   ] start control on the robot   O stop (damping)   WASD/arrows/B as in run.py
+#   ] start control on the robot   O stop (damping)   WASD/arrows/B/M as in run.py
 python run_hardware.py --headless 8      # no window: protocol smoke test
 ```
 

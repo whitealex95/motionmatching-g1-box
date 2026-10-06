@@ -3,12 +3,15 @@
 The locomotion core is a faithful port of genoview_g1.py (a Savitzky-Golay-smoothed
 "simulation root" the matcher tracks + integrates, per-clip KD-tree search, inertialized
 cuts); see git history for the unchanged details. Layered on top is a small box-manipulation
-state machine driven by the B trigger:
+state machine driven by the B and M triggers:
 
-    LOCOMOTION --B (near box)--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
+    LOCOMOTION --B--> PICK (ride) --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
+    LOCOMOTION --M--> MOVE_TO_PICK (walk to the stance) --> PICK
 
-PICK and PLACE are *ridden* (no search mid-phase, entered from their start by a
-nearest-neighbour match of the live pose + box pose). CARRY is searched every SEARCH_TIME like
+B plays the pick where the robot stands, whatever the box pose; M walks to the pick stance
+planned from the live box pose first. PICK and PLACE are *ridden* (no search mid-phase,
+entered from their start by a nearest-neighbour match of the live pose, plus the box pose
+for M's pick and for the place). CARRY is searched every SEARCH_TIME like
 locomotion, but only among CARRY frames and with the box pose added to the query. The only
 database transitions ever made are exactly those in the chain above (req. 13):
   loco->loco, loco->pick, pick->carry, carry->carry, carry->place, place->loco.
@@ -129,8 +132,9 @@ class MotionMatcher:
         self.offPP = np.zeros(3); self.offPPVel = np.zeros(3)
         self.offPR = IDENTITY.copy(); self.offPAng = np.zeros(3)
         self.searchTimer = 0.0
-        self.box_pending = False
+        self.box_pending = None          # 'here' (B) | 'move' (M), honoured on the next step
         self.box_locked = 0
+        self.pick_at_stance = False      # the last pick was entered at M's planned stance
         # Move-to-pick (approach) state.
         self.move_timer = 0.0
         self.move_settle_t = 0.0
@@ -167,23 +171,20 @@ class MotionMatcher:
 
     # --- triggers ------------------------------------------------------------
     def trigger_box(self):
-        """Request the box action (B): walk to the box and pick it up from locomotion, or
-        place it while carrying. Pressing B during the walk cancels it. Honoured on the
-        next step; a no-op while a pick/place is being ridden."""
+        """B: play the pick right where the robot stands, whatever the box pose (from
+        locomotion, or cutting M's walk short), or the place while carrying. Honoured on
+        the next step; a no-op while a pick/place is being ridden."""
+        if self.box_locked == 0:
+            self.box_pending = 'here'
+
+    def trigger_move_pick(self):
+        """M: walk to the pick stance planned from the live box pose, then pick. M during
+        the walk cancels it. Honoured on the next step; only from locomotion."""
         if self.state is State.MOVE_TO_PICK:
             self.state = State.LOCOMOTION
             return
-        if self.box_locked == 0:
-            self.box_pending = True
-
-    def trigger_pick_instant(self):
-        """N: skip the approach entirely -- nearest-neighbour match the live
-        pose + box pose into the best PICK entry right now."""
-        if (self.box_locked == 0 and len(self.pick_enter)
-                and self.state in (State.LOCOMOTION, State.MOVE_TO_PICK)):
-            self.state = State.LOCOMOTION
-            self.box_pending = False
-            self._enter_ride(self.pick_enter, self.pick_end_of, State.PICK)
+        if self.box_locked == 0 and self.state is State.LOCOMOTION:
+            self.box_pending = 'move'
 
     # --- inertialized cut ----------------------------------------------------
     def _inertialize_into(self, b, lo, hi):
@@ -227,6 +228,7 @@ class MotionMatcher:
             if self._at_stance():
                 self._enter_ride(self.pick_enter, self.pick_end_of,
                                  State.PICK)
+                self.pick_at_stance = True
                 desiredVel = np.zeros(3)
                 desiredFace = np.zeros(3)
             elif self.move_timer > C.MOVE_TIMEOUT:
@@ -241,15 +243,19 @@ class MotionMatcher:
         return self._query_from_trajectory(desiredVel)
 
     def _maybe_trigger_box(self):
-        """Honour a pending B: locomotion -> walk to the pick stance; carry -> enter PLACE."""
-        if not self.box_pending or self.box_locked > 0:
-            self.box_pending = False
+        """Honour a pending B or M: B picks where the robot stands (box-agnostic entry) or
+        places while carrying; M starts the walk to the pick stance."""
+        req, self.box_pending = self.box_pending, None
+        if req is None or self.box_locked > 0 or not len(self.pick_enter):
             return
-        self.box_pending = False
-        if self.state is State.LOCOMOTION and len(self.pick_enter):
-            self._start_move()
+        if req == 'move':
+            if self.state is State.LOCOMOTION:
+                self._start_move()
         elif self.state is State.CARRY:
             self._enter_ride(self.place_enter, self.place_end_of, State.PLACE)
+        elif self.state in (State.LOCOMOTION, State.MOVE_TO_PICK):
+            self._enter_ride(self.pick_enter, self.pick_end_of, State.PICK, use_box=False)
+            self.pick_at_stance = False
 
     # --- move-to-pick (approach heuristics, from motionmatching-g1-shelf) ----
     def _start_move(self):
@@ -416,10 +422,11 @@ class MotionMatcher:
                 self.Tdir[k] = np.array([heading[0], heading[1], 0.0])
                 k += 1
 
-    def _enter_ride(self, enter_frames, end_of, state):
+    def _enter_ride(self, enter_frames, end_of, state, use_box=True):
         """Nearest-neighbour match the live pose + box pose to the start of a pick/place phase
         (in that phase's own database), inertialize into it, and lock the playhead so the
-        phase is ridden to its end."""
+        phase is ridden to its end. use_box=False matches the pose blocks alone (B's pick:
+        the box pose plays no part, and the box folds tie on the same motion)."""
         if len(enter_frames) == 0:
             return
         # Leaving a frozen carry: drop the freeze and the held flag so _update_box re-seeds
@@ -430,8 +437,11 @@ class MotionMatcher:
             self.box_held = False
         dbname = state.name.lower()                  # State.PICK -> the 'pick' db
         Xq = self._query(dbname)
-        Xdb = self.db["dbs"][dbname]["X"]
-        entry = int(enter_frames[np.argmin(np.linalg.norm(Xdb[enter_frames] - Xq, axis=1))])
+        Xdb = self.db["dbs"][dbname]["X"][enter_frames]
+        if not use_box:                              # pose first in the layout, box last
+            n = self.rawXpos.shape[1] + self.rawXvel.shape[1]
+            Xq, Xdb = Xq[:n], Xdb[:, :n]
+        entry = int(enter_frames[np.argmin(np.linalg.norm(Xdb - Xq, axis=1))])
         end = int(end_of[entry])
         lo, _ = self._clip_bounds(entry)
         self._inertialize_into(entry, lo, end + 1)           # hi caps the ride at the phase end

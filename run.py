@@ -2,7 +2,8 @@
 """Interactive, keyboard-controlled motion matching for the Unitree G1.
 
 Builds (or loads the cached) motion library, opens a MuJoCo window, and lets you steer the
-G1 around with WASD in real time and pick up / carry / set down a box with B. The first
+G1 around with WASD in real time and pick up / carry / set down a box with B (or M to walk
+over to it first). The first
 launch builds the library cache (data/motion_lib.npz, ~1 s); it rebuilds
 automatically whenever a config/library.py setting changes.
 
@@ -10,8 +11,8 @@ Controls
   W / A / S / D ........ move, relative to the camera
   Arrow keys ........... face direction, independent of travel (GenoView-style)
   Shift (hold) ......... run instead of walk (full stick is walk pace)
-  B .................... box action: pick up when near the box, set down while carrying
-  N .................... pick up NOW: skip the walk-over, best-matching entry
+  B .................... pick up right here (the box pose plays no part), set down while carrying
+  M .................... walk over to the box and pick it up (M again cancels the walk)
   Space ................ reset to the start pose
   Left-drag / right-drag / scroll ... orbit / pan / zoom
   Esc .................. quit
@@ -49,7 +50,8 @@ def main():
     if C.SCENEBOT_PICK:
         model.geom('box_geom').size[:] = C.BOX_HALF   # single source: config
     data = mujoco.MjData(model)
-    print("Opening viewer -- WASD to move, B to pick up / set down the box, Esc to quit.")
+    print("Opening viewer -- WASD to move, B to pick up here / set down, M to walk over and pick up, "
+          "Esc to quit.")
     InteractiveViewer(model, data, matcher).run()
 
 
