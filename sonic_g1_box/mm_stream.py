@@ -22,6 +22,24 @@ def nlerp(a, b, t):
     return q / (np.linalg.norm(q) + 1e-12)
 
 
+def fit_rows(buf, n, width):
+    """`buf` with room for at least n rows (capacity doubles), its rows kept."""
+    if buf is not None and len(buf) >= n:
+        return buf
+    out = np.zeros((max(256, n, 0 if buf is None else 2 * len(buf)), width))
+    if buf is not None:
+        out[:len(buf)] = buf
+    return out
+
+
+def fill_speeds(vel, pos, lo, n):
+    """vel[lo:n] as the finite difference of pos (row 0 at rest)."""
+    a = max(lo, 1)
+    vel[a:n] = (pos[a:n] - pos[a - 1:n - 1]) * POLICY_FPS
+    if lo == 0:
+        vel[0] = 0.0
+
+
 class MMMotion:
     def __init__(self, matcher, commander):
         self.matcher = matcher
@@ -30,6 +48,8 @@ class MMMotion:
         self._mm_t0 = None
         self._mm_t1 = None
         self._ticks = 0.0
+        self._qbuf = self._jbuf = self._vbuf = None
+        self._built = 0                       # frames whose rows in the buffers are up to date
         for _ in range(WARMUP_TICKS):
             q = self._full_qpos(matcher.step(np.zeros(3), np.zeros(3)))
         self._mm_t0 = self._mm_t1 = q
@@ -91,6 +111,7 @@ class MMMotion:
                 arr[0:2] -= off
                 arr[36:38] -= off
                 done.add(id(arr))
+        self._built = 0                       # every frame moved
         self._rebuild()
 
     def truncate(self, n):
@@ -109,12 +130,21 @@ class MMMotion:
             mark[0], mark[1].copy(), mark[2].copy()
 
     def _rebuild(self):
-        self._qpos = np.asarray(self._frames)
-        angles = self._qpos[:, 7:36][:, P.MUJOCO_TO_ISAACLAB]
-        speeds = np.zeros_like(angles)
-        if len(angles) > 1:
-            speeds[1:] = (angles[1:] - angles[:-1]) * POLICY_FPS
-        self._joint_pos, self._joint_vel = angles, speeds
+        """Bring the arrays up to the frame list, from the first frame that changed (an
+        append, a truncate) on: a step costs the same however long the stream has run.
+        The properties are views into buffers that grow by doubling; rows a truncate
+        dropped are written over by the frames generated after it."""
+        n = len(self._frames)
+        lo = self._changed_from = min(self._built, n)
+        self._qbuf = fit_rows(self._qbuf, n, len(self._frames[0]))
+        self._jbuf = fit_rows(self._jbuf, n, len(P.MUJOCO_TO_ISAACLAB))
+        self._vbuf = fit_rows(self._vbuf, n, len(P.MUJOCO_TO_ISAACLAB))
+        if n > lo:
+            self._qbuf[lo:n] = self._frames[lo:n]
+            self._jbuf[lo:n] = self._qbuf[lo:n, 7:36][:, P.MUJOCO_TO_ISAACLAB]
+            fill_speeds(self._vbuf, self._jbuf, lo, n)
+        self._built = n
+        self._qpos, self._joint_pos, self._joint_vel = self._qbuf[:n], self._jbuf[:n], self._vbuf[:n]
 
     @property
     def timesteps(self):
