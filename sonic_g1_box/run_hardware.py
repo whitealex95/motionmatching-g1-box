@@ -154,6 +154,11 @@ class DeployLink:
         # same IDLE state the node seeds on entering planner mode
         self.planner_command(0, np.zeros(3), (1.0, 0.0, 0.0))
 
+    def arm_tau(self, tau):
+        """Palm-force arm torques (14, N*m, arm joints 15..28 in MuJoCo order) on the node's
+        arm_tau topic: the node adds tau / kp to SONIC's arm targets (no torque command)."""
+        self.sock.send(pack_message('arm_tau', {'tau': np.asarray(tau, dtype=np.float32)}, version=1))
+
     def pose(self, stream, first, last):
         sl = slice(first, last + 1)
         self.sock.send(pack_message('pose', {

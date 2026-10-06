@@ -16,8 +16,22 @@ those play open loop from the committed pose). After m's pick the grip is
 judged once from what the server still sees on the floor at the pick spot:
 lost means stand still, no second try (b's pick is not judged).
 
-    python sonic_g1_box/run_slam.py                       # terminal keys
+    python sonic_g1_box/run_slam.py                       # window
+    python sonic_g1_box/run_slam.py --terminal            # terminal keys, no window
     python sonic_g1_box/run_slam.py --headless 240 --auto-start --start-after-anchor
+
+The window (live.mm_driver's UI 2, with the box): the measured robot at its SLAM
+pelvis pose, the stick figure the reference the matcher streams (gray idle, blue
+planner, orange POSE), the box where the reference has it (faint until x fixes
+it), the objects the map server reports (amber: the one x would take), and with T
+the command trajectory and m's route and stance.
+
+Window keys:
+  ]  start (planner mode, the robot stands)    P  planner <-> POSE
+  X  fix the box from the map server           B  pick right here (no box pose needed), or place
+  M  walk over to the fixed box + pick (M again cancels the walk)
+  W A S D  move, in POSE only (heading frame; F: camera frame)   arrows  face   Shift  run
+  T  gizmos    Enter  re-send the mode command    O  stop (damping, final)    Esc  quit
 
 Terminal keys (type the letter, then Enter):
   ]  start (planner mode, the robot stands)    p  planner <-> POSE
@@ -55,7 +69,7 @@ from mm_g1 import config as C
 from mm_g1 import quat
 from mm_g1.features import yaw_quat
 from mm_g1.states import State
-from mm_stream import MMMotion, POLICY_FPS
+from mm_stream import MMMotion, POLICY_FPS, fill_speeds, fit_rows
 import ref_modes as RM
 from run_hardware import (DeployLink, RobotState, build_matcher, MODE_IDLE, MODE_PLANNER, MODE_POSE,
                           MODE_STOPPED)
@@ -88,11 +102,17 @@ class SqueezedMotion(MMMotion):
         self.center_hands = center_hands
         self.center_roll = 0.0                 # both shoulder rolls, from the box's lateral offset at the pick entry
         self._last_state = None
+        self._sbuf = self._sjbuf = self._svbuf = None
+        self._s_built = 0                      # frames whose biased rows are up to date
+        self._held_after = []                  # held_arms after each frame: where a later pass resumes
+        self._redo_from = None
         super().__init__(matcher, commander)
+
+    REBIAS_TAIL = 1000                     # frames a centre-roll change re-biases: all that can still be sent or drawn
 
     def _step_matcher(self):
         m = self.matcher
-        before = m.state
+        before, roll = m.state, self.center_roll
         super()._step_matcher()
         if self.center_hands and m.state is State.PICK and before is not State.PICK and m.pick_at_stance:
             # the robot stops beside the stance, not on it: the box's lateral offset from the
@@ -105,16 +125,34 @@ class SqueezedMotion(MMMotion):
                   f'shoulder rolls {self.center_roll:+.2f} rad to centre the hands', flush=True)
         elif m.state in (State.LOCOMOTION, State.MOVE_TO_PICK):
             self.center_roll = 0.0
+        if self.center_roll != roll:           # the roll applies to every ride frame, not only the new ones
+            self._redo_from = max(0, len(self._frames) - self.REBIAS_TAIL)
 
     def _rebuild(self):
+        """The biases, from the first frame that changed on (the base class's appends and
+        truncates, or the tail a centre-roll change asks for). The hold state is
+        sequential, so a pass resumes from the state the previous one left after its
+        last kept frame."""
         super()._rebuild()
-        sq, wq, op, sp, eb = self.bias
-        if not self._meta or not (any(self.bias) or self.hold_arms):
+        n = len(self._frames)
+        if not (any(self.bias) or self.hold_arms):
+            self.sent_qpos = self._qpos            # the frames the stream carries (the window draws them)
             return
-        q = self._qpos.copy()
-        prev_state = None
+        lo = min(self._s_built, self._changed_from, n)
+        if self._redo_from is not None:
+            lo, self._redo_from = min(lo, self._redo_from), None
+        width = self._qbuf.shape[1]
+        self._sbuf = q = fit_rows(self._sbuf, n, width)
+        self._sjbuf = fit_rows(self._sjbuf, n, self._jbuf.shape[1])
+        self._svbuf = fit_rows(self._svbuf, n, self._jbuf.shape[1])
+        del self._held_after[lo:]
+        q[lo:n] = self._qbuf[lo:n]
+        sq, wq, op, sp, eb = self.bias
         cr = self.center_roll
-        for i, (_, _, state, held, (lc, rc)) in enumerate(self._meta[:len(q)]):
+        held_arms = self._held_after[lo - 1] if lo > 0 else None
+        prev_state = self._meta[lo - 1][2] if lo > 0 else None
+        for i in range(lo, n):
+            _, _, state, held, (lc, rc) = self._meta[i]
             if cr and (state in (State.PICK, State.PLACE) or (state is State.CARRY and held)):
                 q[i, 7 + L_SHOULDER_ROLL] += cr      # both arms toward the box (+: left)
                 q[i, 7 + R_SHOULDER_ROLL] += cr
@@ -122,15 +160,15 @@ class SqueezedMotion(MMMotion):
                 # the single SceneBot motion: after its pick the carry search would swap
                 # in other clips' arms and the box drops, so the arms stay where the pick
                 # left them until the reverse clip (the place) takes over
-                if state is State.CARRY and prev_state is State.PICK and self.held_arms is None:
+                if state is State.CARRY and prev_state is State.PICK and held_arms is None:
                     # the waist and both arms of the pick's last frame: the carry frames' torso
                     # moved the hands off the box once the arms alone were held (the pelvis
                     # orientation stays the carry frames': frozen, the robot walked off)
-                    self.held_arms = q[i - 1, UPPER].copy()
-                if state is State.CARRY and self.held_arms is not None:
-                    q[i, UPPER] = self.held_arms
+                    held_arms = q[i - 1, UPPER].copy()
+                if state is State.CARRY and held_arms is not None:
+                    q[i, UPPER] = held_arms
                 elif state is not State.CARRY:
-                    self.held_arms = None if state is not State.PICK else self.held_arms
+                    held_arms = None if state is not State.PICK else held_arms
                 prev_state = state
             if state in (State.PICK, State.PLACE):
                 # the pelvis ends some 20 cm behind the clip's during the squat and the pose
@@ -149,12 +187,64 @@ class SqueezedMotion(MMMotion):
             elif state in (State.PICK, State.PLACE) and not held:
                 q[i, 7 + L_SHOULDER_ROLL] += op
                 q[i, 7 + R_SHOULDER_ROLL] -= op
+            self._held_after.append(held_arms)
+        self.held_arms = held_arms
         from sonic_tracking import params as P
-        angles = q[:, 7:36][:, P.MUJOCO_TO_ISAACLAB]
-        speeds = np.zeros_like(angles)
-        if len(angles) > 1:
-            speeds[1:] = (angles[1:] - angles[:-1]) * POLICY_FPS
-        self._joint_pos, self._joint_vel = angles, speeds
+        self._sjbuf[lo:n] = q[lo:n, 7:36][:, P.MUJOCO_TO_ISAACLAB]
+        fill_speeds(self._svbuf, self._sjbuf, lo, n)
+        self._s_built = n
+        self.sent_qpos = q[:n]                     # the frames the stream carries (the window draws them)
+        self._joint_pos, self._joint_vel = self._sjbuf[:n], self._svbuf[:n]
+
+
+class PalmForce:
+    """--palm-force: while a hand's contact label is on at the frame the robot plays (the
+    pick from its touch, the whole hold, the put-down until its release), that palm is
+    pressed toward the midpoint between the palms with F newtons through its arm's
+    Jacobian, tau = J^T f, at the robot's MEASURED joints (g1_debug). The torques go to
+    the node on the arm_tau topic, which adds tau / kp to SONIC's arm targets with its
+    own final gains. The midpoint needs no box pose: the palms press toward each other,
+    on the box's sides. The palm is the sim's pad point on each wrist yaw link
+    (run_grasp.py --palm-target mid, the same force in the box repo's sim)."""
+
+    PALM = np.array([0.10, 0.007, 0.0])        # on the wrist yaw link; y mirrored for the right hand
+    RAMP_S = 0.15                              # s for a hand's force to come in or go out
+    TAU_MAX = 20.0                             # N*m per joint
+
+    def __init__(self, force):
+        import mujoco
+        self.mj = mujoco
+        self.force = float(force)
+        m = self.model = mujoco.MjModel.from_xml_path(C.SCENE_BOX_SCENEBOT_XML if C.SCENEBOT_PICK else C.SCENE_BOX_XML)
+        self.data = mujoco.MjData(m)
+        self.wrist = [m.body(f'{side}_wrist_yaw_link').id for side in ('left', 'right')]
+        # the arm joints 15..28 of qpos[7:36] (MuJoCo order) and their dofs
+        arm = sorted((m.jnt_qposadr[j], m.jnt_dofadr[j]) for j in range(m.njnt)
+                     if ARMS.start <= m.jnt_qposadr[j] < ARMS.stop)
+        self.dof = [d for _, d in arm]
+        self.jacp = np.zeros((3, m.nv))
+
+    def torques(self, body_q, ramp):
+        """(14,) arm torques at the measured joints body_q (29, MuJoCo order); ramp (2,)
+        scales each hand's force (0..1). The base pose does not matter: J and f turn together."""
+        mj, m, d = self.mj, self.model, self.data
+        d.qpos[:] = m.qpos0
+        d.qpos[7:36] = body_q
+        mj.mj_kinematics(m, d)
+        mj.mj_comPos(m, d)
+        palms = [d.xpos[b] + d.xmat[b].reshape(3, 3) @ (self.PALM * [1.0, sign, 1.0])
+                 for b, sign in zip(self.wrist, (1.0, -1.0))]
+        mid = 0.5 * (palms[0] + palms[1])
+        tau = np.zeros(14)
+        for h in range(2):
+            n = mid - palms[h]
+            L = float(np.linalg.norm(n))
+            if ramp[h] <= 0.0 or L < 1e-6:
+                continue
+            mj.mj_jac(m, d, self.jacp, None, palms[h], self.wrist[h])
+            arm = slice(7 * h, 7 * h + 7)
+            tau[arm] = self.jacp[:, self.dof[arm]].T @ ((ramp[h] * self.force / L) * n)
+        return np.clip(tau, -self.TAU_MAX, self.TAU_MAX)
 
 
 def wrap(a):
@@ -175,8 +265,10 @@ def rot2(v, a):
 class MapLink:
     """REQ client of live.server (REP 5591); every call returns None instead of blocking."""
 
-    def __init__(self, endpoint, timeout_ms=60):
+    def __init__(self, endpoint, timeout_ms=60, retry_s=0.0):
         self.endpoint, self.timeout_ms = endpoint, timeout_ms
+        self.retry_s = retry_s                 # after a request that got no answer, ask again only this much later
+        self._down_until = 0.0
         self._open()
 
     def _open(self):
@@ -187,6 +279,8 @@ class MapLink:
         self.sock.connect(self.endpoint)
 
     def request(self, q):
+        if self.retry_s and time.monotonic() < self._down_until:
+            return None
         try:
             self.sock.send(msgpack.packb(q, use_bin_type=True))
             r = msgpack.unpackb(self.sock.recv(), raw=False)
@@ -194,6 +288,7 @@ class MapLink:
         except zmq.ZMQError:
             self.sock.close(0)
             self._open()
+            self._down_until = time.monotonic() + self.retry_s
             return None
 
 
@@ -280,9 +375,13 @@ class SlamBoxBridge:
         self.box = {'fixed': False, 'source': None, 'size': None, 'detected_yaw': None}
         self.lost = False
         self.grip = None                                # (t_start, sightings) while the grip is judged
+        self.grip_result = None                         # 'held', 'lost', or 'not checked' (b's pick)
         self.phase = 'idle'
-        self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0}
+        self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0, 'arm_tau': None}
         self.walking = False
+        self.palm = PalmForce(args.palm_force) if args.palm_force > 0 else None
+        self.palm_ramp = [0.0, 0.0]
+        self.palm_tau = np.zeros(14)
 
     # -- the map server ----------------------------------------------------------
     def slam_pose(self):
@@ -330,13 +429,19 @@ class SlamBoxBridge:
         m.boxPos = np.array([c[0], c[1], C.BOX_REST_Z])
         m.boxRot = quat.mul(yaw_quat(yaw - yaw_of(m.box_spawn_rot)), m.box_spawn_rot)
         self.box.update(fixed=True, source=str(o.get('language_label') or 'object'), size=size,
-                        detected_yaw=yaw, track_id=o.get('track_id'), bottom=float(c[2] - 0.5 * size[2]))
+                        xy=[float(c[0]), float(c[1])], detected_yaw=yaw, track_id=o.get('track_id'),
+                        bottom=float(c[2] - 0.5 * size[2]))
         lib_size = [2.0 * v for v in C.BOX_HALF]
         note = '' if max(abs(a - b) for a, b in zip(sorted(size), sorted(lib_size))) < 0.1 else \
             f' (the motion library is baked for a {lib_size[0]:.2f} x {lib_size[1]:.2f} x {lib_size[2]:.2f} m box)'
         print(f'[slam-box] box fixed at ({c[0]:.2f}, {c[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg, '
               f'size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, from {self.box["source"]}{note}', flush=True)
         return True
+
+    def request_fix(self):
+        """x: fix the box, or say why not."""
+        if not self.fix_box():
+            print('[slam-box] no object near the belief: is Boxer running, is the map anchored?', flush=True)
 
     # -- modes -------------------------------------------------------------------
     def start(self):
@@ -468,8 +573,28 @@ class SlamBoxBridge:
             if self.mode != MODE_POSE:
                 self.slam_pose()
             self._publish_state()
+        if self.palm is not None and (self.last['arm_tau'] is None or now - self.last['arm_tau'] >= 0.02):
+            self._send_palm_force(now)
         self._judge_grip(now)
         return newest
+
+    def _send_palm_force(self, now):
+        """--palm-force at 50 Hz: each hand's force ramps in while its contact label is on at
+        the frame the robot plays (POSE only, not once the box is lost), and the torques at
+        the measured joints go to the node (zeros while off; none at all without the flag)."""
+        dt = 0.0 if self.last['arm_tau'] is None else now - self.last['arm_tau']
+        self.last['arm_tau'] = now
+        cur = max(0, min(self.cur_frame, self.motion.timesteps - 1))
+        labels = self.motion.meta_at(cur)[4]
+        on = self.mode == MODE_POSE and not self.lost
+        step = dt / PalmForce.RAMP_S
+        for h in range(2):
+            r = self.palm_ramp[h]
+            self.palm_ramp[h] = min(1.0, r + step) if on and labels[h] else max(0.0, r - step)
+        state = self.robot.get()
+        self.palm_tau = (np.zeros(14) if state is None or not any(self.palm_ramp)
+                         else self.palm.torques(state[1], self.palm_ramp))
+        self.link.arm_tau(self.palm_tau)
 
     def _judge_grip(self, now):
         """Once, after m's pick: an object on the floor within 1 m of the robot for most
@@ -478,7 +603,7 @@ class SlamBoxBridge:
         if self.grip is None:
             if m.state is State.CARRY and not m.pick_at_stance and not getattr(self, 'grip_done', False):
                 # b's pick plays without the box pose, so it is not judged either: b puts it down
-                self.grip_done = True
+                self.grip_done, self.grip_result = True, 'not checked'
                 print('[slam-box] picked right here: no grip check (b puts it down)', flush=True)
                 return
             if m.state is State.CARRY and m.box_locked == 0 and not getattr(self, 'grip_done', False):
@@ -495,6 +620,7 @@ class SlamBoxBridge:
         if now - t_start > self.args.grip_check_s:
             self.grip_done, self.grip = True, None
             self.lost = asked >= 2 and seen >= 0.5 * asked
+            self.grip_result = 'lost' if self.lost else 'held'
             if self.lost:
                 self.walk(False)
                 print(f'[slam-box] grip check: an object stayed on the floor at the pick spot '
@@ -655,8 +781,7 @@ def run_terminal(args):
                 elif k == 'p':
                     br.toggle_pose()
                 elif k == 'x':
-                    if not br.fix_box():
-                        print('[slam-box] no object near the belief: is Boxer running, is the map anchored?', flush=True)
+                    br.request_fix()
                 elif k == 'b':
                     br.box_action()
                 elif k == 'm':
@@ -674,6 +799,277 @@ def run_terminal(args):
         pass
     finally:
         br.close()
+
+
+FOLLOW_S = 0.3                  # s: the window camera eases toward the robot (SLAM jitter, head bob)
+CONTACT_RGBA = np.array([0.25, 0.9, 0.35, 1.0])
+
+
+def run_window(args):
+    import glfw
+    import mujoco
+    from mm_g1.viewer import InteractiveViewer, draw_gizmos
+    from run_hardware import GHOST_RGBA
+
+    br = SlamBoxBridge(args)
+    br._pick_spot = br.matcher.boxPos[0:2].copy()
+    # no map server (or a dead one): each unanswered request blocks the window for its 60 ms
+    # timeout, some 15 a second; back off 1 s after one instead
+    br.map.retry_s = 1.0
+    model = mujoco.MjModel.from_xml_path(C.SCENE_BOX_SCENEBOT_XML if C.SCENEBOT_PICK else C.SCENE_BOX_XML)
+    if C.SCENEBOT_PICK:
+        model.geom('box_geom').size[:] = C.BOX_HALF
+    data = mujoco.MjData(model)
+    eye3 = np.eye(3).ravel()
+    keys_l = ']\nP\nX\nB\nM\nW A S D\nArrows\nShift\nF\nT\nEnter\nO\nEsc'
+    keys_r = ('start control (planner mode, the robot stands)\ntoggle planner <-> POSE\n'
+              'fix the box from the map server (for M)\npick right here / put down while holding\n'
+              'walk over to the fixed box + pick (M again cancels)\nmove (POSE only)\nface\nhold to run\n'
+              'WASD frame heading/camera\ntoggle gizmos\nre-send the mode command\nstop -> damping (final)\nquit')
+
+    class Window(InteractiveViewer):
+        def __init__(self):
+            super().__init__(model, data, br.matcher, width=1400, height=900,
+                             title='G1 box bridge (SLAM) -- ] start, P mode, X fix, B / M pick, O stop')
+            self.ctx.free()                      # the base class uses fontscale 150
+            self.ctx = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_100)
+            self.cam.azimuth, self.cam.elevation, self.cam.distance = 150.0, -25.0, 4.5
+            self.heading_frame = args.frame == 'heading'
+            self.gdata = mujoco.MjData(model)    # the stick figure: FK only
+            self.ghost_bodies = [b for b in range(1, model.nbody)
+                                 if 'box' not in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) or '')]
+            feet = {model.body(n).id for n in ('left_ankle_roll_link', 'right_ankle_roll_link')}
+            self.foot_geoms = [g for g in range(model.ngeom) if model.geom_bodyid[g] in feet]
+            self.corners = np.array([[a, b, c] for a in (-1, 1) for b in (-1, 1) for c in (-1, 1)], float)
+            self.slam = {'xy': None, 'yaw': 0.0, 't': 0.0}
+            self.follow = {'xy': None, 't': 0.0}
+            self.objs = {'list': [], 't': 0.0, 'near': None}
+            self.actions = {glfw.KEY_RIGHT_BRACKET: br.start, glfw.KEY_P: br.toggle_pose, glfw.KEY_O: br.stop,
+                            glfw.KEY_X: br.request_fix, glfw.KEY_B: br.box_action, glfw.KEY_M: br.move_pick,
+                            glfw.KEY_ENTER: self._resend, glfw.KEY_F: self._toggle_frame}
+
+        def _on_key(self, window, key, scancode, action, mods):
+            if action == glfw.PRESS and key in self.actions:
+                self.actions[key]()
+            elif key != glfw.KEY_SPACE:          # the base class's Space resets the matcher: no reset here
+                super()._on_key(window, key, scancode, action, mods)
+
+        def _resend(self):
+            if br.mode in (MODE_PLANNER, MODE_POSE):
+                br.link.command(planner=br.mode == MODE_PLANNER)
+                print(f'[slam-box] mode command re-sent (planner={int(br.mode == MODE_PLANNER)})', flush=True)
+
+        def _toggle_frame(self):
+            self.heading_frame = not self.heading_frame
+            print(f'[slam-box] WASD frame -> {"heading" if self.heading_frame else "camera"}', flush=True)
+
+        def _stick(self):
+            """The held keys as the matcher's command, in POSE only: in idle and planner mode
+            the robot stands and the reference is not snapped to it, so the keys would walk
+            and turn the reference away from the robot until POSE. Nothing once the box is lost."""
+            self._speed = 0.0
+            if br.mode != MODE_POSE or br.lost:
+                return np.zeros(3), np.zeros(3)
+            saved = self.cam.azimuth
+            if self.heading_frame:
+                self.cam.azimuth = math.degrees(br.matcher.rootYaw)
+            vel, face = self._command()
+            self.cam.azimuth = saved
+            n = float(np.linalg.norm(vel))
+            if n > 1e-6 and br.matcher.state is State.CARRY:
+                vel = vel / n * args.walk_speed          # the carry data's full stick
+            self._speed = float(np.linalg.norm(vel))
+            return vel, face
+
+        def _geom(self, kind, size, pos, rgba, mat=eye3):
+            if self.scene.ngeom >= self.scene.maxgeom:
+                return None
+            g = self.scene.geoms[self.scene.ngeom]
+            mujoco.mjv_initGeom(g, kind, np.asarray(size, float), np.asarray(pos, float),
+                                np.asarray(mat, float), np.asarray(rgba, np.float32))
+            self.scene.ngeom += 1
+            return g
+
+        def _pose_robot(self):
+            """The measured robot at its SLAM pelvis pose, never at the matcher's root (that
+            one runs ahead of the robot). The map server is asked at SLAM's 30 Hz: the bridge
+            refreshes its pose once per re-plan in POSE. Hidden without g1_debug or a pose."""
+            now = time.monotonic()
+            if now >= self.slam['t']:
+                r = br.map.request({'op': 'pose'})
+                p = None if r is None else r.get('pose')
+                self.slam['t'] = now + 1.0 / 30
+                if p is not None and p.get('age_s', 9.0) < 0.5:
+                    self.slam.update(xy=np.asarray(p['root_xy'], float), yaw=float(p['root_yaw']))
+            data.qpos[0:7] = (0.0, 0.0, -5.0, 1.0, 0.0, 0.0, 0.0)
+            state = br.robot.get()
+            if state is None or self.slam['xy'] is None:
+                return False
+            bq, q = state
+            data.qpos[3:7] = quat.mul(yaw_quat(self.slam['yaw'] - yaw_of(bq)), bq)
+            data.qpos[7:36] = q
+            data.qpos[0:3] = (self.slam['xy'][0], self.slam['xy'][1], 1.0)
+            mujoco.mj_kinematics(model, data)
+            low = min(float((data.geom_xpos[g] + (model.geom_aabb[g, :3] + self.corners * model.geom_aabb[g, 3:])
+                             @ data.geom_xmat[g].reshape(3, 3).T)[:, 2].min()) for g in self.foot_geoms)
+            data.qpos[2] -= low - 0.002
+            return True
+
+        def _tint_box(self, cur):
+            """Green while the played frame's hand labels are on; faint while the box pose
+            is the belief (not fixed, not held)."""
+            if self._box_gid is None:
+                return
+            _, _, _, held, (lc, rc) = br.motion.meta_at(cur)
+            rgba = self._box_rgba.copy()
+            if lc or rc:
+                rgba = CONTACT_RGBA.copy()
+            elif not br.box['fixed'] and not held:
+                rgba[3] = 0.3
+            model.geom_rgba[self._box_gid] = rgba
+
+        def _draw_objects(self):
+            """What the map server reports (Boxer's boxes, or the sim's truth), as in UI 1's
+            Boxer objects card: the one x would take in amber, the others blue, and until
+            the fix the disc x looks in (--box-radius round the belief)."""
+            now = time.monotonic()
+            if now - self.objs['t'] > 0.5:
+                self.objs['t'] = now
+                got = br.objects()
+                if got is not None:
+                    self.objs['list'] = got
+            belief = np.array([C.BOX_SPAWN_FWD, C.BOX_SPAWN_LAT])
+            pick = None
+            if not br.box['fixed']:
+                pick = pick_object(self.objs['list'], belief, args.box_radius)
+                self._geom(mujoco.mjtGeom.mjGEOM_CYLINDER, (args.box_radius, 0.003, 0.0),
+                           (belief[0], belief[1], 0.003), (0.95, 0.75, 0.2, 0.12))
+            self.objs['near'] = None if pick is None else \
+                float(np.hypot(*(np.asarray(pick['bbox_center_world'][:2], float) - belief)))
+            for o in self.objs['list']:
+                T = np.asarray(o['T_world_object'], float).reshape(4, 4)
+                rgba = [0.95, 0.7, 0.15, 0.5] if o is pick else [0.3, 0.55, 0.95, 0.35]
+                if o.get('track_state', 'active') == 'inactive':
+                    rgba[3] = 0.12
+                self._geom(mujoco.mjtGeom.mjGEOM_BOX, 0.5 * np.asarray(o['bbox_size_xyz'], float),
+                           o['bbox_center_world'], rgba, T[:3, :3].ravel())
+
+        def _draw_reference(self, cur):
+            g = self.gdata
+            g.qpos[0:36] = br.motion.sent_qpos[cur][0:36]     # with the squeeze and pitch biases, as streamed
+            mujoco.mj_kinematics(model, g)
+            for b in self.ghost_bodies:
+                pa = model.body_parentid[b]
+                a, c = g.xpos[pa], g.xpos[b]
+                if pa == 0 or np.linalg.norm(c - a) < 1e-6:
+                    continue
+                gm = self._geom(mujoco.mjtGeom.mjGEOM_CAPSULE, np.zeros(3), np.zeros(3), GHOST_RGBA[br.mode])
+                if gm is not None:
+                    mujoco.mjv_connector(gm, mujoco.mjtGeom.mjGEOM_CAPSULE, 0.025,
+                                         np.asarray(a, float), np.asarray(c, float))
+
+        def _draw_gizmos(self, q):
+            # the command trajectory is drawn at the matcher's root, which runs ahead of the
+            # played frame: shift it (two geoms a point) onto the stick figure; m's route and
+            # stance stay where they are, in the map frame
+            n0 = self.scene.ngeom
+            draw_gizmos(self.scene, br.matcher)
+            dxy = q[0:2] - br.matcher.rootPos[0:2]
+            for i in range(n0, min(n0 + 2 * len(br.matcher.Tpos), self.scene.ngeom)):
+                self.scene.geoms[i].pos[0] += dxy[0]
+                self.scene.geoms[i].pos[1] += dxy[1]
+
+        def _status(self, cur, live):
+            m, box = br.matcher, br.box
+            _, _, state_now, held_now, _ = br.motion.meta_at(cur)
+            mode = {MODE_IDLE: 'IDLE       next: ] (planner mode, the robot stands)',
+                    MODE_PLANNER: 'PLANNER    the robot stands; next: P -> POSE',
+                    MODE_POSE: 'POSE       the box matcher drives the robot',
+                    MODE_STOPPED: 'STOPPED    damping; restart deploy.sh to resume'}[br.mode]
+            task = f'{state_now.name}{"  (holding)" if held_now else ""}   the matcher: {m.state.name}'
+            if self._speed > 0:
+                task += f'   {self._speed:.2f} m/s'
+            if box['fixed'] and box.get('xy') is not None:
+                sx, sy, sz = box['size']
+                boxl = (f"fixed at ({box['xy'][0]:+.2f}, {box['xy'][1]:+.2f}) m, "
+                        f"yaw {math.degrees(box['detected_yaw']):+.0f} deg, {sx:.2f} x {sy:.2f} x {sz:.2f} m, "
+                        f"from {box['source']}")
+            elif box['fixed']:
+                boxl = f"the belief, {C.BOX_SPAWN_FWD:.2f} m ahead ({box['source']})"
+            else:
+                boxl = (f'not fixed: the belief {C.BOX_SPAWN_FWD:.2f} m ahead, {C.BOX_SPAWN_LAT:+.2f} m left '
+                        f'(X fixes it, for M)')
+            n = len(self.objs['list'])
+            objl = (f'{n} reported' + ('' if box['fixed'] else
+                    (f', {self.objs["near"]:.2f} m from the belief' if self.objs['near'] is not None
+                     else f', none within {args.box_radius:.1f} m of the belief')))
+            grip = {'lost': 'LOST: standing, B and M ignored', 'held': 'held (the check saw no box left on the floor)',
+                    'not checked': 'not checked (B picked right here)'}.get(br.grip_result,
+                                                                          'checking...' if br.grip else '-')
+            loc = br.slam
+            locl = (f"({loc['root_xy'][0]:+.2f}, {loc['root_xy'][1]:+.2f}) "
+                    f"{math.degrees(loc['root_yaw']):+.0f} deg  [{loc.get('link') or '?'}]" if loc else 'NOT LOCALIZED')
+            sync = ('-' if br.sync_err is None else
+                    f'{br.sync_err:.2f} m, heading {br.heading_err:+.1f} deg (before each snap)'
+                    + (f', {br.snaps_skipped} jumps not snapped' if br.snaps_skipped else ''))
+            robot = 'LIVE' if live else ('no g1_debug' if br.robot.get() is None else 'NOT LOCALIZED')
+            palm = ('off (--palm-force N)' if br.palm is None else
+                    f'{br.palm.force:.0f} N   left {br.palm_ramp[0]:.0%}  right {br.palm_ramp[1]:.0%}   '
+                    f'max {np.abs(br.palm_tau).max():.1f} Nm, sent as q_target + tau / kp')
+            return ('mode\ntask\nbox\nobjects\ngrip\npalm force\nrobot (SLAM)\nref vs robot\nrobot state\nlink',
+                    f'{mode}\n{task}\n{boxl}\n{objl}\n{grip}\n{palm}\n{locl}\n{sync}\n{robot}\n{br.link.endpoint}')
+
+        def run(self, max_frames=None):
+            frames = 0
+            try:
+                while not glfw.window_should_close(self.window):
+                    if max_frames is not None and frames >= max_frames:
+                        break
+                    frames += 1
+                    br.cmd_vel, br.cmd_face = self._stick()
+                    br.tick(time.monotonic())
+                    cur = max(0, min(br.cur_frame, br.motion.timesteps - 1))
+                    q = br.motion.qpos[cur]
+                    live = self._pose_robot()
+                    data.qpos[36:43] = q[36:43]          # the box where the played frame has it
+                    self._tint_box(cur)
+                    mujoco.mj_forward(model, data)
+                    # follow the robot (the reference without it), eased so SLAM jitter does not shake the view
+                    target, t = (self.slam['xy'] if live else q[0:2]), time.monotonic()
+                    if self.follow['xy'] is None:
+                        self.follow['xy'] = np.array(target, float)
+                    else:
+                        k = 1.0 - math.exp(-(t - self.follow['t']) / FOLLOW_S)
+                        self.follow['xy'] += k * (target - self.follow['xy'])
+                    self.follow['t'] = t
+                    self.cam.lookat[0], self.cam.lookat[1] = float(self.follow['xy'][0]), float(self.follow['xy'][1])
+
+                    w, h = glfw.get_framebuffer_size(self.window)
+                    vp = mujoco.MjrRect(0, 0, w, h)
+                    mujoco.mjv_updateScene(model, data, self.opt, None, self.cam, mujoco.mjtCatBit.mjCAT_ALL,
+                                           self.scene)
+                    self._draw_objects()
+                    self._draw_reference(cur)
+                    if self.show_traj:
+                        self._draw_gizmos(q)
+                    mujoco.mjr_render(vp, self.scene, self.ctx)
+                    labels, values = self._status(cur, live)
+                    mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_TOPLEFT, vp,
+                                       labels, values, self.ctx)
+                    mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT, vp,
+                                       keys_l, keys_r, self.ctx)
+                    if br.lost:
+                        mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_BIG, mujoco.mjtGridPos.mjGRID_TOP, vp,
+                                           'BOX LOST: standing still', None, self.ctx)
+                    glfw.swap_buffers(self.window)
+                    glfw.poll_events()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                br.close()
+                glfw.terminate()
+
+    Window().run(max_frames=args.smoke_frames)
 
 
 def main():
@@ -701,9 +1097,14 @@ def main():
     ap.add_argument('--grip-check-s', type=float, default=1.5)
     ap.add_argument('--grip-check-delay', type=float, default=4.0,
                     help="s after the pick before the grip check: Boxer's track of the box on the floor outlives the lift")
-    ap.add_argument('--shoulder-squeeze', type=float, default=0.45,
+    ap.add_argument('--shoulder-squeeze', type=float, default=0.0,
                     help='rad of inward shoulder roll in the reference while a hand contact label is on')
-    ap.add_argument('--wrist-squeeze', type=float, default=0.30, help='rad of inward wrist yaw, the same way')
+    ap.add_argument('--wrist-squeeze', type=float, default=0.0, help='rad of inward wrist yaw, the same way')
+    ap.add_argument('--palm-force', type=float, default=0.0, metavar='N',
+                    help='newtons pressing each palm toward the other while its contact label is on, through the '
+                         "arm's Jacobian (tau = J^T f at the measured joints), sent to the node on arm_tau, which adds "
+                         "tau / kp to SONIC's arm targets. Off by default; with a box add --palm-force 40 (the sim: "
+                         '40 N lifted, held and placed the SceneBot box, 25 N tipped it, 15 N dropped it)')
     ap.add_argument('--fwd-tol', type=float, default=None, metavar='M',
                     help='the pick fires only with the root this close to the stance along the approach rail '
                          '(short of it the servo keeps creeping). Off by default: at 0.06 the robot hovered round '
@@ -744,11 +1145,17 @@ def main():
                     help='headless: s walking forward with the box before the place (default 0: the single SceneBot '
                          'motion, pick then hold then place, which holds the box; the carry search drops it)')
     ap.add_argument('--auto-stop', action='store_true')
+    ap.add_argument('--terminal', action='store_true', help='terminal keys (letter + Enter) instead of the window')
+    ap.add_argument('--frame', choices=('heading', 'camera'), default='heading',
+                    help="window: WASD relative to the reference's heading or to the view (F toggles)")
+    ap.add_argument('--smoke-frames', type=int, default=None, help='(testing) close the window after N frames')
     args = ap.parse_args()
     if args.headless is not None:
         run_headless(args)
-    else:
+    elif args.terminal:
         run_terminal(args)
+    else:
+        run_window(args)
 
 
 if __name__ == '__main__':
