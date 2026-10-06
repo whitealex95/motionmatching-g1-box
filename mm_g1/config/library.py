@@ -78,14 +78,15 @@ BOX_ROT_FOLDS = 4
 # (clip 11 of assets/scenebot/clips.bin, frames 0..120 at 50 Hz). The demo plays it at
 # half speed forward for the pickup and at full speed backward for the put-down; both
 # playbacks are baked as-played into the library at FPS, with the demo's per-frame
-# contact labels (mm_g1/scenebot_pick.py). The OmniRetarget clips then contribute ONLY
+# contact labels (mm_g1/scenebot_pick.py). Here the put-down plays at half speed too, as
+# slow as the pickup. The OmniRetarget clips then contribute ONLY
 # their carry frames (their own pick/place phases are marked Phase.DISABLED).
 SCENEBOT_PICK = True
 SCENEBOT_CLIP = 11
 SCENEBOT_FRAMES = (0, 120)
 SCENEBOT_FPS = 50
 SCENEBOT_PICK_SPEED = 0.5      # the demo's pickupForwardStepScale
-SCENEBOT_PLACE_SPEED = 1.0     # reverse playback runs at full speed in the demo
+SCENEBOT_PLACE_SPEED = 0.5     # the demo plays the reverse at full speed (1.0); as slow as the pick here
 # The SceneBot box (0.3 x 0.2 x 0.3 m) is only 2-fold rotationally symmetric about
 # vertical, so the baked pick/drop is replicated at 0 and 180 deg of box yaw only.
 # (The approach heuristic aligns the stance to the live box yaw, so 2 folds suffice.)
@@ -95,9 +96,10 @@ SCENEBOT_ROT_FOLDS = 2
 # ONSET_DELAY delays the pick's touch (the drop starts already holding and
 # is untouched), and RELEASE_ADVANCE makes the drop let go earlier (the
 # pick ends still holding and is untouched). The vendored annotation itself
-# is never modified.
+# is never modified. RELEASE_ADVANCE scales with the drop's playback time, so
+# the release stays at the same point of the motion (1.0 s at full speed).
 CONTACT_ONSET_DELAY = 0.75
-CONTACT_RELEASE_ADVANCE = 1.0
+CONTACT_RELEASE_ADVANCE = 1.0 / SCENEBOT_PLACE_SPEED
 # Same idea for the OmniRetarget clips (proxy or sidecar labels), applied
 # after label resolution; NEGATIVE onset = contact starts EARLIER (preload
 # before the box moves). SceneBot's baked labels use the knobs above only.

@@ -146,17 +146,17 @@ def _bake(smp, frames):
 
 
 def build():
-    """The two baked playbacks: ('scenebot_pick', ...) at half speed forward and
-    ('scenebot_drop', ...) at full speed backward, both at C.FPS (30 Hz).
+    """The two baked playbacks: ('scenebot_pick', ...) forward at SCENEBOT_PICK_SPEED and
+    ('scenebot_drop', ...) backward at SCENEBOT_PLACE_SPEED, both at C.FPS (30 Hz).
 
     Returns a list of (name, qpos, box_pose, contact, attach, phase_code).
     """
     smp = _Sampler()
     F = smp.hi - smp.lo                                    # 120 clip frames
     step_pick = C.SCENEBOT_FPS * C.SCENEBOT_PICK_SPEED / C.FPS    # 5/6
-    step_drop = C.SCENEBOT_FPS * C.SCENEBOT_PLACE_SPEED / C.FPS   # 5/3
+    step_drop = C.SCENEBOT_FPS * C.SCENEBOT_PLACE_SPEED / C.FPS   # 5/6 at half speed
     fwd = np.arange(0.0, F + 1e-9, step_pick)               # (145,)
-    rev = np.arange(float(F), -1e-9, -step_drop)            # (73,) F..0
+    rev = np.arange(float(F), -1e-9, -step_drop)            # (145,) F..0 at half speed
     out = []
     for name, frames, code in (("scenebot_pick", fwd, Phase.PICK),
                                ("scenebot_drop", rev, Phase.PLACE)):
