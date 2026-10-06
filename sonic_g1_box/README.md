@@ -37,6 +37,21 @@ reaches ~0.36 m, the grip check catches it, immediate retry, no fall over
 60 s) -- tuning it, and trying the other SONIC checkpoints, is open work
 on this branch.
 
+`--pick-here` presses B instead of M: the box spawns on the pick clip's
+spot in front of the robot and the pick plays where the robot stands, as
+`run_slam.py`'s B does on the robot. `--palm-force N` (run_grasp.py) presses
+each labeled palm with N newtons through the arm's Jacobian, tau = J^T f, as
+an offset tau / kp on the PD target (`--palm-force-via torque`: as
+feedforward torque instead; the two runs come out identical);
+`--palm-target mid` presses the palms toward each other instead of toward
+the box's true centre, which a robot without box sensing can do. With
+`--pick-here --palm-target mid`, 40 N lifted, held 4 s at about 24 N per
+palm, and placed the box upright; 25 N held it but tipped it on the way down,
+15 N dropped it; with no box between the hands, 25 N closes the palms to
+9 cm apart (2026-10-06). On the robot,
+`run_slam.py --palm-force` does what `--palm-force-via target --palm-target mid`
+does here, in the deploy node (its `arm_tau` topic).
+
 `--sonic {release,low_latency,sonic_v1_1}` picks the SONIC checkpoint
 (default `release` = v1.0). The variants live in
 `assets/sonic/policy/<variant>/`; the two non-release decoders are ~150 MB

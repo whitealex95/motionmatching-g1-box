@@ -27,6 +27,8 @@ from sonic_tracking.policy import SonicPolicy
 from sonic_tracking.rotations import quat_rotate, quat_conjugate
 
 from mm_g1 import config as C
+from mm_g1 import quat
+from mm_g1.features import yaw_quat
 from mm_g1.states import State
 from mm_g1.data import load_library
 from mm_g1.controller import MotionMatcher
@@ -98,6 +100,9 @@ class Demo:
         d.qpos[2] = 0.80
         d.qpos[self.q_at] = q0[7:36]
         d.qpos[self.bq:self.bq + 7] = q0[36:43]
+        if args.pick_here:                   # after the warmup: the matcher's root has settled
+            self._box_at_pick_spot()
+            d.qpos[self.bq:self.bq + 7] = self.matcher.box_qpos()
         mujoco.mj_forward(self.model, d)
 
         self.policy = SonicPolicy(variant=args.sonic, device='cpu')
@@ -153,6 +158,17 @@ class Demo:
                 self.viewer.sync()
         self.policy.start_play()
         self.started = True
+
+    def _box_at_pick_spot(self):
+        """--pick-here: the box where the pick clip has it relative to the robot at
+        the pick entry (the recorded stance-to-box offset), so B's pick -- played
+        where the robot stands, whatever the box pose -- closes on it."""
+        m = self.matcher
+        c, s = np.cos(m.rootYaw), np.sin(m.rootYaw)
+        off = m.stance_box_off
+        m.boxPos = np.array([m.rootPos[0] + c * off[0] - s * off[1],
+                             m.rootPos[1] + s * off[0] + c * off[1], C.BOX_REST_Z])
+        m.boxRot = quat.mul(yaw_quat(m.rootYaw), m.box_spawn_rot)
 
     # SONIC never observes the reference's xy position, so the commander steers
     # by the PHYSICAL robot; the --ref-mode machinery keeps the reference root
@@ -210,7 +226,12 @@ class Demo:
         if st is State.MOVE_TO_PICK:
             return np.zeros(3), np.zeros(3)
         if not self.mm_placed:
-            mm.trigger_move_pick()
+            # --pick-here: B, the pick where the robot stands (the box was spawned on
+            # the clip's pick spot); again after a failed grip, like M
+            if self.args.pick_here:
+                mm.trigger_box()
+            else:
+                mm.trigger_move_pick()
         return np.zeros(3), np.zeros(3)
 
     def _check_grip(self, mm):
@@ -553,6 +574,9 @@ def build_argparser(video_name):
     ap.add_argument('--box-scale', type=float, default=1.0,
                     help='scale the physical box only (reference motion '
                          'unchanged)')
+    ap.add_argument('--pick-here', action='store_true',
+                    help='B instead of M: spawn the box on the pick clip\'s spot in front of the robot '
+                         'and pick right where the robot stands (no walk over)')
     ap.add_argument('--carry-seconds', type=float, default=3.0,
                     help='how long to hold the box before setting it down')
     ap.add_argument('--video', default=os.path.join(HERE, 'out', video_name))

@@ -7,6 +7,8 @@ on, --shoulder-squeeze presses the shoulder rolls in and --wrist-squeeze
 toes the wrist yaws in; while both are off during the PICK/PLACE ride,
 --shoulder-open swings the shoulder rolls out to clear the box.
 --arm-kp / --arm-kd scale the arm PD so the biases become real force.
+--palm-force presses each labeled palm toward the box centre through the
+arm's Jacobian (tau = J^T f), by default as a PD-target offset tau / kp.
 """
 import sys
 
@@ -38,8 +40,18 @@ class GraspDemo(Demo):
                             self.model.site('right_palm').id]
         self._arm_idx = [list(range(15, 22)), list(range(22, 29))]
         self._palm_ramp = [0.0, 0.0]
+        self._palm_tau = None
 
-    def _ctrl_extra(self, f):
+    def _palm_centre(self, f):
+        """Where the palms press: the physical box's centre (--palm-target box), or
+        the midpoint between the two palms (mid: they press toward each other, from
+        the robot's own joints alone, for a robot that does not see the box)."""
+        d = self.data
+        if self.args.palm_target == 'box':
+            return d.qpos[self.bq:self.bq + 3].copy()
+        return 0.5 * (d.site_xpos[self._palm_sites[0]] + d.site_xpos[self._palm_sites[1]])
+
+    def _palm_force_tau(self, f):
         """Jacobian squeeze: while a hand's label is on, press its palm toward
         the box centre with --palm-force newtons (tau = J^T f on that arm),
         ramped over 0.15 s so contact makes and releases without a step."""
@@ -49,7 +61,7 @@ class GraspDemo(Demo):
         import mujoco
         _, _, _, _, (lc, rc) = self.motion.meta_at(f)
         tau = np.zeros(29)
-        box_c = self.data.qpos[self.bq:self.bq + 3]
+        box_c = self._palm_centre(f)
         jacp = np.zeros((3, self.model.nv))
         for h, on in enumerate((lc, rc)):
             step = 0.02 / 0.15
@@ -68,6 +80,10 @@ class GraspDemo(Demo):
                 tau[j] += float(jacp[:, self.dq_at[j]] @ fvec)
         return tau
 
+    def _ctrl_extra(self, f):
+        """--palm-force-via torque: the palm force as feedforward torque on the PD."""
+        return self._palm_tau if self.args.palm_force_via == 'torque' else None
+
     def _adjust_target(self, target, f):
         _, _, state, _, (lc, rc) = self.motion.meta_at(f)
         target = target.copy()
@@ -79,6 +95,11 @@ class GraspDemo(Demo):
         elif state in (State.PICK, State.PLACE):  # opening: clear the box
             target[L_SHOULDER_ROLL] += self.args.shoulder_open
             target[R_SHOULDER_ROLL] -= self.args.shoulder_open
+        self._palm_tau = self._palm_force_tau(f)
+        if self._palm_tau is not None and self.args.palm_force_via == 'target':
+            # the same torque through the PD alone, for a robot that takes no torque
+            # command: kp (target + tau / kp - q) - kd dq = kp (target - q) - kd dq + tau
+            target += self._palm_tau / self.kps
         return target
 
 
@@ -96,6 +117,12 @@ def extra_args(ap):
     ap.add_argument('--palm-force', type=float, default=0.0,
                     help='Jacobian squeeze: newtons pressing each palm toward '
                          "the box centre while that hand's label is on")
+    ap.add_argument('--palm-force-via', choices=('target', 'torque'), default='target',
+                    help='target: as an offset tau / kp on the PD target (what a robot that takes '
+                         'no torque command can do); torque: as feedforward torque on the PD')
+    ap.add_argument('--palm-target', choices=('box', 'mid'), default='box',
+                    help="the point the palms press toward: the physical box's centre, or the "
+                         'midpoint between the palms (toward each other; no box sensing)')
     ap.add_argument('--wrist-squeeze', type=float, default=0.0,
                     help='inward wrist-yaw bias (rad), both hands, while '
                          'either label is on (toes the palms into the box)')
