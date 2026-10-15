@@ -1,5 +1,5 @@
 """The box task (pick, carry, place, with or without the walk over) on the real
-G1 with SLAM localization from motionmatching-g1-loco's live stack.
+G1 with SLAM localization from motionmatching-g1-deploy's live stack.
 
 The scenario: the box stands about 2 m in front of the start pose. SLAM is
 initialized and the map server anchors its frame at the start pose (that frame
@@ -20,7 +20,7 @@ lost means stand still, no second try (b's pick is not judged).
     python sonic_g1_box/run_slam.py --terminal            # terminal keys, no window
     python sonic_g1_box/run_slam.py --headless 240 --auto-start --start-after-anchor
 
-The window (live.mm_driver's UI 2, with the box): the measured robot at its SLAM
+The window (UI 2 of motionmatching-g1-loco's sonic_g1_loco/mm_driver.py, with the box): the measured robot at its SLAM
 pelvis pose, the stick figure the reference the matcher streams (gray idle, blue
 planner, orange POSE), the box where the reference has it (faint until x fixes
 it), the objects the map server reports (amber: the one x would take), and with T
@@ -57,14 +57,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
-LOCO = os.environ.get('MM_LOCO', os.path.join(os.path.dirname(ROOT), 'motionmatching-g1-loco'))
-sys.path.insert(0, LOCO)
+sys.path.insert(0, os.path.join(ROOT, 'tools'))   # sonic_tracking (this repo's copy, as run_hardware.py)
 
 import msgpack
 import numpy as np
 import zmq
 
-from ego_slam import wire
 from mm_g1 import config as C
 from mm_g1 import quat
 from mm_g1.features import yaw_quat
@@ -72,7 +70,7 @@ from mm_g1.states import State
 from mm_stream import MMMotion, POLICY_FPS, fill_speeds, fit_rows
 import ref_modes as RM
 from run_hardware import (DeployLink, RobotState, build_matcher, MODE_IDLE, MODE_PLANNER, MODE_POSE,
-                          MODE_STOPPED)
+                          MODE_STOPPED, BusPublisher, BUS_PUB)
 
 STATE_TOPIC = '/mm_driver/state'        # what UI 1 and the demo recorder read
 GRID_DIM = 17 * 11
@@ -361,7 +359,7 @@ class SlamBoxBridge:
         self.link = DeployLink(args.bind, args.port)
         self.robot = RobotState(args.robot_host, args.robot_port)
         self.map = MapLink(args.map_rep)
-        self.bus = wire.BusPublisher(args.bus_pub)
+        self.bus = BusPublisher(args.bus_pub)
         self.mode = MODE_IDLE
         self.t0 = None
         self.cur_frame = 0
@@ -1079,7 +1077,7 @@ def main():
     ap.add_argument('--robot-host', default='localhost')
     ap.add_argument('--robot-port', type=int, default=5557)
     ap.add_argument('--map-rep', default='tcp://127.0.0.1:5591', help="live.server's REP")
-    ap.add_argument('--bus-pub', default=wire.BUS_PUB)
+    ap.add_argument('--bus-pub', default=BUS_PUB)
     ap.add_argument('--lookahead', type=int, default=50, help='50 Hz frames the stream runs ahead')
     ap.add_argument('--replan-s', type=float, default=0.2, help='s between cuts that re-anchor the root to SLAM')
     ap.add_argument('--max-snap-jump', type=float, default=0.5,

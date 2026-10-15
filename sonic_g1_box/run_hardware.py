@@ -123,6 +123,32 @@ def pack_message(topic, arrays, version):
     return topic.encode() + header.ljust(HEADER_SIZE, b'\0') + b''.join(blobs)
 
 
+# --- the desktop's JSON bus (mirror of motionmatching-g1-deploy/ego_slam/wire.py) ---
+BUS_PUB = 'tcp://127.0.0.1:5581'
+
+
+class BusPublisher:
+    """PUB into the live stack's bus: topic bytes = the name without the leading '/',
+    '/' -> '.'; payload = compact JSON. Never blocks: a gone bus drops the message."""
+
+    def __init__(self, endpoint=BUS_PUB):
+        self.sock = zmq.Context.instance().socket(zmq.PUB)
+        self.sock.setsockopt(zmq.LINGER, 0)
+        self.sock.connect(endpoint)
+        time.sleep(0.05)
+
+    def publish(self, name, payload):
+        raw = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+        try:
+            self.sock.send_multipart([name.strip('/').replace('/', '.').encode('utf-8'), raw],
+                                     flags=zmq.NOBLOCK)
+        except zmq.Again:
+            pass
+
+    def close(self):
+        self.sock.close(0)
+
+
 class DeployLink:
     """PUB side of the deploy node's zmq_manager (command/planner/pose topics)."""
 
