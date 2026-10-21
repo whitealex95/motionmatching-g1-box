@@ -20,3 +20,6 @@ assets/sonic/policy/sonic_v1_1/*.onnx
 
 # per-clip tracking sweep videos + their logs stay on disk
 sonic_g1_box/out/track_clips/
+
+# eval_v02 rendered strips (regenerate with run_heuristic_videos.py)
+eval_v02/results/videos/*.mp4
