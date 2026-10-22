@@ -41,6 +41,7 @@ SETUPS = [
                '--palm-force', '25']),
 ]
 COMMON = ['--box-mass', '0.25']
+BOX_OFFSET = [0.0]           # set from --box-offset in main(); 0 = the August 2026 setting
 
 
 def key_frames(stem):
@@ -78,7 +79,7 @@ def run_one(setup, stem, python):
         if f.startswith(stem) and f'_{CHECKPOINT}_' in f and f.endswith('.mp4'):
             os.remove(os.path.join(OUT_DIR, f))
     cmd = [python, TRACKER, '--sonic', CHECKPOINT, '--clips', stem,
-           '--video'] + COMMON + setup['args']
+           '--video'] + COMMON + ['--box-offset', str(BOX_OFFSET[0])] + setup['args']
     env = dict(os.environ, MUJOCO_GL='egl', CUDA_VISIBLE_DEVICES='')
     t0 = time.time()
     proc = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
@@ -139,14 +140,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--clip', required=True)
     ap.add_argument('--python', default=sys.executable)
+    ap.add_argument('--box-offset', type=float, default=0.0)
     args = ap.parse_args()
+    BOX_OFFSET[0] = args.box_offset
     os.makedirs(VIDEOS, exist_ok=True)
     os.makedirs(FRAMES, exist_ok=True)
     os.makedirs(os.path.join(RESULTS, 'logs'), exist_ok=True)
 
     frames = key_frames(args.clip)
     print('reference frames:', frames)
-    rec = dict(clip=args.clip, checkpoint=CHECKPOINT, fps=FPS,
+    rec = dict(clip=args.clip, checkpoint=CHECKPOINT, fps=FPS, box_offset_m=args.box_offset,
                settle_ticks=SETTLE_TICKS,
                columns=[dict(name=n, ref_frame=k, t=round(k / FPS, 2))
                         for n, k in frames], setups=[])

@@ -26,8 +26,9 @@ TRACKER = os.path.join(ROOT, 'sonic_g1_box', 'run_track_clips.py')
 CHECKPOINTS = ('release', 'sonic_v1_1')
 
 # Every condition also carries the tracker defaults --shoulder-open 0.4,
-# --box-friction 1.5, --box-offset 0.05, --substeps 20, --settle 1.0,
-# --speed 1.0; --box-mass is pinned explicitly below.
+# --box-friction 1.5, --substeps 20, --settle 1.0, --speed 1.0; --box-mass and
+# --box-offset are pinned explicitly (the box offset defaults to 0 here, the
+# setting of the August 2026 run; the tracker script's own default is 0.05 m).
 COMMON = ['--box-mass', '0.25']
 
 CONDITIONS = [
@@ -130,8 +131,8 @@ def parse(text, n_expected):
     return outcomes, peaks, refs, ends, falls
 
 
-def run_one(cond, ckpt, clips, python):
-    cmd = [python, TRACKER, '--sonic', ckpt] + COMMON + cond['args']
+def run_one(cond, ckpt, clips, python, common=COMMON, tag=''):
+    cmd = [python, TRACKER, '--sonic', ckpt] + common + cond['args']
     if clips:
         cmd += ['--clips'] + clips
     env = dict(os.environ, MUJOCO_GL='egl', CUDA_VISIBLE_DEVICES='')
@@ -139,7 +140,7 @@ def run_one(cond, ckpt, clips, python):
     proc = subprocess.run(cmd, cwd=ROOT, env=env, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     wall = time.time() - t0
-    log = os.path.join(LOGS, f'{cond["key"].replace("+", "_plus_")}__{ckpt}.log')
+    log = os.path.join(LOGS, f'{cond["key"].replace("+", "_plus_")}__{ckpt}{tag}.log')
     with open(log, 'w') as fh:
         fh.write('# ' + ' '.join(cmd) + '\n')
         fh.write(f'# cwd {ROOT}\n# MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=\n')
@@ -158,9 +159,19 @@ def main():
                     help='restrict to these clip stems (smoke tests)')
     ap.add_argument('--conditions', nargs='*', default=None)
     ap.add_argument('--python', default=sys.executable)
-    ap.add_argument('--out', default=os.path.join(RESULTS,
-                                                  'squeeze_results.json'))
+    ap.add_argument('--out', default=None,
+                    help='default results/squeeze_results.json for box offset 0, '
+                         'results/squeeze_results_offset<x>.json otherwise')
+    ap.add_argument('--box-offset', type=float, default=0.0,
+                    help='metres the physical carton is shifted along the robot heading '
+                         '(reference unchanged); 0 reproduces the August 2026 run')
     args = ap.parse_args()
+    common = COMMON + ['--box-offset', str(args.box_offset)]
+    tag = '' if args.box_offset == 0 else f'__offset{args.box_offset:g}'
+    DEFINITIONS['box_offset_m'] = args.box_offset
+    if args.out is None:
+        args.out = os.path.join(RESULTS, 'squeeze_results.json' if args.box_offset == 0
+                                else f'squeeze_results_offset{args.box_offset:g}.json')
 
     os.makedirs(LOGS, exist_ok=True)
     sys.path.insert(0, ROOT)
@@ -176,7 +187,7 @@ def main():
 
     rows, t_start = {}, time.time()
     with cf.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        fut = {pool.submit(run_one, c, k, args.clips, args.python): (c, k)
+        fut = {pool.submit(run_one, c, k, args.clips, args.python, common, tag): (c, k)
                for c, k in jobs}
         for f in cf.as_completed(fut):
             cond, ckpt = fut[f]
@@ -185,7 +196,7 @@ def main():
             carried = sum(v == 'success' for v in outcomes.values())
             rows[(cond['key'], ckpt)] = dict(
                 key=cond['key'], label=cond['label'],
-                args=COMMON + cond['args'], checkpoint=ckpt,
+                args=common + cond['args'], checkpoint=ckpt,
                 command=' '.join(cmd), n_clips=len(clips), carried=carried,
                 outcomes=outcomes, peak_lift_m=peaks, ref_peak_m=refs,
                 end_z_m=ends, fall_frame=falls,
@@ -199,7 +210,7 @@ def main():
     doc = dict(
         generated=datetime.datetime.now().astimezone().isoformat(
             timespec='seconds'),
-        git_commit=commit, clips=clips, checkpoints=list(CHECKPOINTS),
+        git_commit=commit, clips=clips, checkpoints=list(CHECKPOINTS), box_offset_m=args.box_offset,
         sweep_wall_seconds=round(time.time() - t_start, 1),
         conditions=conditions, definitions=DEFINITIONS)
     os.makedirs(RESULTS, exist_ok=True)

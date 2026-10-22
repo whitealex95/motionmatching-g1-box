@@ -1,28 +1,28 @@
-# /home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic sonic_v1_1 --box-mass 0.25 --shoulder-squeeze 0.6 --wrist-squeeze 0.2 --palm-force 0
+# /home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic sonic_v1_1 --box-mass 0.25 --box-offset 0.0 --shoulder-squeeze 0.6 --wrist-squeeze 0.2 --palm-force 0
 # cwd /home/jkim3662/Projects/motionmatching-g1-box
 # MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=
-# exit 0 wall 552.0s
+# exit 0 wall 777.7s
 
 
 === sonic_v1_1 (20 clips) ===
-  sub10_largebox_036_original_mujoco         slipped  peak 0.24 (ref 0.85) end z 0.17
-  sub10_largebox_081_original_mujoco         dropped  peak 0.67 (ref 0.75) end z 0.17
-  sub10_largebox_082_original_mujoco         slipped  peak 0.32 (ref 0.77) end z 0.17
-  sub10_largebox_083_original_mujoco         slipped  peak 0.23 (ref 0.81) end z 0.19
-  sub10_largebox_084_original_mujoco         slipped  peak 0.28 (ref 0.79) end z 0.17
-  sub10_largebox_085_original_mujoco         dropped  peak 0.67 (ref 0.81) end z 0.17
-  sub10_largebox_087_original_mujoco         dropped  peak 0.74 (ref 0.82) end z 0.16
-  sub10_largebox_088_original_mujoco         dropped  peak 0.61 (ref 0.81) end z 0.19
-  sub10_largebox_089_original_mujoco         FELL@16  peak 0.27 (ref 0.88) end z 0.27
-  sub12_largebox_071_original_mujoco         dropped  peak 0.74 (ref 0.93) end z 0.17
-  sub16_largebox_043_original_mujoco         slipped  peak 0.27 (ref 0.76) end z 0.16
-  sub3_largebox_005_original_mujoco          slipped  peak 0.26 (ref 0.81) end z 0.19
-  sub7_largebox_042_original_mujoco          dropped  peak 0.69 (ref 0.92) end z 0.17
-  sub7_largebox_043_original_mujoco          slipped  peak 0.22 (ref 0.94) end z 0.19
-  sub7_largebox_044_original_mujoco          dropped  peak 0.74 (ref 0.91) end z 0.19
-  sub7_largebox_045_original_mujoco          dropped  peak 0.82 (ref 0.93) end z 0.17
-  sub7_largebox_046_original_mujoco          dropped  peak 0.88 (ref 0.90) end z 0.17
-  sub7_largebox_047_original_mujoco          slipped  peak 0.23 (ref 0.87) end z 0.19
-  sub8_largebox_042_original_mujoco          slipped  peak 0.33 (ref 0.95) end z 0.19
-  sub8_largebox_043_original_mujoco          dropped  peak 0.73 (ref 0.81) end z 0.18
-  -> 0/20 carried without dropping
+  sub10_largebox_036_original_mujoco         slipped  peak 0.28 (ref 0.85) end z 0.17
+  sub10_largebox_081_original_mujoco         dropped  peak 0.73 (ref 0.75) end z 0.16
+  sub10_largebox_082_original_mujoco         slipped  peak 0.31 (ref 0.77) end z 0.19
+  sub10_largebox_083_original_mujoco         slipped  peak 0.26 (ref 0.81) end z 0.16
+  sub10_largebox_084_original_mujoco         slipped  peak 0.43 (ref 0.79) end z 0.19
+  sub10_largebox_085_original_mujoco         dropped  peak 0.59 (ref 0.81) end z 0.19
+  sub10_largebox_087_original_mujoco         dropped  peak 0.75 (ref 0.82) end z 0.16
+  sub10_largebox_088_original_mujoco         dropped  peak 0.60 (ref 0.81) end z 0.16
+  sub10_largebox_089_original_mujoco         FELL@25  peak 0.45 (ref 0.88) end z 0.43
+  sub12_largebox_071_original_mujoco         dropped  peak 0.79 (ref 0.93) end z 0.17
+  sub16_largebox_043_original_mujoco         dropped  peak 0.52 (ref 0.76) end z 0.17
+  sub3_largebox_005_original_mujoco          dropped  peak 0.65 (ref 0.81) end z 0.17
+  sub7_largebox_042_original_mujoco          dropped  peak 0.72 (ref 0.92) end z 0.18
+  sub7_largebox_043_original_mujoco          slipped  peak 0.23 (ref 0.94) end z 0.19
+  sub7_largebox_044_original_mujoco          dropped  peak 0.74 (ref 0.91) end z 0.16
+  sub7_largebox_045_original_mujoco          dropped  peak 0.80 (ref 0.93) end z 0.16
+  sub7_largebox_046_original_mujoco          SUCCESS  peak 0.92 (ref 0.90) end z 0.19
+  sub7_largebox_047_original_mujoco          slipped  peak 0.29 (ref 0.87) end z 0.16
+  sub8_largebox_042_original_mujoco          slipped  peak 0.35 (ref 0.95) end z 0.19
+  sub8_largebox_043_original_mujoco          dropped  peak 0.72 (ref 0.81) end z 0.17
+  -> 1/20 carried without dropping

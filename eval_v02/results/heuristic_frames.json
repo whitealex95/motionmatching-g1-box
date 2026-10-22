@@ -1,7 +1,8 @@
 {
-  "clip": "sub12_largebox_071_original_mujoco",
+  "clip": "sub10_largebox_036_original_mujoco",
   "checkpoint": "release",
   "fps": 50.0,
+  "box_offset_m": 0.0,
   "settle_ticks": 50,
   "columns": [
     {
@@ -11,23 +12,23 @@
     },
     {
       "name": "contact",
-      "ref_frame": 59,
-      "t": 1.18
+      "ref_frame": 20,
+      "t": 0.4
     },
     {
       "name": "lift",
-      "ref_frame": 77,
-      "t": 1.54
+      "ref_frame": 45,
+      "t": 0.9
     },
     {
       "name": "mid carry",
-      "ref_frame": 153,
-      "t": 3.06
+      "ref_frame": 96,
+      "t": 1.92
     },
     {
       "name": "put-down",
-      "ref_frame": 230,
-      "t": 4.6
+      "ref_frame": 148,
+      "t": 2.96
     }
   ],
   "setups": [
@@ -44,12 +45,12 @@
         "--palm-force",
         "0"
       ],
-      "command": "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub12_largebox_071_original_mujoco --video --box-mass 0.25 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 0",
-      "video": "eval_v02/results/videos/sub12_largebox_071_original_mujoco_none.mp4",
-      "video_mb": 7.5,
-      "video_frames": 445,
-      "tracker_line": "sub12_largebox_071_original_mujoco         slipped  peak 0.20 (ref 0.93) end z 0.19",
-      "wall_seconds": 10.1,
+      "command": "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub10_largebox_036_original_mujoco --video --box-mass 0.25 --box-offset 0.0 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 0",
+      "video": "eval_v02/results/videos/sub10_largebox_036_original_mujoco_none.mp4",
+      "video_mb": 6.3,
+      "video_frames": 314,
+      "tracker_line": "sub10_largebox_036_original_mujoco         slipped  peak 0.24 (ref 0.85) end z 0.19",
+      "wall_seconds": 7.9,
       "frames": [
         {
           "index": 0,
@@ -62,32 +63,32 @@
         {
           "index": 1,
           "name": "contact",
-          "ref_frame": 59,
-          "t": 1.18,
+          "ref_frame": 20,
+          "t": 0.4,
           "path": "eval_v02/results/frames/none_1.png",
           "available": true
         },
         {
           "index": 2,
           "name": "lift",
-          "ref_frame": 77,
-          "t": 1.54,
+          "ref_frame": 45,
+          "t": 0.9,
           "path": "eval_v02/results/frames/none_2.png",
           "available": true
         },
         {
           "index": 3,
           "name": "mid carry",
-          "ref_frame": 153,
-          "t": 3.06,
+          "ref_frame": 96,
+          "t": 1.92,
           "path": "eval_v02/results/frames/none_3.png",
           "available": true
         },
         {
           "index": 4,
           "name": "put-down",
-          "ref_frame": 230,
-          "t": 4.6,
+          "ref_frame": 148,
+          "t": 2.96,
           "path": "eval_v02/results/frames/none_4.png",
           "available": true
         }
@@ -106,12 +107,12 @@
         "--palm-force",
         "0"
       ],
-      "command": "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub12_largebox_071_original_mujoco --video --box-mass 0.25 --shoulder-squeeze 0.6 --wrist-squeeze 0.2 --palm-force 0",
-      "video": "eval_v02/results/videos/sub12_largebox_071_original_mujoco_joint.mp4",
-      "video_mb": 7.9,
-      "video_frames": 445,
-      "tracker_line": "sub12_largebox_071_original_mujoco         dropped  peak 0.75 (ref 0.93) end z 0.17",
-      "wall_seconds": 12.0,
+      "command": "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub10_largebox_036_original_mujoco --video --box-mass 0.25 --box-offset 0.0 --shoulder-squeeze 0.6 --wrist-squeeze 0.2 --palm-force 0",
+      "video": "eval_v02/results/videos/sub10_largebox_036_original_mujoco_joint.mp4",
+      "video_mb": 6.4,
+      "video_frames": 314,
+      "tracker_line": "sub10_largebox_036_original_mujoco         dropped  peak 0.67 (ref 0.85) end z 0.20",
+      "wall_seconds": 7.9,
       "frames": [
         {
           "index": 0,
@@ -124,32 +125,32 @@
         {
           "index": 1,
           "name": "contact",
-          "ref_frame": 59,
-          "t": 1.18,
+          "ref_frame": 20,
+          "t": 0.4,
           "path": "eval_v02/results/frames/joint_1.png",
           "available": true
         },
         {
           "index": 2,
           "name": "lift",
-          "ref_frame": 77,
-          "t": 1.54,
+          "ref_frame": 45,
+          "t": 0.9,
           "path": "eval_v02/results/frames/joint_2.png",
           "available": true
         },
         {
           "index": 3,
           "name": "mid carry",
-          "ref_frame": 153,
-          "t": 3.06,
+          "ref_frame": 96,
+          "t": 1.92,
           "path": "eval_v02/results/frames/joint_3.png",
           "available": true
         },
         {
           "index": 4,
           "name": "put-down",
-          "ref_frame": 230,
-          "t": 4.6,
+          "ref_frame": 148,
+          "t": 2.96,
           "path": "eval_v02/results/frames/joint_4.png",
           "available": true
         }
@@ -168,12 +169,12 @@
         "--palm-force",
         "25"
       ],
-      "command": "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub12_largebox_071_original_mujoco --video --box-mass 0.25 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 25",
-      "video": "eval_v02/results/videos/sub12_largebox_071_original_mujoco_palm.mp4",
-      "video_mb": 7.8,
-      "video_frames": 445,
-      "tracker_line": "sub12_largebox_071_original_mujoco         SUCCESS  peak 0.88 (ref 0.93) end z 0.19",
-      "wall_seconds": 8.9,
+      "command": "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub10_largebox_036_original_mujoco --video --box-mass 0.25 --box-offset 0.0 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 25",
+      "video": "eval_v02/results/videos/sub10_largebox_036_original_mujoco_palm.mp4",
+      "video_mb": 6.4,
+      "video_frames": 314,
+      "tracker_line": "sub10_largebox_036_original_mujoco         SUCCESS  peak 0.72 (ref 0.85) end z 0.19",
+      "wall_seconds": 9.0,
       "frames": [
         {
           "index": 0,
@@ -186,32 +187,32 @@
         {
           "index": 1,
           "name": "contact",
-          "ref_frame": 59,
-          "t": 1.18,
+          "ref_frame": 20,
+          "t": 0.4,
           "path": "eval_v02/results/frames/palm_1.png",
           "available": true
         },
         {
           "index": 2,
           "name": "lift",
-          "ref_frame": 77,
-          "t": 1.54,
+          "ref_frame": 45,
+          "t": 0.9,
           "path": "eval_v02/results/frames/palm_2.png",
           "available": true
         },
         {
           "index": 3,
           "name": "mid carry",
-          "ref_frame": 153,
-          "t": 3.06,
+          "ref_frame": 96,
+          "t": 1.92,
           "path": "eval_v02/results/frames/palm_3.png",
           "available": true
         },
         {
           "index": 4,
           "name": "put-down",
-          "ref_frame": 230,
-          "t": 4.6,
+          "ref_frame": 148,
+          "t": 2.96,
           "path": "eval_v02/results/frames/palm_4.png",
           "available": true
         }

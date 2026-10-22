@@ -15,7 +15,7 @@ reference carries it.
 ## What each row means
 
 Every run also carries the tracker defaults `--shoulder-open 0.4`,
-`--box-friction 1.5`, `--box-offset 0.05`, `--box-scale 1.0`, `--substeps 20`,
+`--box-friction 1.5`, `--box-offset 0` (the script's own default is 0.05, see below), `--box-scale 1.0`, `--substeps 20`,
 `--settle 1.0`, `--speed 1.0`. The clip list is always all 20 stems from
 `mm_g1.data._box_clip_names()` (listed at the end of this file).
 
@@ -45,10 +45,14 @@ The `sonic_v1_1` decoder is gitignored (150 MB); fetch it with
 `assets/sonic/policy/fetch_models.sh` before reproducing.
 
 **Box parameters (identical in every condition).** Mass 0.25 kg, type `carton`,
-sliding friction 1.5, scale 1.0. The *physical* box is shifted 0.05 m along the
-robot's initial heading while the reference box stays at the recorded spot, so
-every condition includes that fixed perturbation. The box is re-seated flush on
-the floor at reset, and the robot's root z is lowered so the feet are flush.
+sliding friction 1.5, scale 1.0, box offset 0: the physical box starts at the
+recorded reference spot (`--box-offset 0`, the August 2026 setting). The tracker
+script's own default instead shifts the physical box 0.05 m along the robot's
+initial heading while the reference box stays put. That shifted setting is kept
+as a robustness sweep in `results/squeeze_results_offset0.05.{json,csv}` and
+`results/logs/*__offset0.05.log` (run with `--box-offset 0.05`). The box is
+re-seated flush on the floor at reset, and the robot's root z is lowered so the
+feet are flush.
 
 ### Why `palm25+biases` is a separate row
 
@@ -57,10 +61,10 @@ whenever they are non-zero, **independent of `--palm-force`**: the biases are
 added to the tracker's joint target and the palm force is added to `data.ctrl`
 as `tau = J^T f` on top. So running the script with `--palm-force 25` and
 nothing else keeps the defaults `--shoulder-squeeze 0.6 --wrist-squeeze 0.2`
-and measures *palm force plus both biases*. That is the code path behind the
-August log `sonic_g1_box/out/track_clips/sweep_palmforce25.log` (13/20 release,
-15/20 `sonic_v1_1`). To isolate each strategy, `palm15/palm25/palm40` zero both
-biases explicitly and `palm25+biases` keeps the old combined path.
+and measures *palm force plus both biases*. To isolate each strategy,
+`palm15/palm25/palm40` zero both biases explicitly and `palm25+biases` keeps the
+combined path. The August 2026 log was produced with the biases zeroed (next
+section), so `palm25` is the August condition.
 
 ## Protocol
 
@@ -201,26 +205,30 @@ committed, so the figure is reproducible from the repository alone.
 `sonic_g1_box/out/track_clips/sweep_palmforce25.log` (2026-08-31 14:41, four
 minutes after commit `5930188`, which is still the current version of
 `run_track_clips.py`) reports 13/20 for `release` and 15/20 for `sonic_v1_1`.
-Its exact flags were not recorded.
+Its flags were not recorded in the log.
 
-The `palm25+biases` condition here reproduces **13/20 for `release`** -- the same
-count -- but on a *different set of clips*, and it gives **6/20** rather than
-15/20 for `sonic_v1_1`. Checked against that log:
+Resolved on 2026-10-21. The command
 
-- `run_track_clips.py`, `box_scene.py`, `tools/sonic_tracking/`, `mm_g1/labels.py`,
-  the clip `.npz` files and their label sidecars, and the tracked `release`
-  checkpoint are all **byte-identical** to the state at that commit.
-- The conda environment has not been rebuilt since 2026-07-24.
-- The pipeline is bit-reproducible on this machine: two serial repeats of
-  `palm25+biases` on `release` give identical per-clip outcomes, and they also
-  match the run made inside the 8-way parallel sweep.
-- `--box-offset 0`, `--speed 0.5` and `--arm-kp 2.0` on top of `palm25+biases`
-  with `sonic_v1_1` give 6/20, 2/20 and 7/20 -- none of them 15/20.
+```
+python sonic_g1_box/run_track_clips.py --sonic <release|sonic_v1_1> \
+  --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 25 --shoulder-open 0.4 \
+  --box-scale 1.0 --box-offset 0 --video
+```
 
-So the August numbers were produced with at least one flag that differs from
-anything recorded, and/or with `sonic_v1_1` weights other than the ones now on
-disk (those `.onnx` files are gitignored, so their provenance cannot be checked
-from the repository). **Use the numbers in `results/` and not the August log.**
+reproduces the August log clip for clip
+(`results/logs/august_repro_palm25_offset0_{release,sonic_v1_1}.log`: 13/20 and
+15/20), and the `palm25` row of the offset-0 sweep in `results/` gives the same
+counts. The mismatch seen earlier on 2026-10-21 came from the box offset: that
+first sweep used the script default of 0.05 m (kept as
+`results/squeeze_results_offset0.05.*`), under which `palm25` gives 12/20 and
+12/20 and `palm25+biases` 13/20 and 6/20. The offset-0 numbers in
+`results/squeeze_results.json` are the primary result, and the offset-0.05 sweep
+is reported as a placement-error robustness check.
+
+The offset-0 sweep and the figure videos ran on commit `ab39b50` plus the
+`eval_v02` changes of the commit that adds them. The working tree also carried
+uncommitted additions for a SuperMimic tracker (`--tracker supermimic`,
+`SONIC_ORT_THREADS`) that leave the `--sonic` path used here unchanged.
 
 ## Machine and environment
 

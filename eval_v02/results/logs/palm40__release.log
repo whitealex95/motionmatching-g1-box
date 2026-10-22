@@ -1,28 +1,28 @@
-# /home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --box-mass 0.25 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 40
+# /home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --box-mass 0.25 --box-offset 0.0 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 40
 # cwd /home/jkim3662/Projects/motionmatching-g1-box
 # MUJOCO_GL=egl CUDA_VISIBLE_DEVICES=
-# exit 0 wall 270.9s
+# exit 0 wall 372.3s
 
 
 === release (20 clips) ===
-  sub10_largebox_036_original_mujoco         slipped  peak 0.27 (ref 0.85) end z 0.16
-  sub10_largebox_081_original_mujoco         SUCCESS  peak 0.60 (ref 0.75) end z 0.17
-  sub10_largebox_082_original_mujoco         dropped  peak 0.62 (ref 0.77) end z 0.19
-  sub10_largebox_083_original_mujoco         SUCCESS  peak 0.71 (ref 0.81) end z 0.17
-  sub10_largebox_084_original_mujoco         slipped  peak 0.25 (ref 0.79) end z 0.19
-  sub10_largebox_085_original_mujoco         SUCCESS  peak 0.69 (ref 0.81) end z 0.17
-  sub10_largebox_087_original_mujoco         SUCCESS  peak 0.71 (ref 0.82) end z 0.16
-  sub10_largebox_088_original_mujoco         SUCCESS  peak 0.70 (ref 0.81) end z 0.17
-  sub10_largebox_089_original_mujoco         SUCCESS  peak 0.90 (ref 0.88) end z 0.25
-  sub12_largebox_071_original_mujoco         SUCCESS  peak 0.90 (ref 0.93) end z 0.19
+  sub10_largebox_036_original_mujoco         SUCCESS  peak 0.71 (ref 0.85) end z 0.19
+  sub10_largebox_081_original_mujoco         SUCCESS  peak 0.61 (ref 0.75) end z 0.18
+  sub10_largebox_082_original_mujoco         slipped  peak 0.25 (ref 0.77) end z 0.16
+  sub10_largebox_083_original_mujoco         SUCCESS  peak 0.73 (ref 0.81) end z 0.17
+  sub10_largebox_084_original_mujoco         slipped  peak 0.23 (ref 0.79) end z 0.19
+  sub10_largebox_085_original_mujoco         SUCCESS  peak 0.68 (ref 0.81) end z 0.19
+  sub10_largebox_087_original_mujoco         SUCCESS  peak 0.69 (ref 0.82) end z 0.17
+  sub10_largebox_088_original_mujoco         SUCCESS  peak 0.72 (ref 0.81) end z 0.17
+  sub10_largebox_089_original_mujoco         SUCCESS  peak 0.81 (ref 0.88) end z 0.16
+  sub12_largebox_071_original_mujoco         SUCCESS  peak 0.84 (ref 0.93) end z 0.19
   sub16_largebox_043_original_mujoco         SUCCESS  peak 0.70 (ref 0.76) end z 0.21
-  sub3_largebox_005_original_mujoco          slipped  peak 0.30 (ref 0.81) end z 0.22
-  sub7_largebox_042_original_mujoco          SUCCESS  peak 0.77 (ref 0.92) end z 0.19
-  sub7_largebox_043_original_mujoco          SUCCESS  peak 0.78 (ref 0.94) end z 0.22
-  sub7_largebox_044_original_mujoco          SUCCESS  peak 0.80 (ref 0.91) end z 0.19
-  sub7_largebox_045_original_mujoco          slipped  peak 0.26 (ref 0.93) end z 0.19
-  sub7_largebox_046_original_mujoco          SUCCESS  peak 0.81 (ref 0.90) end z 0.19
+  sub3_largebox_005_original_mujoco          SUCCESS  peak 0.70 (ref 0.81) end z 0.16
+  sub7_largebox_042_original_mujoco          SUCCESS  peak 0.85 (ref 0.92) end z 0.17
+  sub7_largebox_043_original_mujoco          SUCCESS  peak 0.79 (ref 0.94) end z 0.21
+  sub7_largebox_044_original_mujoco          SUCCESS  peak 0.81 (ref 0.91) end z 0.21
+  sub7_largebox_045_original_mujoco          slipped  peak 0.24 (ref 0.93) end z 0.19
+  sub7_largebox_046_original_mujoco          SUCCESS  peak 0.83 (ref 0.90) end z 0.19
   sub7_largebox_047_original_mujoco          slipped  peak 0.24 (ref 0.87) end z 0.19
-  sub8_largebox_042_original_mujoco          dropped  peak 0.63 (ref 0.95) end z 0.16
-  sub8_largebox_043_original_mujoco          slipped  peak 0.27 (ref 0.81) end z 0.19
-  -> 12/20 carried without dropping
+  sub8_largebox_042_original_mujoco          dropped  peak 0.56 (ref 0.95) end z 0.16
+  sub8_largebox_043_original_mujoco          slipped  peak 0.22 (ref 0.81) end z 0.19
+  -> 14/20 carried without dropping

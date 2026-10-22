@@ -1,7 +1,7 @@
-# /home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub12_largebox_071_original_mujoco --video --box-mass 0.25 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 0
-# exit 0 wall 10.1s
+# /home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python /home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py --sonic release --clips sub10_largebox_036_original_mujoco --video --box-mass 0.25 --box-offset 0.0 --shoulder-squeeze 0 --wrist-squeeze 0 --palm-force 0
+# exit 0 wall 7.9s
 
 
 === release (1 clips) ===
-  sub12_largebox_071_original_mujoco         slipped  peak 0.20 (ref 0.93) end z 0.19
+  sub10_largebox_036_original_mujoco         slipped  peak 0.24 (ref 0.85) end z 0.19
   -> 0/1 carried without dropping

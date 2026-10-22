@@ -47,6 +47,8 @@ def main():
     md = [f'# Squeeze test: clips carried out of {n}', '',
           f'Source: `{src}`  ', f'Sweep generated: {doc["generated"]}  ',
           f'Repo commit at sweep time: `{doc["git_commit"]}`  ',
+          f'Box offset along the heading: {doc.get("box_offset_m", 0.05)} m '
+          '(0 = the August 2026 setting; the tracker script defaults to 0.05)  ',
           f'Tables generated: {now}', '',
           'Kinematic-reference tracking of the '
           f'{n} OmniRetarget G1 large-box carry clips with the SONIC tracker '
