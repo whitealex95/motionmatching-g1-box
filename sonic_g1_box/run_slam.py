@@ -30,19 +30,23 @@ the box again, and walks over and picks again (--regrasp-max times).
 The window (UI 2 of motionmatching-g1-loco's sonic_g1_loco/mm_driver.py, with the box): the measured robot at its SLAM
 pelvis pose, the stick figure the reference the matcher streams (gray idle, blue
 planner, orange POSE), the box where the reference has it (faint until x fixes
-it), the objects the map server reports (amber: the one x would take), and with T
-the command trajectory and m's route and stance.
+it), the objects the map server reports (in the box's brown, the one x would take
+stronger), and with T the command trajectory and m's route and stance.
+
+X fixes the box the map server reports nearest the robot (the SLAM pelvis), wherever it
+is: no belief of where the box stands, nothing to pass on the command line. M without a
+fixed box fixes it the same way first.
 
 Window keys:
   ]  start (planner mode, the robot stands)    P  planner <-> POSE
-  X  fix the box from the map server           B  pick right here (no box pose needed), or place
+  X  fix the box nearest the robot             B  pick right here (no box pose needed), or place
   M  walk over to the fixed box + pick (M again cancels the walk)
   W A S D  move, in POSE only (heading frame; F: camera frame)   arrows  face   Shift  run
   T  gizmos    Enter  re-send the mode command    O  stop (damping, final)    Esc  quit
 
 Terminal keys (type the letter, then Enter):
   ]  start (planner mode, the robot stands)    p  planner <-> POSE
-  x  fix the box from the map server           b  pick right here (no box pose needed), or place
+  x  fix the box nearest the robot             b  pick right here (no box pose needed), or place
   m  walk over to the fixed box + pick (m again cancels the walk)
   w  walk forward (--walk-speed) / stop        o  stop (damping, final)       q  quit
 
@@ -308,15 +312,16 @@ def seed_from_slam(m, xy, yaw):
         setattr(m, name, rot2(getattr(m, name), dyaw))
 
 
-def pick_object(objects, expect_xy, radius):
-    """The reported object nearest to where the box is expected, within radius."""
+def nearest_object(objects, xy):
+    """The reported object nearest to xy (2,), an active track before an inactive one:
+    (dist, object), or None with nothing reported."""
     best = None
     for o in objects or []:
-        c = np.asarray(o['bbox_center_world'], float)
-        d = float(np.hypot(c[0] - expect_xy[0], c[1] - expect_xy[1]))
-        if d <= radius and (best is None or d < best[0]):
-            best = (d, o)
-    return None if best is None else best[1]
+        d = float(np.hypot(*(np.asarray(o['bbox_center_world'][:2], float) - np.asarray(xy, float)[:2])))
+        key = (str(o.get('track_state', 'active')).lower() == 'inactive', d)
+        if best is None or key < best[0]:
+            best = (key, d, o)
+    return None if best is None else (best[1], best[2])
 
 
 SETTLED_SPEED = 0.15            # m/s of the measured robot that counts as standing still
@@ -462,6 +467,7 @@ class SlamBoxBridge:
         self.snaps_skipped = 0
         self.last_slam_xy = None
         self.box = {'fixed': False, 'source': None, 'size': None, 'detected_yaw': None}
+        self.fix_note = None                            # (monotonic, why) of the last x that fixed nothing
         self.lost = False
         self.grip = None                                # (t_start, sightings) while the grip is judged
         self.grip_result = None                         # 'held', 'lost', or 'not checked' (b's pick)
@@ -501,12 +507,11 @@ class SlamBoxBridge:
         return None if r is None else r.get('objects', [])
 
     def fix_box(self, o=None):
-        """The box pose from the map server: the object nearest to the belief (--box-fwd /
-        --box-lat from the start pose) within --box-radius, or the object given."""
+        """The box pose from the map server: the object nearest the robot, or the object given."""
         m = self.matcher
         if o is None:
-            expect = np.array([C.BOX_SPAWN_FWD, C.BOX_SPAWN_LAT])
-            o = pick_object(self.objects(), expect, self.args.box_radius)
+            got = nearest_object(self.objects(), self.robot_xy())
+            o = None if got is None else got[1]
         if o is None:
             return False
         c = np.asarray(o['bbox_center_world'], float)
@@ -524,7 +529,7 @@ class SlamBoxBridge:
             # along x (the SceneBot box, 0.3 x 0.2), so turn it a quarter and swap the extents
             yaw += 0.5 * np.pi
             size = [size[1], size[0], size[2]]
-        # the box's symmetry: the fold nearest the belief's orientation (2 folds for the
+        # the box's symmetry: the fold nearest the library's spawn orientation (2 folds for the
         # SceneBot box, 4 for a cube), so the detected yaw does not send the approach round the side
         folds = int(getattr(C, 'SCENEBOT_ROT_FOLDS', 2)) if getattr(C, 'SCENEBOT_PICK', False) \
             else int(getattr(C, 'BOX_ROT_FOLDS', 1))
@@ -543,9 +548,25 @@ class SlamBoxBridge:
         return True
 
     def request_fix(self):
-        """x: fix the box, or say why not."""
-        if not self.fix_box():
-            print('[slam-box] no object near the belief: is Boxer running, is the map anchored?', flush=True)
+        """x: fix the box nearest the robot, or say why not, in the terminal and on the
+        window's panel. -> True when fixed."""
+        self.slam_pose()                                # the robot where it stands now, for robot_xy
+        if self.fix_box():
+            self.fix_note = None
+            return True
+        if self.objects() is None:
+            why = short = 'the map server did not answer (is live.server up?)'
+        else:
+            why = 'the map server reports no object (is live.sam3box or live.boxer running? UI 1, Objects card)'
+            short = 'the map server reports no object'
+        print(f'[slam-box] x: no box fixed: {why}', flush=True)
+        self.fix_note = (time.monotonic(), short)
+        return False
+
+    def robot_xy(self):
+        """The robot in the map frame: the SLAM pelvis, else the matcher's root."""
+        p = self.slam
+        return np.asarray(p['root_xy'][:2], float) if p else np.asarray(self.matcher.rootPos[:2], float)
 
     # -- modes -------------------------------------------------------------------
     def start(self):
@@ -593,9 +614,9 @@ class SlamBoxBridge:
         if m.state not in (State.LOCOMOTION, State.MOVE_TO_PICK):
             print(f'[slam-box] m only from locomotion (state {m.state.name}); b places while carrying', flush=True)
             return
-        if m.state is State.LOCOMOTION and not self.box['fixed']:
-            print('[slam-box] the box is not fixed (x): walking over to the belief '
-                  f'{C.BOX_SPAWN_FWD:.2f} m ahead', flush=True)
+        if m.state is State.LOCOMOTION and not self.box['fixed'] and not self.request_fix():
+            print('[slam-box] m: no box to walk over to', flush=True)
+            return
         walking = m.state is State.MOVE_TO_PICK
         self.runup, self.runups = None, 0
         m.trigger_move_pick()
@@ -989,10 +1010,10 @@ def run_headless(args):
                     if br.fix_box():
                         br._pick_spot = br.matcher.boxPos[0:2].copy()
                         br.phase = 'box fixed, standing until POSE'
-                    elif now - t_start - args.settle > args.fix_timeout:
-                        print(f'[headless] no box reported within {args.fix_timeout:.0f} s: keeping the belief '
-                              f'{C.BOX_SPAWN_FWD:.2f} m ahead', flush=True)
-                        br.box.update(fixed=True, source='belief')
+                    elif now - t_start - args.settle > args.fix_timeout and not br.lost:
+                        print(f'[headless] no box reported within {args.fix_timeout:.0f} s: nothing to pick, '
+                              'the box was lost', flush=True)
+                        br.lost = True
             elif not posed and now - t_start >= args.pose_after:
                 br.toggle_pose()
                 posed, t_pose = True, now
@@ -1083,6 +1104,7 @@ def run_terminal(args):
 
 FOLLOW_S = 0.3                  # s: the window camera eases toward the robot (SLAM jitter, head bob)
 CONTACT_RGBA = np.array([0.25, 0.9, 0.35, 1.0])
+REPORTED_RGB = [0.82, 0.52, 0.22]     # the box's brown (scene_box_scenebot.xml box_geom), UI 1's too
 
 
 def run_window(args):
@@ -1197,7 +1219,7 @@ def run_window(args):
 
         def _tint_box(self, cur):
             """Green while the played frame's hand labels are on; faint while the box pose
-            is the belief (not fixed, not held)."""
+            is the library's spawn, not a measured one (not fixed, not held)."""
             if self._box_gid is None:
                 return
             _, _, _, held, (lc, rc) = br.motion.meta_at(cur)
@@ -1209,26 +1231,26 @@ def run_window(args):
             model.geom_rgba[self._box_gid] = rgba
 
         def _draw_objects(self):
-            """What the map server reports (Boxer's boxes, or the sim's truth), as in UI 1's
-            Boxer objects card: the one x would take in amber, the others blue, and until
-            the fix the disc x looks in (--box-radius round the belief)."""
+            """What the map server reports (Boxer's or SAM3's boxes, or the sim's truth), in the
+            box's brown as UI 1 draws them: until the fix, the one x would take (nearest the
+            robot) stronger."""
             now = time.monotonic()
             if now - self.objs['t'] > 0.5:
                 self.objs['t'] = now
                 got = br.objects()
                 if got is not None:
                     self.objs['list'] = got
-            belief = np.array([C.BOX_SPAWN_FWD, C.BOX_SPAWN_LAT])
             pick = None
             if not br.box['fixed']:
-                pick = pick_object(self.objs['list'], belief, args.box_radius)
-                self._geom(mujoco.mjtGeom.mjGEOM_CYLINDER, (args.box_radius, 0.003, 0.0),
-                           (belief[0], belief[1], 0.003), (0.95, 0.75, 0.2, 0.12))
-            self.objs['near'] = None if pick is None else \
-                float(np.hypot(*(np.asarray(pick['bbox_center_world'][:2], float) - belief)))
+                robot = self.slam['xy'] if self.slam['xy'] is not None else br.robot_xy()
+                got = nearest_object(self.objs['list'], robot)
+                if got is not None:
+                    self.objs['near'], pick = got
+            if pick is None:
+                self.objs['near'] = None
             for o in self.objs['list']:
                 T = np.asarray(o['T_world_object'], float).reshape(4, 4)
-                rgba = [0.95, 0.7, 0.15, 0.5] if o is pick else [0.3, 0.55, 0.95, 0.35]
+                rgba = [*REPORTED_RGB, 0.65 if o is pick else 0.3]
                 if o.get('track_state', 'active') == 'inactive':
                     rgba[3] = 0.12
                 self._geom(mujoco.mjtGeom.mjGEOM_BOX, 0.5 * np.asarray(o['bbox_size_xyz'], float),
@@ -1274,15 +1296,13 @@ def run_window(args):
                 boxl = (f"fixed at ({box['xy'][0]:+.2f}, {box['xy'][1]:+.2f}) m, "
                         f"yaw {math.degrees(box['detected_yaw']):+.0f} deg, {sx:.2f} x {sy:.2f} x {sz:.2f} m, "
                         f"from {box['source']}")
-            elif box['fixed']:
-                boxl = f"the belief, {C.BOX_SPAWN_FWD:.2f} m ahead ({box['source']})"
+            elif br.fix_note is not None and time.monotonic() - br.fix_note[0] < 15.0:
+                boxl = f'NOT FIXED: {br.fix_note[1]}'
             else:
-                boxl = (f'not fixed: the belief {C.BOX_SPAWN_FWD:.2f} m ahead, {C.BOX_SPAWN_LAT:+.2f} m left '
-                        f'(X fixes it, for M)')
+                boxl = 'not fixed (X fixes the box nearest the robot; M does it first if needed)'
             n = len(self.objs['list'])
-            objl = (f'{n} reported' + ('' if box['fixed'] else
-                    (f', {self.objs["near"]:.2f} m from the belief' if self.objs['near'] is not None
-                     else f', none within {args.box_radius:.1f} m of the belief')))
+            objl = (f'{n} reported' + ('' if box['fixed'] or self.objs['near'] is None else
+                                       f', X takes the nearest, {self.objs["near"]:.2f} m from the robot'))
             grip = {'lost': 'LOST: standing, B and M ignored', 'held': 'held (the check saw no box left on the floor)',
                     'not checked': 'not checked (B picked right here)'}.get(br.grip_result,
                                                                           'checking...' if br.grip else '-')
@@ -1365,9 +1385,9 @@ def main():
     ap.add_argument('--max-snap-jump', type=float, default=0.5,
                     help='m: a SLAM pose this far from the previous one (0.2 s earlier) is a jump, not a step '
                          '(the box fills the camera during the lift): the reference root is held that time')
-    ap.add_argument('--box-fwd', type=float, default=2.0, help='box belief: m ahead of the start pose')
-    ap.add_argument('--box-lat', type=float, default=0.0, help='box belief: m to the left of the start pose')
-    ap.add_argument('--box-radius', type=float, default=1.0, help='m around the belief a reported object may be')
+    ap.add_argument('--box-radius', type=float, default=1.0,
+                    help='m around the fixed box a report counts as that box, for --box-moved and the fix again '
+                         'after a move (x itself takes the box nearest the robot, at any distance)')
     ap.add_argument('--fix-range-bias', type=float, default=0.0, metavar='M',
                     help="m the fixed box is pushed away from the robot: Boxer's centre sits toward the camera "
                          '(4 to 5 cm at 2 m in the sim; measure it on the robot)')
@@ -1440,6 +1460,8 @@ def main():
                     help="window: WASD relative to the reference's heading or to the view (F toggles)")
     ap.add_argument('--smoke-frames', type=int, default=None, help='(testing) close the window after N frames')
     args = ap.parse_args()
+    # the matcher's box before x fixes it: the library's spawn (run_hardware.build_matcher reads these)
+    args.box_fwd = args.box_lat = None
     if args.headless is not None:
         run_headless(args)
     elif args.terminal:
