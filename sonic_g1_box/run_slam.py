@@ -16,6 +16,13 @@ those play open loop from the committed pose). After m's pick the grip is
 judged once from what the server still sees on the floor at the pick spot:
 lost means stand still, no second try (b's pick is not judged).
 
+m's pick fires on the measured robot (--pick-tol): only once SLAM has it still
+and not too short of the stance. Stopped short, it steps in. Beside the stance
+or past it, it walks out and in again. While m walks over and picks, the box is
+watched (--box-moved): a box reported on the floor that far from the fixed pose,
+3 fresh looks in a row, cuts the walk or the pick short. The robot stands, fixes
+the box again, and walks over and picks again (--regrasp-max times).
+
     python sonic_g1_box/run_slam.py                       # window
     python sonic_g1_box/run_slam.py --terminal            # terminal keys, no window
     python sonic_g1_box/run_slam.py --headless 240 --auto-start --start-after-anchor
@@ -67,7 +74,7 @@ from mm_g1 import config as C
 from mm_g1 import quat
 from mm_g1.features import yaw_quat
 from mm_g1.states import State
-from mm_stream import MMMotion, POLICY_FPS, fill_speeds, fit_rows
+from mm_stream import MM_FPS, MMMotion, POLICY_FPS, fill_speeds, fit_rows
 import ref_modes as RM
 from run_hardware import (DeployLink, RobotState, build_matcher, MODE_IDLE, MODE_PLANNER, MODE_POSE,
                           MODE_STOPPED, BusPublisher, BUS_PUB)
@@ -312,6 +319,90 @@ def pick_object(objects, expect_xy, radius):
     return None if best is None else best[1]
 
 
+SETTLED_SPEED = 0.15            # m/s of the measured robot that counts as standing still
+REFIX_LOOKS, REFIX_S = 5, 4.0   # after the box moved: agreeing reports to fix it again, s at most
+STEP_SPEED, STEP_S, STEP_SETTLE_S, STEP_MAX = 0.5, 0.3, 1.2, 5
+STEP_IN_STOP_DIST = 0.45        # m before the stance the walk-over stops commanding, with the gate on
+LAT_TOL, PAST_TOL, YAW_TOL = 0.10, 0.15, 0.35   # m beside, m past, rad turned: the pick waits, run-up instead
+RUNUP_BACK, RUNUP_REACH, RUNUP_SPEED, RUNUP_S, RUNUP_MAX = 1.3, 0.3, 0.6, 20.0, 2
+RUNUP_OUT, RUNUP_SIDE = 0.6, 0.4    # m: first out to the robot's own side, then the run-up point off the rail
+
+
+def gate_arrival(m, tol, clock):
+    """m's pick fires only with the MEASURED robot (m.measured from each re-plan: along the
+    rail, beside it, speed, heading off the stance) still and at most tol short. The matcher
+    alone fired on its own root, which the robot leads or lags. Short of the stance a 0.3 s
+    command at 0.5 m/s steps it in (offline a 0.1 m step, in the sim session one walk-in of
+    0.25 to 0.29 m). The step is a window on the stream's clock (clock(), s), not a counter:
+    each re-plan generates the frames after its cut again, and a counter ran down in look-ahead
+    frames that were thrown away. m.stepping() keeps the re-plan from snapping the root onto the
+    lagging robot meanwhile, which took each step back. Beside the stance, past it or turned
+    away there is nothing to step with (no side step, no backward walk): offside() holds the
+    pick and the bridge walks the robot out and in again."""
+    own_at, own_steer, own_taps = m._at_stance, m._steer_to_stance, m._path_taps
+    m.measured, m.creeping = None, False
+    m.step_window, m.steps_taken = None, 0                # (start, end of the step, end of the settle) s
+
+    def short(meas):
+        return meas[0] < -tol
+
+    def offside(meas):
+        return abs(meas[1]) > LAT_TOL or meas[0] > PAST_TOL or (not short(meas) and abs(meas[3]) > YAW_TOL)
+
+    def settling():
+        return m.step_window is not None and clock() < m.step_window[2]
+
+    def at_stance():
+        ok = own_at()
+        meas = m.measured
+        if settling():
+            return False
+        return ok and (meas is None or (not short(meas) and not offside(meas) and meas[2] < SETTLED_SPEED))
+
+    def steer():
+        vel, face = own_steer()
+        m.creeping = False
+        if np.any(vel):
+            return vel, face
+        t, meas = clock(), m.measured
+        if not settling() and meas is not None and meas[2] < SETTLED_SPEED and short(meas) \
+                and m.steps_taken < STEP_MAX:
+            m.step_window = (t, t + STEP_S, t + STEP_S + STEP_SETTLE_S)
+            m.steps_taken += 1
+            m.move_timer = 0.0                  # stepping in is progress: no walk-over timeout meanwhile
+        w = m.step_window
+        if w is not None and w[0] <= t < w[1]:
+            rail = np.array([np.cos(m.stance_yaw), np.sin(m.stance_yaw), 0.0])
+            m.creeping = True
+            return rail * STEP_SPEED, rail.copy()
+        return vel, face
+
+    def taps():
+        if not m.creeping:              # the route's taps slow to 1.8 x the 0.1 m left: standing frames
+            own_taps()
+
+    own_start = m._start_move
+
+    def start_move():
+        own_start()
+        m.step_window, m.steps_taken = None, 0
+
+    m._at_stance, m._steer_to_stance, m._path_taps, m._start_move = at_stance, steer, taps, start_move
+    m.stepping, m.offside = settling, offside
+
+
+def cut_ride(m):
+    """Leave a pick (or the carry right after it) for standing: the playhead inertializes
+    into the best locomotion frame, the box no longer rides the hands."""
+    m.box_locked = 0
+    m.carry_local = None
+    m.box_held = False
+    f, lo, hi = m._best_loco()
+    m._inertialize_into(f, lo, hi)
+    m.state = State.LOCOMOTION
+    m.searchTimer = C.SEARCH_TIME
+
+
 class SlamBoxBridge:
     def __init__(self, args):
         self.args = args
@@ -380,6 +471,20 @@ class SlamBoxBridge:
         self.palm = PalmForce(args.palm_force) if args.palm_force > 0 else None
         self.palm_ramp = [0.0, 0.0]
         self.palm_tau = np.zeros(14)
+        self.pick_tol = args.pick_tol if args.pick_tol > 0 else None
+        if self.pick_tol is not None:
+            gate_arrival(self.matcher, self.pick_tol, lambda: self.motion._ticks / MM_FPS)
+            # the robot's stop lands within some 0.16 m (-0.06 to +0.10 m from the stance at 0.30, sim
+            # 2026-11-02). Past the stance it touches the box, short of it the gate steps it in
+            C.MOVE_STOP_DIST = max(C.MOVE_STOP_DIST, STEP_IN_STOP_DIST)
+            print(f'[slam-box] the pick waits for the measured robot at most {self.pick_tol:.2f} m short of the '
+                  f'stance, stepping in from a stop farther back (commands stop {C.MOVE_STOP_DIST:.2f} m before it)',
+                  flush=True)
+        self.last_meas = None                           # (wall time, SLAM xy) at the last re-plan
+        self.watch = {'seen': [], 'stamp': 0}
+        self.refix = None                               # after a move: {'until': t, 'looks': [...], 'near': xy}
+        self.regrasps = 0
+        self.runup, self.runups = None, 0
 
     # -- the map server ----------------------------------------------------------
     def slam_pose(self):
@@ -395,12 +500,13 @@ class SlamBoxBridge:
         r = self.map.request({'op': 'objects'})
         return None if r is None else r.get('objects', [])
 
-    def fix_box(self):
-        """The box pose from the map server, once: the object nearest to the belief
-        (--box-fwd / --box-lat from the start pose) within --box-radius."""
+    def fix_box(self, o=None):
+        """The box pose from the map server: the object nearest to the belief (--box-fwd /
+        --box-lat from the start pose) within --box-radius, or the object given."""
         m = self.matcher
-        expect = m.rootPos[0:2] * 0 + np.array([C.BOX_SPAWN_FWD, C.BOX_SPAWN_LAT])
-        o = pick_object(self.objects(), expect, self.args.box_radius)
+        if o is None:
+            expect = np.array([C.BOX_SPAWN_FWD, C.BOX_SPAWN_LAT])
+            o = pick_object(self.objects(), expect, self.args.box_radius)
         if o is None:
             return False
         c = np.asarray(o['bbox_center_world'], float)
@@ -491,6 +597,7 @@ class SlamBoxBridge:
             print('[slam-box] the box is not fixed (x): walking over to the belief '
                   f'{C.BOX_SPAWN_FWD:.2f} m ahead', flush=True)
         walking = m.state is State.MOVE_TO_PICK
+        self.runup, self.runups = None, 0
         m.trigger_move_pick()
         print('[slam-box] ' + ('walk over cancelled' if walking else 'walk over + pick requested'), flush=True)
 
@@ -507,9 +614,13 @@ class SlamBoxBridge:
         m, mo = self.matcher, self.motion
         f = min(max(self.cur_frame, 1), mo.timesteps - 1)
         mo.truncate(f + 1)
+        self._watch_box()
         p = self.slam_pose()
+        self._measure_arrival(p)
+        self._drive_runup(p)
         riding = m.state in (State.PICK, State.PLACE) or m.box_locked > 0
-        if p is not None and not riding:
+        stepping = getattr(m, 'stepping', None) is not None and m.stepping()
+        if p is not None and not riding and not stepping:
             xy, yaw = np.asarray(p['root_xy'], float), float(p['root_yaw'])
             self.sync_err = float(np.linalg.norm(xy - m.rootPos[0:2]))
             self.heading_err = math.degrees(wrap(yaw - m.rootYaw))
@@ -537,6 +648,173 @@ class SlamBoxBridge:
             mo.time_restore(keep[1])
         self.pending_from = f + 1
 
+    def _measure_arrival(self, p):
+        """m.measured for the pick gate: the SLAM pelvis against the stance (along the rail,
+        beside it, its speed since the last re-plan, its heading off the stance's), None
+        outside the walk-over. Settled off to the side, past or turned: the run-up."""
+        m = self.matcher
+        now = time.monotonic()
+        if p is None:
+            m.measured, self.last_meas = None, None
+            return
+        xy = np.asarray(p['root_xy'], float)
+        speed = 9.0 if self.last_meas is None else \
+            float(np.linalg.norm(xy - self.last_meas[1])) / max(now - self.last_meas[0], 1e-3)
+        self.last_meas = (now, xy)
+        if self.pick_tol is None or m.state is not State.MOVE_TO_PICK:
+            m.measured = None
+            return
+        rail = np.array([math.cos(m.stance_yaw), math.sin(m.stance_yaw)])
+        rel = xy - m.stance_xy
+        along = float(rel @ rail)
+        m.measured = (along, float(rel @ np.array([-rail[1], rail[0]])), speed,
+                      wrap(float(p['root_yaw']) - m.stance_yaw))
+        if speed < SETTLED_SPEED and not m.stepping() and m.offside(m.measured) \
+                and float(np.linalg.norm(rel)) < 1.0:
+            self._start_runup(m.measured)
+
+    def _start_runup(self, meas):
+        """Off to the side of the stance, past it, or turned away, with nothing to step
+        with: out and round to a point RUNUP_BACK behind the stance, then the walk-over
+        again from there. The way out starts sideways, to the side of the rail the robot
+        is on: turning straight round, the matcher took the shorter turn, toward the box,
+        and the swinging leg pushed it (2026-11-02)."""
+        m = self.matcher
+        if self.runups >= RUNUP_MAX:
+            return
+        self.runups += 1
+        rail = np.array([math.cos(m.stance_yaw), math.sin(m.stance_yaw)])
+        perp = np.array([-rail[1], rail[0]]) * (1.0 if meas[1] >= 0.0 else -1.0)
+        xy = m.stance_xy + meas[0] * rail + abs(meas[1]) * perp
+        self.runup = {'to': [xy + RUNUP_OUT * perp, m.stance_xy - RUNUP_BACK * rail + RUNUP_SIDE * perp],
+                      'until': time.monotonic() + RUNUP_S}
+        m.state, m.measured = State.LOCOMOTION, None
+        m.step_window = None
+        self.phase = 'backing off to walk over again'
+        print(f'[slam-box] arrived {meas[0]:+.2f} m along, {meas[1]:+.2f} m beside the stance, turned '
+              f'{math.degrees(meas[3]):+.0f} deg: out to the side, round to {RUNUP_BACK:.1f} m behind it and in again '
+              f'(run-up {self.runups})', flush=True)
+
+    def _drive_runup(self, p):
+        m = self.matcher
+        if self.runup is None:
+            return
+        if m.state is not State.LOCOMOTION or self.mode != MODE_POSE:
+            self.runup = None
+            return
+        xy = m.rootPos[0:2] if p is None else np.asarray(p['root_xy'], float)
+        d = self.runup['to'][0] - xy
+        dist = float(np.linalg.norm(d))
+        if dist < RUNUP_REACH and len(self.runup['to']) > 1:
+            self.runup['to'].pop(0)
+            d = self.runup['to'][0] - xy
+            dist = float(np.linalg.norm(d))
+        if (dist < RUNUP_REACH and len(self.runup['to']) == 1) or time.monotonic() > self.runup['until']:
+            self.runup = None
+            self.cmd_vel, self.cmd_face = np.zeros(3), np.zeros(3)
+            m._start_move()
+            self.phase = 'walking over again and picking'
+            print(f'[slam-box] run-up point reached ({dist:.2f} m off): walking over again', flush=True)
+            return
+        u = np.array([d[0] / dist, d[1] / dist, 0.0])
+        self.cmd_vel, self.cmd_face = u * RUNUP_SPEED, u.copy()
+
+    def _floor_looks(self, near, radius):
+        """Fresh reports of a box on the floor within radius of near (2,): [(dist, object)]."""
+        objs = self.objects()
+        if objs is None:
+            return []
+        rest = self.box.get('bottom') or 0.0
+        out, newest = [], self.watch['stamp']
+        for o in objs:
+            if str(o.get('track_state', 'active')).lower() == 'inactive' or o.get('z_range', [rest])[0] > rest + 0.05:
+                continue                                  # gone, or off the floor (in the hands)
+            stamp = int(o.get('bbox_stamp_ns', 0))
+            if stamp and stamp <= self.watch['stamp']:
+                continue                                  # no new measurement since the last look
+            dist = float(np.hypot(*(np.asarray(o['bbox_center_world'][:2], float) - near)))
+            if dist < radius:
+                out.append((dist, o))
+                newest = max(newest, stamp)
+        self.watch['stamp'] = newest
+        return sorted(out, key=lambda x: x[0])
+
+    def _watch_box(self):
+        """While m walks over and picks (and the carry until the grip is judged): a box on the
+        floor --box-moved or farther from the fixed pose, in 3 fresh reports in a row that
+        agree, means it moved. A pick under way is cut short, the robot stands and looks
+        again (_refix), then walks over and picks again."""
+        a, m = self.args, self.matcher
+        if a.box_moved <= 0 or self.lost or not self.box['fixed'] or self.box.get('xy') is None:
+            return
+        if self.refix is not None:
+            self._refix()
+            return
+        judging = m.state is State.CARRY and m.pick_at_stance and not getattr(self, 'grip_done', False)
+        if m.state not in (State.MOVE_TO_PICK, State.PICK) and not judging:
+            self.watch['seen'] = []
+            return
+        looks = self._floor_looks(np.asarray(self.box['xy'], float), a.box_radius)
+        if not looks:
+            return
+        dist, o = looks[0]
+        if dist < a.box_moved:
+            self.watch['seen'] = []
+            return
+        seen = self.watch['seen'] = (self.watch['seen'] + [np.asarray(o['bbox_center_world'][:2], float)])[-3:]
+        if len(seen) < 3 or max(np.linalg.norm(c - seen[-1]) for c in seen) > 0.08:
+            return
+        self.watch['seen'] = []
+        was = m.state.name
+        if m.state is State.MOVE_TO_PICK:
+            m.state = State.LOCOMOTION
+        else:
+            cut_ride(m)
+            self.grip, self.grip_done, self.grip_result = None, False, None
+        if self.regrasps >= a.regrasp_max:
+            self.lost = True
+            self.walk(False)
+            print(f'[slam-box] the box moved again ({dist:.2f} m) after {self.regrasps} new tries: standing', flush=True)
+            return
+        self.regrasps += 1
+        self.refix = {'until': time.monotonic() + REFIX_S, 'looks': [], 'near': seen[-1]}
+        self.phase = 'the box moved: standing and looking again'
+        print(f'[slam-box] the box moved {dist:.2f} m from where it was fixed (during {was}): '
+              f'stopping to look again', flush=True)
+
+    def _refix(self):
+        """Standing after a move: the box is fixed again from REFIX_LOOKS fresh reports that
+        agree (the median centre, the yaw of the report nearest it), then m walks over again.
+        The reports that showed the move came partly from the squat, where the D435i sees a
+        piece of the box cut by the image's edge (once 0.07 m and 90 deg off, 2026-11-02)."""
+        a, m, r = self.args, self.matcher, self.refix
+        for _, o in self._floor_looks(r['near'], 0.3)[:1]:
+            r['looks'].append(o)
+        cs = np.array([o['bbox_center_world'][:2] for o in r['looks']], float).reshape(-1, 2)   # (n, 2)
+        if len(cs):
+            med = np.median(cs, 0)
+            agree = [o for o, c in zip(r['looks'], cs) if np.linalg.norm(c - med) < 0.05]
+        else:
+            agree = []
+        late = time.monotonic() > r['until']
+        if len(agree) < REFIX_LOOKS and not (late and agree):
+            if late and not agree:
+                self.refix, self.lost = None, True
+                print(f'[slam-box] no box seen in {REFIX_S:.0f} s after it moved: standing', flush=True)
+            return
+        cs = np.array([o['bbox_center_world'][:2] for o in agree], float)            # (k, 2)
+        med = np.median(cs, 0)
+        o = dict(agree[int(np.argmin(np.linalg.norm(cs - med, axis=1)))])
+        o['bbox_center_world'] = [float(med[0]), float(med[1]), float(o['bbox_center_world'][2])]
+        self.refix = None
+        self.fix_box(o)
+        self._pick_spot = m.boxPos[0:2].copy()
+        m._start_move()
+        self.runups = 0
+        self.phase = 'walking over again and picking'
+        print(f'[slam-box] fixed again from {len(agree)} looks: walking over and picking (try {self.regrasps + 1})',
+              flush=True)
+
     def tick(self, now):
         if self.t0 is None:
             self.t0 = now
@@ -545,6 +823,8 @@ class SlamBoxBridge:
             yaw = self.matcher.rootYaw
             fwd = np.array([math.cos(yaw), math.sin(yaw), 0.0])
             self.cmd_vel, self.cmd_face = fwd * self.args.walk_speed, fwd.copy()
+        if self.mode != MODE_POSE:
+            self.matcher.measured = None
         if self.mode == MODE_POSE:
             if self.next_replan is None or now >= self.next_replan:
                 self.next_replan = now + self.args.replan_s
@@ -638,7 +918,8 @@ class SlamBoxBridge:
         # a box on the floor near the robot, measured after the pick (the sim's truth objects carry
         # no measurement stamp and always count)
         on_floor = any(np.hypot(*(np.asarray(o['bbox_center_world'][:2]) - root)) < 1.0
-                       and o.get('z_range', [1.0])[0] < rest + 0.12 and o.get('track_state', 'active') != 'inactive'
+                       and o.get('z_range', [1.0])[0] < rest + 0.12
+                       and str(o.get('track_state', 'active')).lower() != 'inactive'
                        and int(o.get('bbox_stamp_ns', self.grip_stamp + 1)) > self.grip_stamp
                        for o in objs)
         self.grip = [t_start, seen + int(on_floor), asked + 1]
@@ -663,7 +944,8 @@ class SlamBoxBridge:
             'task': {'state': m.state.name, 'phase': self.phase, 'box_xy': m.boxPos[0:2].round(3).tolist(),
                      'box_yaw': yaw_of(m.boxRot), 'box_held': bool(m.box_held), 'fixed': self.box['fixed'],
                      'source': self.box['source'], 'size': self.box['size'], 'lost': self.lost,
-                     'carrying': m.state is State.CARRY,
+                     'carrying': m.state is State.CARRY, 'regrasps': self.regrasps,
+                     'arrival': None if getattr(m, 'measured', None) is None else [round(v, 3) for v in m.measured],
                      # at the frame the robot plays now (the matcher runs about a second ahead)
                      'state_now': state_now.name, 'held_now': bool(held_now), 'box_in_pelvis_now': box_local}})
 
@@ -1103,6 +1385,16 @@ def main():
                          "arm's Jacobian (tau = J^T f at the measured joints), sent to the node on arm_tau, which adds "
                          "tau / kp to SONIC's arm targets. Off by default; with a box add --palm-force 40 (the sim: "
                          '40 N lifted, held and placed the SceneBot box, 25 N tipped it, 15 N dropped it)')
+    ap.add_argument('--pick-tol', type=float, default=0.06, metavar='M',
+                    help="m: m's pick fires only with the measured robot (SLAM) standing still at most this short of "
+                         'the stance. Stopped farther back it steps in, beside the stance or past it it walks out and '
+                         'in again (default 0.06, 0: the matcher alone decides)')
+    ap.add_argument('--box-moved', type=float, default=0.12, metavar='M',
+                    help='m: while m walks over and picks, a box reported on the floor this far from the fixed pose '
+                         '(3 fresh reports in a row) cuts the walk or the pick short. The robot stands, fixes the box '
+                         'again from 5 agreeing reports, and walks over and picks again. 0: off')
+    ap.add_argument('--regrasp-max', type=int, default=3,
+                    help='new tries after the box moved, once more and the robot stands (default 3)')
     ap.add_argument('--fwd-tol', type=float, default=None, metavar='M',
                     help='the pick fires only with the root this close to the stance along the approach rail '
                          '(short of it the servo keeps creeping). Off by default: at 0.06 the robot hovered round '

@@ -403,7 +403,7 @@ class MotionMatcher:
             for p in pts:
                 rem += float(np.linalg.norm(p - prev))
                 prev = p
-            adv = float(np.clip(1.8 * rem, 0.0, 1.2)) * DT
+            adv = float(np.clip(1.8 * rem, 0.0, C.MOVE_ROUTE_SPEED_MAX)) * DT
             while adv > 1e-9 and pts:
                 seg = pts[0] - pos
                 L = float(np.linalg.norm(seg))
