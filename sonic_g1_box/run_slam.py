@@ -34,19 +34,24 @@ it), the objects the map server reports (in the box's brown, the one x would tak
 stronger), and with T the command trajectory and m's route and stance.
 
 X fixes the box the map server reports nearest the robot (the SLAM pelvis), wherever it
-is: no belief of where the box stands, nothing to pass on the command line. M without a
-fixed box fixes it the same way first.
+is: no belief of where the box stands, nothing to pass on the command line. X again fixes
+the next one (active tracks first, then by distance, round to the first), and a click on a
+reported box in the window fixes that one. Both only in locomotion. M without a fixed box
+fixes the nearest first. The fix is a snapshot: later reports do not move it, except
+--box-moved during the walk-over and the pick.
 
 Window keys:
   ]  start (planner mode, the robot stands)    P  planner <-> POSE
-  X  fix the box nearest the robot             B  pick right here (no box pose needed), or place
+  X  fix the box nearest the robot, again: the next one    Click  fix the clicked box
+  B  pick right here (no box pose needed), or place
   M  walk over to the fixed box + pick (M again cancels the walk)
   W A S D  move, in POSE only (heading frame; F: camera frame)   arrows  face   Shift  run
   T  gizmos    Enter  re-send the mode command    O  stop (damping, final)    Esc  quit
 
 Terminal keys (type the letter, then Enter):
   ]  start (planner mode, the robot stands)    p  planner <-> POSE
-  x  fix the box nearest the robot             b  pick right here (no box pose needed), or place
+  x  fix the box nearest the robot, again: the next one
+  b  pick right here (no box pose needed), or place
   m  walk over to the fixed box + pick (m again cancels the walk)
   w  walk forward (--walk-speed) / stop        o  stop (damping, final)       q  quit
 
@@ -312,16 +317,57 @@ def seed_from_slam(m, xy, yaw):
         setattr(m, name, rot2(getattr(m, name), dyaw))
 
 
-def nearest_object(objects, xy):
-    """The reported object nearest to xy (2,), an active track before an inactive one:
-    (dist, object), or None with nothing reported."""
-    best = None
+def ordered_objects(objects, xy):
+    """The reported objects as [(dist, object)], active tracks first, each group nearest to xy (2,) first."""
+    out = []
     for o in objects or []:
         d = float(np.hypot(*(np.asarray(o['bbox_center_world'][:2], float) - np.asarray(xy, float)[:2])))
-        key = (str(o.get('track_state', 'active')).lower() == 'inactive', d)
-        if best is None or key < best[0]:
-            best = (key, d, o)
-    return None if best is None else (best[1], best[2])
+        out.append(((str(o.get('track_state', 'active')).lower() == 'inactive', d), d, o))
+    out.sort(key=lambda t: t[0])
+    return [(d, o) for _, d, o in out]
+
+
+def nearest_object(objects, xy):
+    got = ordered_objects(objects, xy)
+    return got[0] if got else None
+
+
+SAME_BOX_M = 0.3    # m: a report this close to the fixed box is that box when its track id is new (live.sam3box --assoc-m)
+
+
+def fixed_index(objects, box):
+    """The index in objects of the box fixed now: its track id, else the report nearest its pose, or None."""
+    if not box.get('fixed') or not objects:
+        return None
+    tid = box.get('track_id')
+    if tid is not None:
+        for i, o in enumerate(objects):
+            if o.get('track_id') == tid:
+                return i
+    if box.get('xy') is None:
+        return None
+    d = [float(np.hypot(*(np.asarray(o['bbox_center_world'][:2], float) - box['xy']))) for o in objects]
+    i = int(np.argmin(d))
+    return i if d[i] < SAME_BOX_M else None
+
+
+def ray_hits_box(orig, dirn, o):
+    """Distance along the ray (orig, dirn: (3,), dirn unit) to the reported object's box, or None."""
+    T = np.asarray(o['T_world_object'], float).reshape(4, 4)
+    R, c = T[:3, :3], np.asarray(o['bbox_center_world'], float)
+    lo_, ld = R.T @ (orig - c), R.T @ dirn                      # (3,) in the box frame
+    half = 0.5 * np.asarray(o['bbox_size_xyz'], float)
+    t0, t1 = 0.0, np.inf
+    for k in range(3):
+        if abs(ld[k]) < 1e-9:
+            if abs(lo_[k]) > half[k]:
+                return None
+            continue
+        a, b = sorted(((-half[k] - lo_[k]) / ld[k], (half[k] - lo_[k]) / ld[k]))
+        t0, t1 = max(t0, a), min(t1, b)
+        if t0 > t1:
+            return None
+    return float(t0)
 
 
 SETTLED_SPEED = 0.15            # m/s of the measured robot that counts as standing still
@@ -547,13 +593,33 @@ class SlamBoxBridge:
               f'size {size[0]:.2f} x {size[1]:.2f} x {size[2]:.2f} m, from {self.box["source"]}{note}', flush=True)
         return True
 
-    def request_fix(self):
-        """x: fix the box nearest the robot, or say why not, in the terminal and on the
-        window's panel. -> True when fixed."""
-        self.slam_pose()                                # the robot where it stands now, for robot_xy
-        if self.fix_box():
-            self.fix_note = None
+    def _may_fix(self, what):
+        """The box is fixed by hand only in locomotion: a fix moves the matcher's box, which
+        a walk-over, a pick or a carry is using."""
+        m = self.matcher
+        if m.state is State.LOCOMOTION:
             return True
+        print(f'[slam-box] {what}: no new fix during {m.state.name} (only in locomotion; M cancels a walk-over)',
+              flush=True)
+        self.fix_note = (time.monotonic(), f'no new fix during {m.state.name}')
+        return False
+
+    def request_fix(self):
+        """x: fix the box nearest the robot; x again with a box fixed, the next one in the
+        same order (active tracks first, then by distance), round to the first. Says why
+        when nothing is fixed, in the terminal and on the window's panel. -> True when fixed."""
+        if not self._may_fix('x'):
+            return False
+        self.slam_pose()                                # the robot where it stands now, for robot_xy
+        order = ordered_objects(self.objects(), self.robot_xy())
+        if order:
+            cur = fixed_index([o for _, o in order], self.box)
+            i = 0 if cur is None else (cur + 1) % len(order)
+            if self.fix_box(order[i][1]):
+                self.fix_note = None
+                print(f'[slam-box] x: object {i + 1} of {len(order)} reported, {order[i][0]:.2f} m from the robot'
+                      + ('' if len(order) > 1 else ' (the only one)'), flush=True)
+                return True
         if self.objects() is None:
             why = short = 'the map server did not answer (is live.server up?)'
         else:
@@ -561,6 +627,15 @@ class SlamBoxBridge:
             short = 'the map server reports no object'
         print(f'[slam-box] x: no box fixed: {why}', flush=True)
         self.fix_note = (time.monotonic(), short)
+        return False
+
+    def select_object(self, o):
+        """A click in the window: fix that reported object."""
+        if not self._may_fix('click'):
+            return False
+        if self.fix_box(o):
+            self.fix_note = None
+            return True
         return False
 
     def robot_xy(self):
@@ -1105,6 +1180,8 @@ def run_terminal(args):
 FOLLOW_S = 0.3                  # s: the window camera eases toward the robot (SLAM jitter, head bob)
 CONTACT_RGBA = np.array([0.25, 0.9, 0.35, 1.0])
 REPORTED_RGB = [0.82, 0.52, 0.22]     # the box's brown (scene_box_scenebot.xml box_geom), UI 1's too
+CLICK_PX = 5                    # px the cursor may move between press and release for a click, not a camera drag
+CLICK_NEAR_M = 0.4              # m: a click that misses every box takes the one this near where its ray meets its height
 
 
 def run_window(args):
@@ -1123,9 +1200,10 @@ def run_window(args):
         model.geom('box_geom').size[:] = C.BOX_HALF
     data = mujoco.MjData(model)
     eye3 = np.eye(3).ravel()
-    keys_l = ']\nP\nX\nB\nM\nW A S D\nArrows\nShift\nF\nT\nEnter\nO\nEsc'
+    keys_l = ']\nP\nX\nClick\nB\nM\nW A S D\nArrows\nShift\nF\nT\nEnter\nO\nEsc'
     keys_r = ('start control (planner mode, the robot stands)\ntoggle planner <-> POSE\n'
-              'fix the box from the map server (for M)\npick right here / put down while holding\n'
+              'fix the box nearest the robot (for M); again: the next one\nfix the clicked box (for M)\n'
+              'pick right here / put down while holding\n'
               'walk over to the fixed box + pick (M again cancels)\nmove (POSE only)\nface\nhold to run\n'
               'WASD frame heading/camera\ntoggle gizmos\nre-send the mode command\nstop -> damping (final)\nquit')
 
@@ -1146,6 +1224,7 @@ def run_window(args):
             self.slam = {'xy': None, 'yaw': 0.0, 't': 0.0}
             self.follow = {'xy': None, 't': 0.0}
             self.objs = {'list': [], 't': 0.0, 'near': None}
+            self.click = None
             self.actions = {glfw.KEY_RIGHT_BRACKET: br.start, glfw.KEY_P: br.toggle_pose, glfw.KEY_O: br.stop,
                             glfw.KEY_X: br.request_fix, glfw.KEY_B: br.box_action, glfw.KEY_M: br.move_pick,
                             glfw.KEY_ENTER: self._resend, glfw.KEY_F: self._toggle_frame}
@@ -1155,6 +1234,51 @@ def run_window(args):
                 self.actions[key]()
             elif key != glfw.KEY_SPACE:          # the base class's Space resets the matcher: no reset here
                 super()._on_key(window, key, scancode, action, mods)
+
+        def _on_mouse_button(self, window, button, action, mods):
+            if button == glfw.MOUSE_BUTTON_LEFT:
+                if action == glfw.PRESS:
+                    self.click = glfw.get_cursor_pos(window)
+                elif action == glfw.RELEASE and self.click is not None:
+                    x, y = glfw.get_cursor_pos(window)
+                    if math.hypot(x - self.click[0], y - self.click[1]) <= CLICK_PX:
+                        self._click_select(x, y)
+                    self.click = None
+            super()._on_mouse_button(window, button, action, mods)
+
+        def _click_select(self, x, y):
+            """The reported box under the cursor: the first one its ray enters, else the one
+            nearest where the ray comes down to its centre's height."""
+            objs = self.objs['list']
+            if not objs:
+                print('[slam-box] click: the map server reports no object', flush=True)
+                return
+            w, h = glfw.get_window_size(self.window)
+            selpnt = np.zeros(3)
+            gid, fid, sid = (np.zeros((1, 1), np.int32) for _ in range(3))
+            mujoco.mjv_select(model, data, self.opt, w / h, x / w, (h - y) / h, self.scene, selpnt, gid, fid, sid)
+            if gid[0, 0] < 0 and fid[0, 0] < 0 and sid[0, 0] < 0:
+                return                                   # the sky: no ray direction from mjv_select
+            orig = 0.5 * (np.asarray(self.scene.camera[0].pos, float) + np.asarray(self.scene.camera[1].pos, float))
+            dirn = selpnt - orig
+            dirn /= np.linalg.norm(dirn) + 1e-12
+            hits = [(t, o) for o in objs if (t := ray_hits_box(orig, dirn, o)) is not None]
+            if hits:
+                o = min(hits, key=lambda x: x[0])[1]
+            else:
+                best = None
+                for o in objs:
+                    c = np.asarray(o['bbox_center_world'], float)
+                    if abs(dirn[2]) < 1e-6:
+                        continue
+                    p = orig + dirn * (c[2] - orig[2]) / dirn[2]
+                    d = float(np.hypot(*(p[:2] - c[:2])))
+                    if d < CLICK_NEAR_M and (best is None or d < best[0]):
+                        best = (d, o)
+                if best is None:
+                    return
+                o = best[1]
+            br.select_object(o)
 
         def _resend(self):
             if br.mode in (MODE_PLANNER, MODE_POSE):
@@ -1232,8 +1356,8 @@ def run_window(args):
 
         def _draw_objects(self):
             """What the map server reports (Boxer's or SAM3's boxes, or the sim's truth), in the
-            box's brown as UI 1 draws them: until the fix, the one x would take (nearest the
-            robot) stronger."""
+            box's brown as UI 1 draws them, one stronger: until the fix the one x would take
+            (nearest the robot), after it the fixed one."""
             now = time.monotonic()
             if now - self.objs['t'] > 0.5:
                 self.objs['t'] = now
@@ -1241,13 +1365,15 @@ def run_window(args):
                 if got is not None:
                     self.objs['list'] = got
             pick = None
-            if not br.box['fixed']:
+            self.objs['near'] = None
+            if br.box['fixed']:
+                i = fixed_index(self.objs['list'], br.box)
+                pick = None if i is None else self.objs['list'][i]
+            else:
                 robot = self.slam['xy'] if self.slam['xy'] is not None else br.robot_xy()
                 got = nearest_object(self.objs['list'], robot)
                 if got is not None:
                     self.objs['near'], pick = got
-            if pick is None:
-                self.objs['near'] = None
             for o in self.objs['list']:
                 T = np.asarray(o['T_world_object'], float).reshape(4, 4)
                 rgba = [*REPORTED_RGB, 0.65 if o is pick else 0.3]
@@ -1299,10 +1425,13 @@ def run_window(args):
             elif br.fix_note is not None and time.monotonic() - br.fix_note[0] < 15.0:
                 boxl = f'NOT FIXED: {br.fix_note[1]}'
             else:
-                boxl = 'not fixed (X fixes the box nearest the robot; M does it first if needed)'
+                boxl = 'not fixed (X fixes the box nearest the robot, a click the clicked one; M does X first if needed)'
             n = len(self.objs['list'])
-            objl = (f'{n} reported' + ('' if box['fixed'] or self.objs['near'] is None else
-                                       f', X takes the nearest, {self.objs["near"]:.2f} m from the robot'))
+            if box['fixed']:
+                objl = f'{n} reported' + (', X: the next one, click: that one' if n > 1 else '')
+            else:
+                objl = f'{n} reported' + ('' if self.objs['near'] is None else
+                                          f', X takes the nearest, {self.objs["near"]:.2f} m from the robot')
             grip = {'lost': 'LOST: standing, B and M ignored', 'held': 'held (the check saw no box left on the floor)',
                     'not checked': 'not checked (B picked right here)'}.get(br.grip_result,
                                                                           'checking...' if br.grip else '-')
