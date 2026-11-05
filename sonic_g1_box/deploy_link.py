@@ -1,6 +1,8 @@
 """The deploy node's ZMQ wire (a mirror of motionmatching-g1-deploy/tools/zmq_protocol.py) and the desktop's JSON bus
 (a mirror of motionmatching-g1-deploy/ego_slam/wire.py)."""
+import collections
 import json
+import math
 import threading
 import time
 
@@ -33,6 +35,11 @@ def pack_message(topic, arrays):
     if len(header) > HEADER_SIZE:
         raise ValueError(f'header too large: {len(header)} > {HEADER_SIZE}')
     return topic.encode() + header.ljust(HEADER_SIZE, b'\0') + b''.join(blobs)
+
+
+def quat_yaw(q):
+    w, x, y, z = q
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 class BusPublisher:
@@ -113,6 +120,7 @@ class RobotState:
         self.base_quat = None        # (4,) w, x, y, z
         self.body_q = None           # (29,) MuJoCo order
         self.heading = None          # (init_base_quat (4,), delta_heading): the node's heading state, once it has one
+        self.yaws = collections.deque(maxlen=100)    # (receive time, IMU yaw), 2 s at 50 Hz
         self.stamp = 0.0
         self._stop = False
         self.thread = threading.Thread(target=self._loop, daemon=True)
@@ -136,6 +144,7 @@ class RobotState:
             with self.lock:
                 self.base_quat, self.body_q, self.heading = quat, q, heading
                 self.stamp = time.monotonic()
+                self.yaws.append((self.stamp, quat_yaw(quat)))
 
     def get(self):
         """(base_quat (4,), body_q (29,)), or None when there is none or it is older than ROBOT_STALE_S."""
@@ -144,12 +153,18 @@ class RobotState:
                 return None
             return self.base_quat.copy(), self.body_q.copy()
 
-    def heading_state(self):
-        """(base_quat (4,), init_base_quat (4,), delta_heading), or None without a fresh one."""
+    def planner_frame(self, map_yaw, t):
+        """Map yaw of the node's planner frame +x, from the robot's map yaw at monotonic time t, or None without a
+        fresh heading state. The node sets its heading state to the IMU orientation when the planner starts, where
+        the planner's motion has zero yaw. The IMU yaw is the one received nearest t: the SLAM pose is some 0.1 s
+        old, and the pelvis yaw sways with the gait."""
         with self.lock:
-            if self.heading is None or time.monotonic() - self.stamp > ROBOT_STALE_S:
+            if self.heading is None or not self.yaws or time.monotonic() - self.stamp > ROBOT_STALE_S:
                 return None
-            return self.base_quat.copy(), self.heading[0].copy(), self.heading[1]
+            init, delta = self.heading
+            imu_yaw = min(self.yaws, key=lambda e: abs(e[0] - t))[1]
+        y = quat_yaw(init) + delta + map_yaw - imu_yaw
+        return math.atan2(math.sin(y), math.cos(y))
 
     def close(self):
         self._stop = True

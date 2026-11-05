@@ -299,6 +299,7 @@ class Bridge:
         self.pending_from = 0
         self.slam = None
         self.slam_wall = 0.0
+        self.slam_at = None             # monotonic time the SLAM pose was measured at
         self.last_seed_xy = None
         self.seed_skips = 0
         self.pose_corr_yaw = 0.0        # the runner's seed yaw when POSE started
@@ -306,7 +307,7 @@ class Bridge:
         self.box_id = None
         self.move_seen = None
         self.stick = (np.zeros(3), np.zeros(3))     # (move, face): the loco driver's left and right sticks
-        self.last_face = None          # map frame, None: the robot's heading when the planner started
+        self.last_face = np.array([1.0, 0.0, 0.0])   # map frame, the robot's heading when the planner starts
         self.planner_start_yaw = 0.0   # the robot's map yaw when this bridge last switched the node into PLANNER
         self.last_planner_cmd = None
         self.walking = False
@@ -324,6 +325,7 @@ class Bridge:
         p = None if r is None else r.get('pose')
         if p is not None and p.get('age_s', 9.0) < 0.5:
             self.slam, self.slam_wall = p, time.time()
+            self.slam_at = time.monotonic() - float(p.get('age_s', 0.0))
         elif time.time() - self.slam_wall > 0.5:
             self.slam = None
         return self.slam
@@ -466,9 +468,12 @@ class Bridge:
         print('[box] start=1 planner=1 -> PLANNER (stand)', flush=True)
 
     def planner_started(self):
+        """The planner faces where the robot faces now, also when the node was already in planner mode with
+        another +x (a bridge started again)."""
         p = self.poll_pose()
-        self.planner_start_yaw = float(p['root_yaw']) if p is not None else self.heading()
-        self.last_face = None
+        yaw = float(p['root_yaw']) if p is not None else self.heading()
+        self.planner_start_yaw = yaw
+        self.last_face = np.array([math.cos(yaw), math.sin(yaw), 0.0])
 
     def toggle_pose(self):
         if self.mode == MODE_PLANNER:
@@ -626,15 +631,14 @@ class Bridge:
             self.publish_state()
 
     def planner_yaw(self):
-        """The map yaw of the node's planner frame +x. The planner starts its motion at zero yaw on the robot's
-        heading each time it starts (] or P back from POSE, which stops it), and the node then sets its heading state
-        to the robot's IMU orientation, which g1_debug carries. So a restarted bridge finds the planner's frame too.
-        Without a heading state: the robot's yaw when this bridge last switched the node into PLANNER."""
-        st = self.robot.heading_state()
-        if st is None or self.slam is None:
-            return self.planner_start_yaw
-        base, init, delta = st
-        return quat_yaw(init) + delta + float(self.slam['root_yaw']) - quat_yaw(base)
+        """The map yaw of the node's planner frame +x: the robot's heading when the planner started (] or P back
+        from POSE), not map +x, found from g1_debug also by a bridge started again. Without the node's heading
+        state: the robot's yaw when this bridge last switched the node into PLANNER."""
+        if self.slam is not None:
+            yaw = self.robot.planner_frame(float(self.slam['root_yaw']), self.slam_at)
+            if yaw is not None:
+                return yaw
+        return self.planner_start_yaw
 
     def send_planner(self):
         """The loco driver's: in PLANNER the move stick walks the node's own planner, the face stick turns it. The
@@ -656,8 +660,7 @@ class Bridge:
         else:
             movement = to_planner(vel / speed)
             loco, sp = (1 if speed < 0.8 else (2 if speed < 2.5 else 3)), speed
-        facing = np.array([1.0, 0.0, 0.0]) if self.last_face is None else to_planner(self.last_face)
-        self.link.planner_command(loco, movement, facing, sp)
+        self.link.planner_command(loco, movement, to_planner(self.last_face), sp)
         if self.last_planner_cmd != loco:
             print(f'[box] planner -> {LOCO_NAMES[loco]}', flush=True)
         self.last_planner_cmd = loco
