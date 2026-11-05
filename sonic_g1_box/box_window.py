@@ -10,6 +10,7 @@ import glfw
 import mujoco
 import numpy as np
 
+import operator_link as OP
 from deploy_link import MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED
 from mm_g1.mathq import qfrom_yaw, qmul, qyaw
 
@@ -151,7 +152,7 @@ def run_window(br, args):
             self.click = None
             self.show_legend = True
             self.show_path = True
-            self.heading_frame = args.frame == 'heading'
+            self.op = OP.Operator(br.map, 'box')
             self.auto = False
             self.obstacles = {'boxes': [], 'pad': [], 'dynamic': [], 't': 0.0}
             self.shapes = {'list': [], 't': 0.0}
@@ -210,27 +211,24 @@ def run_window(br, args):
             self.show_path = not self.show_path
 
         def _toggle_frame(self):
-            self.heading_frame = not self.heading_frame
+            args.frame = 'camera' if args.frame == 'heading' else 'heading'
+            if br.flags is not None:
+                br.flags.note_live('frame', args.frame)
 
         def _toggle_drive(self):
             rf = br.route_follow
             rf.set_drive(not rf.drive)
-            print(f'[box] drive the desired trajectory: {"on" if rf.drive else "off"}', flush=True)
+            br.say(f'drive the desired trajectory: {"on" if rf.drive else "off"}')
 
         def _sticks(self, now):
-            """The loco driver's: WASD and the arrows, else UI 1's trajectory while Drive is on. A pick or a place
-            (X, B, the grip check) goes before the trajectory."""
-            rf = br.route_follow
-            az = math.degrees(br.heading()) if self.heading_frame else self.cam.azimuth
+            """The loco driver's: WASD and the arrows, then UI 3's held keys, else UI 1's trajectory while Drive is
+            on. A pick or a place (X, B, the grip check) goes before the trajectory. UI 3's commands too."""
+            for c in self.op.poll(now):
+                br.operator_command(c, lambda: (br.close(), glfw.terminate()))
+            az = math.degrees(br.heading()) if args.frame == 'heading' else self.cam.azimuth
             left = keyboard_stick(self.window, 'left', args.run_scale, az)
             right = keyboard_stick(self.window, 'right', 1.0, az)
-            rf.poll(now)
-            auto = None
-            if (br.mode in (MODE_PLANNER, MODE_POSE) and not br.has_target()
-                    and np.linalg.norm(left) < 1e-6 and np.linalg.norm(right) < 1e-6):
-                auto = rf.stick(rf.robot_xy(), br.max_speed)
-            self.auto = auto is not None
-            br.stick = (left, right) if auto is None else auto
+            self.auto = br.drive_sticks(now, self.op, (left, right))
 
         def _click_select(self, x, y):
             """The reported box under the cursor: the first one its ray enters, else the one

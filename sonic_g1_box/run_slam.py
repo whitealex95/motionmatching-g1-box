@@ -38,6 +38,7 @@ What differs from the page, because the robot is measured, not simulated:
 
     python sonic_g1_box/run_slam.py                        # the window (UI 2, sonic_g1_box/box_window.py)
     python sonic_g1_box/run_slam.py --terminal             # terminal keys (letter + Enter)
+    python sonic_g1_box/run_slam.py --web                  # no window: UI 3 (http://localhost:8780/ui3)
     python sonic_g1_box/run_slam.py --headless 240 --auto-start --start-after-anchor
 
 The window has the loco driver's keys (motionmatching-g1-loco sonic_g1_loco/mm_driver.py): ] start, P planner <->
@@ -54,6 +55,18 @@ Terminal keys (type the letter, then Enter):
   b  put the held box down --place-ahead m in front of the robot
   w  walk forward / stop (with or without the box)
   c  cancel the pick or the place               o  stop (damping, final)       q  quit
+
+UI 3 (the map server's /ui3 page, motionmatching-g1-deploy live/web/ui3.js) sends the window's keys and the box
+keys through the map server (its `operator` op, operator_link.py) in every mode but headless, and lists the flags:
+LIVE_FLAGS apply at once, RESTART_FLAGS restart the bridge with its own command line and the new values (not in
+POSE). The window's held keys go before UI 3's. `--web` runs without the window.
+
+UI 1's box task (its Box task card, the map server's `box_task` op): the box to pick up (a reported track), the
+put-down marker and how to carry the box there, and Go. BoxRoute walks it in POSE: the box is taken and picked
+up, then put down at the marker (the controller walks there itself), or first carried along the desired trajectory
+with Drive on and put down at the marker once the robot is within HANDOFF_M of it on the last segment (or at the
+trajectory's end). A regrasp goes back to the pick and on from there. Stop in UI 1, C, O or P out of POSE end it,
+and the result goes back to UI 1. Not in headless runs, which keep their own sequence.
 
 Headless: waits for the node (and the anchor), starts, stands --settle s, takes the box reported nearest the robot,
 enters POSE at --pose-after, picks it up, carries it --carry-s s forward, puts it down --place-ahead m in front,
@@ -80,6 +93,7 @@ import msgpack
 import numpy as np
 import zmq
 
+import operator_link as OP
 from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED, BusPublisher, DeployLink, RobotState
 from mm_g1.mathq import hypot, qyaw
 from mm_g1.runner import CONTROL_DT, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box, to_present
@@ -87,6 +101,14 @@ from mm_g1.sim import Sim
 from route_follow import ROUTE_NAMES, RouteFollow
 
 STATE_TOPIC = '/mm_driver/state'
+REF_TOPIC = '/mm_driver/ref'      # the reference's whole body (and the box it holds) at the frame the robot plays: UI 3
+REF_HZ = 30.0
+LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', 'palm_force', 'shoulder_open',
+              'shoulder_kp', 'max_seed_jump', 'track_delay', 'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn',
+              'sync_search', 'sync_need', 'sync_agree', 'follow_s', 'obstacle_radius')
+RESTART_FLAGS = ('loco', 'lookahead', 'box_size', 'yaw_gain', 'assoc_radius', 'fresh_s', 'grip_phys_dz', 'grip_need',
+                 'fix_range_bias')
+GRASP_FLAGS = {'palm_force': 'force', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp'}   # PalmGrasp reads these
 GRID_DIM = 17 * 11
 L_SHOULDER_ROLL, R_SHOULDER_ROLL = 16, 23              # in the MuJoCo order of the 29 joints
 MUJOCO_TO_ISAACLAB = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20,
@@ -274,6 +296,149 @@ def to_heading_frame(p, xy, yaw):
     return np.array([c * dx + s * dy, -s * dx + c * dy, p[2]])
 
 
+class BoxRoute:
+    """UI 1's box task, walked in POSE (the module docstring). phase: None (no task yet), wait_pose, find, to_box,
+    carry, place, then done | failed | stopped with the result sent back to the map server."""
+
+    POLL_S = 0.25
+    HANDOFF_M = 1.5               # m from the marker on the last segment: the carry hands over to the place
+    FIND_S = 10.0                 # s to wait for the chosen track to be reported
+    ACTIVE = ('wait_pose', 'find', 'to_box', 'carry', 'place')
+
+    def __init__(self, br):
+        self.br = br
+        self.seq, self.task, self.phase, self.text = None, None, None, ''
+        self.t_poll, self.t_phase = -1.0, 0.0
+        self.carried = False
+
+    def active(self):
+        return self.phase in self.ACTIVE
+
+    def state(self):
+        return None if self.phase is None else {'phase': self.phase, 'text': self.text, 'go_seq': self.seq,
+                                                'track_id': None if self.task is None else self.task['track_id']}
+
+    def go(self, phase, text):
+        self.phase, self.text, self.t_phase = phase, text, time.monotonic()
+        self.br.say(f'box task: {text}')
+
+    def finish(self, phase, result, report=True):
+        rf = self.br.route_follow
+        if self.task is not None and self.task['carry'] == 'route' and rf.drive:
+            rf.set_drive(False)
+        self.go(phase, result)
+        if report:
+            self.br.map.request({'op': 'command', 'cmd': {'op': 'set_box_task', 'go': False, 'result': result}})
+
+    def poll(self, now):
+        if now - self.t_poll < self.POLL_S:
+            return
+        self.t_poll = now
+        r = self.br.map.request({'op': 'box_task'})
+        if r is None:
+            return
+        if r['go'] and r['go_seq'] != self.seq:
+            self.seq, self.task, self.carried = r['go_seq'], r, False
+            if self.br.world_box() is not None and self.br.sim.world.holding_id is not None \
+                    and self.br.reports.track != r['track_id']:
+                self.finish('failed', f"refused: the robot holds another box (track #{self.br.reports.track}): "
+                                      'B puts it down first')
+                return
+            self.go('find' if self.br.mode == MODE_POSE else 'wait_pose',
+                    f"box #{r['track_id']}: " + ('finding it' if self.br.mode == MODE_POSE else 'waiting for POSE (P)'))
+        elif not r['go'] and self.active():
+            self.br.cancel(from_task=True)
+            self.finish('stopped', 'stopped from UI 1: the robot stands', report=False)
+
+    def picked(self):
+        b, w, c = self.br, self.br.sim.world, self.br.sim.controller
+        return (w.holding_id is not None and c.mode == 'loco' and self.br.sim.stats['uprightTime'] > 1.0
+                and b.frame_now().held is not None)
+
+    def regrasp(self):
+        w = self.br.sim.world
+        return w.holding_id is None and w.pick_id is not None
+
+    def after_pick(self):
+        t, b = self.task, self.br
+        if t['place'] is None:
+            self.finish('done', 'done: the robot holds the box (no put-down marker)')
+        elif t['carry'] == 'route' and not self.carried:
+            rf = b.route_follow
+            rf.t_poll = 0.0
+            rf.poll(time.monotonic())
+            f = rf.follower
+            if f is None:
+                self.carried = True
+                return self.after_pick()
+            if f.done:
+                f.idx, f.done, rf.done = 0, False, False
+            rf.set_drive(True)
+            self.go('carry', f'carrying the box along the desired trajectory ({len(f.wp)} waypoints)')
+        else:
+            x, y, yaw = t['place']
+            if b.place_at(x, y, yaw):
+                self.go('place', f'putting the box down at ({x:+.2f}, {y:+.2f}) m')
+            else:
+                self.finish('failed', 'failed: no box in the hands for the put-down')
+
+    def step(self, now):
+        self.poll(now)
+        if not self.active():
+            return
+        b, w = self.br, self.br.sim.world
+        if b.mode == MODE_STOPPED:
+            return self.finish('stopped', 'stopped: the robot is damped (O)')
+        if self.phase != 'wait_pose' and b.mode != MODE_POSE:
+            b.cancel(from_task=True)
+            return self.finish('stopped', 'stopped: planner mode (P)')
+        if self.phase == 'wait_pose':
+            if b.mode == MODE_POSE:
+                self.go('find', f"box #{self.task['track_id']}: finding it")
+        elif self.phase == 'find':
+            tid = int(self.task['track_id'])
+            if w.holding_id is not None and b.reports.track == tid:
+                return self.after_pick()
+            o = next((o for o in b.reports.objects if o.get('bbox_center_world') and int(o['track_id']) == tid), None)
+            if o is not None:
+                b.take(o)
+                self.go('to_box', f'walking to box #{tid} and picking it up')
+            elif now - self.t_phase > self.FIND_S:
+                self.finish('failed', f'failed: box #{tid} is not reported (for {self.FIND_S:.0f} s)')
+        elif self.phase == 'to_box':
+            if self.picked():
+                self.after_pick()
+            elif w.pick_id is None and w.holding_id is None:
+                self.finish('failed', 'failed: the pick was given up')
+        elif self.phase == 'carry':
+            rf = b.route_follow
+            f = rf.follower
+            if self.regrasp():
+                rf.set_drive(False)
+                return self.go('to_box', 'the box left the hands: picking it up again')
+            if w.holding_id is None:
+                return self.finish('failed', 'failed: the box is not in the hands')
+            x, y, _ = self.task['place']
+            xy = b.robot_xy()
+            near = f is not None and f.idx == len(f.wp) - 1 and math.hypot(x - xy[0], y - xy[1]) < self.HANDOFF_M
+            if f is None or rf.done or near:
+                self.carried = True
+                if rf.drive:
+                    rf.set_drive(False)
+                self.after_pick()
+            elif not rf.drive:
+                self.text = 'carrying: Drive is off (T, or Drive in UI 1, walks on)'
+        elif self.phase == 'place':
+            if self.regrasp():
+                return self.go('to_box', 'the box left the hands: picking it up again')
+            if w.holding_id is not None and w.place_target is None:
+                return self.finish('stopped', 'stopped: the put-down was cancelled')
+            if (w.holding_id is None and w.place_target is None and b.sim.controller.mode == 'loco'
+                    and b.sim.stats['uprightTime'] > 1.5 and b.frame_now().held is None):
+                x, y, _ = self.task['place']
+                self.finish('done', f'done: the box is down at ({x:+.2f}, {y:+.2f}) m')
+
+
 class Bridge:
     def __init__(self, args):
         self.args = args
@@ -303,7 +468,8 @@ class Bridge:
         self.last_seed_xy = None
         self.seed_skips = 0
         self.pose_corr_yaw = 0.0        # the runner's seed yaw when POSE started
-        self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0, 'objects': -1.0, 'pose': -1.0, 'tau': None}
+        self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0, 'objects': -1.0, 'pose': -1.0, 'tau': None,
+                     'ref': -1.0}
         self.box_id = None
         self.move_seen = None
         self.stick = (np.zeros(3), np.zeros(3))     # (move, face): the loco driver's left and right sticks
@@ -318,6 +484,10 @@ class Bridge:
         self.syncs = 0
         self.phase = 'idle'
         self.trace = open(args.trace, 'w') if args.trace else None
+        self.ui = None                  # 'window' | 'terminal' | 'web' | 'headless'
+        self.flags = None               # OP.Flags: UI 3's list of the bridge's flags
+        self.keys_from = None
+        self.box_route = BoxRoute(self)
 
     # -- the map server -----------------------------------------------------------------------------------------
     def poll_pose(self):
@@ -365,13 +535,13 @@ class Bridge:
     def pick_nearest(self, request=True):
         """The box reported nearest the robot (active tracks first); again: the next one, round to the first."""
         if self.sim.world.holding_id is not None:
-            print('[box] the robot holds the box: b puts it down', flush=True)
+            self.say('the robot holds the box: b puts it down')
             return False
         self.poll_objects()
         objs = self.ordered_reports()
         if not objs:
             if request:
-                print('[box] x: the map server reports no object', flush=True)
+                self.say('x: the map server reports no object')
             return False
         self.take(self.next_report(objs), request)
         return True
@@ -380,10 +550,10 @@ class Bridge:
         """A click on a reported box in the window: that one is the box and the robot picks it up, in locomotion only."""
         w, c = self.sim.world, self.sim.controller
         if w.holding_id is not None:
-            print('[box] click: the robot holds the box, b puts it down first', flush=True)
+            self.say('click: the robot holds the box, b puts it down first')
             return False
         if c.mode != 'loco':
-            print(f'[box] click: the box controller is busy ({c.semantics}), no other box until it is done', flush=True)
+            self.say(f'click: the box controller is busy ({c.semantics}), no other box until it is done')
             return False
         self.take(o)
         return True
@@ -398,8 +568,8 @@ class Bridge:
         self.box_id = b['id']
         self.reports.link(o)
         self.move_seen = None
-        print(f"[box] box: track #{o['track_id']} at ({c[0]:.2f}, {c[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg, "
-              f'{hypot(c[0] - xy[0], c[1] - xy[1]):.2f} m from the robot', flush=True)
+        self.say(f"box: track #{o['track_id']} at ({c[0]:.2f}, {c[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg, "
+              f'{hypot(c[0] - xy[0], c[1] - xy[1]):.2f} m from the robot')
         if request:
             self.request_pick()
 
@@ -408,34 +578,133 @@ class Bridge:
             return False
         self.walking = False
         self.sim.force_search = True
-        print('[box] pick requested', flush=True)
+        self.say('pick requested')
         return True
 
     def place_ahead(self):
         w = self.sim.world
         if w.holding_id is None:
-            print('[box] b: no box in the hands', flush=True)
+            self.say('b: no box in the hands')
             return False
         self.walking = False
         pos, yaw = self.sim.relative(self.args.place_ahead, self.args.place_left)
         w.set_place(pos, yaw)
         self.sim.force_search = True
-        print(f'[box] place at ({pos[0]:.2f}, {pos[1]:.2f}) m, {self.args.place_ahead:.2f} m ahead of the controller',
-              flush=True)
+        self.say(f'place at ({pos[0]:.2f}, {pos[1]:.2f}) m, {self.args.place_ahead:.2f} m ahead of the controller')
         return True
 
-    def cancel(self):
+    def place_at(self, x, y, yaw):
+        """UI 1's put-down marker."""
+        w = self.sim.world
+        if w.holding_id is None:
+            return False
+        self.walking = False
+        w.set_place([x, y], yaw)
+        self.sim.force_search = True
+        self.say(f'place at ({x:.2f}, {y:.2f}) m, the put-down marker')
+        return True
+
+    def cancel(self, from_task=False):
         self.sim.world.clear_targets()
         self.walking = False
         self.sim.force_search = True
-        print('[box] targets cleared', flush=True)
+        self.say('targets cleared')
+        if not from_task and self.box_route is not None and self.box_route.active():
+            self.box_route.finish('stopped', 'cancelled (C)')
+
+    def say(self, msg):
+        if self.flags is None:
+            print(f'[box] {msg}', flush=True)
+        else:
+            self.flags.say('[box]', msg)
+
+    # -- UI 3 -------------------------------------------------------------------------------------------------
+    def drive_sticks(self, now, op, local=None):
+        """The sticks of one loop step: the window's held keys (local: (left, right)) go first, then UI 3's, then UI 1's
+        trajectory while Drive is on and no pick or place is asked for. True when the trajectory steers."""
+        args, rf = self.args, self.route_follow
+        keys = None if op is None else op.keys()
+        if local is not None and (np.linalg.norm(local[0]) > 1e-6 or np.linalg.norm(local[1]) > 1e-6):
+            left, right = local
+            self.keys_from = 'the window'
+        elif keys is not None:
+            az = math.degrees(self.heading()) if args.frame == 'heading' else op.cam_az_deg
+            left, right = OP.keys_stick(keys, 'left', args.run_scale, az), OP.keys_stick(keys, 'right', 1.0, az)
+            self.keys_from = 'UI 3'
+        else:
+            left, right = np.zeros(3), np.zeros(3)
+            self.keys_from = None
+        rf.poll(now)
+        auto = None
+        if self.mode in (MODE_PLANNER, MODE_POSE) and not self.has_target() and self.keys_from is None:
+            auto = rf.stick(rf.robot_xy(), self.max_speed)
+            if auto is not None:
+                self.keys_from = 'the desired trajectory'
+        self.stick = (left, right) if auto is None else auto
+        return auto is not None
+
+    def set_flag(self, name, value):
+        fl = self.flags
+        if name not in fl.live:
+            return self.say(f'UI 3: {name} is not a live flag')
+        try:
+            v = fl.value(name, value)
+        except ValueError as e:
+            return self.say(f'UI 3: {e}')
+        setattr(self.args, name, v)
+        if name == 'tour_speed':
+            self.route_follow.speed = v
+        elif name in GRASP_FLAGS:
+            setattr(self.grasp, GRASP_FLAGS[name], float(v))
+        fl.note_live(name, v)
+        self.say(f'UI 3: {fl.flag(name)} {v}')
+
+    def restart(self, changes, close):
+        if self.mode == MODE_POSE:
+            return self.say('UI 3: no restart in POSE (the robot tracks this bridge): P back to planner mode first')
+        fl = self.flags
+        try:
+            vals = {n: fl.value(n, v) for n, v in changes.items() if n in fl.actions}
+        except ValueError as e:
+            return self.say(f'UI 3: restart refused: {e}')
+        self.say('UI 3: restarting with ' + ' '.join(f'{fl.flag(n)} {fl.text(v)}' for n, v in vals.items()))
+        self.publish_state()
+        fl.restart(vals, close)
+
+    def operator_command(self, c, close):
+        k = c.get('key')
+        if k == 'start':
+            self.start()
+        elif k == 'pose':
+            self.toggle_pose()
+        elif k == 'stop':
+            self.stop()
+        elif k == 'resend':
+            self.resend_mode()
+        elif k == 'pick':
+            self.pick_nearest()
+        elif k == 'select':
+            self.poll_objects()
+            o = next((o for o in self.reports.objects if int(o['track_id']) == int(c.get('track_id', -1))), None)
+            if o is None:
+                self.say(f"UI 3: track #{c.get('track_id')} is not reported")
+            else:
+                self.select_report(o)
+        elif k == 'place':
+            self.place_ahead()
+        elif k == 'cancel':
+            self.cancel()
+        elif k == 'set':
+            self.set_flag(c.get('name'), c.get('value'))
+        elif k == 'restart':
+            self.restart(c.get('set') or {}, close)
 
     def walk(self, on):
         """The terminal's w and the headless carry: forward along the controller's heading now, until called off."""
         self.walking = on
         yaw = qyaw(self.sim.controller.pose.rootRot)
         self.walk_dir = [math.cos(yaw), math.sin(yaw)]
-        print(f"[box] {'walking forward' if on else 'stop walking'}", flush=True)
+        self.say(f"{'walking forward' if on else 'stop walking'}")
 
     def heading(self):
         return qyaw(self.sim.controller.pose.rootRot)
@@ -460,12 +729,12 @@ class Bridge:
     # -- modes ---------------------------------------------------------------------------------------------------
     def start(self):
         if self.mode == MODE_STOPPED:
-            print('[box] stopped (damping): restart deploy.sh to go on', flush=True)
+            self.say('stopped (damping): restart deploy.sh to go on')
             return
         self.link.command(start=True, planner=True)
         self.mode = MODE_PLANNER
         self.planner_started()
-        print('[box] start=1 planner=1 -> PLANNER (stand)', flush=True)
+        self.say('start=1 planner=1 -> PLANNER (stand)')
 
     def planner_started(self):
         """The planner faces where the robot faces now, also when the node was already in planner mode with
@@ -486,14 +755,14 @@ class Bridge:
                 newest = self.runner.produced - 1
                 self.send(max(self.runner.base, min(self.cur, newest)), newest)
                 self.published = newest
-            print('[box] planner=0 -> POSE (the controller drives the robot)', flush=True)
+            self.say('planner=0 -> POSE (the controller drives the robot)')
         elif self.mode == MODE_POSE:
             self.link.command(planner=True)
             self.mode = MODE_PLANNER
             self.planner_started()
-            print('[box] planner=1 -> PLANNER (stand)', flush=True)
+            self.say('planner=1 -> PLANNER (stand)')
         else:
-            print('[box] press ] first', flush=True)
+            self.say('press ] first')
 
     def resend_mode(self):
         if self.mode in (MODE_PLANNER, MODE_POSE):
@@ -502,7 +771,7 @@ class Bridge:
     def stop(self):
         self.link.command(stop=True, planner=self.mode == MODE_PLANNER)
         self.mode = MODE_STOPPED
-        print('[box] stop=1 -> damping', flush=True)
+        self.say('stop=1 -> damping')
 
     # -- the stream ----------------------------------------------------------------------------------------------
     def begin(self):
@@ -512,7 +781,7 @@ class Bridge:
         yaw = 0.0 if p is None else float(p['root_yaw'])
         self.sim.reset_robot([xy[0], xy[1], 0.0], yaw)
         self.runner = StreamRunner(self.sim, lookahead=self.args.lookahead, yaw_gain=self.args.yaw_gain)
-        print(f'[box] the controller starts at ({xy[0]:.2f}, {xy[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg', flush=True)
+        self.say(f'the controller starts at ({xy[0]:.2f}, {xy[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg')
 
     def replan(self, F):
         """POSE: the page's snap-xyyaw, --yaw-gain of the yaw gap, against the frame the robot played when the pose
@@ -531,8 +800,8 @@ class Bridge:
                 robot, gain = ((xy[0], xy[1]), float(p['root_yaw']), age), 1.0
             elif jump > self.args.max_seed_jump:
                 self.seed_skips += 1
-                print(f'[box] the SLAM pose jumped {jump:.2f} m in 0.2 s: no seed this time '
-                      f'({self.seed_skips} so far)', flush=True)
+                self.say(f'the SLAM pose jumped {jump:.2f} m in 0.2 s: no seed this time '
+                      f'({self.seed_skips} so far)')
             else:
                 robot = ((xy[0], xy[1]), float(p['root_yaw']), age + self.args.track_delay)
         if self.trace is not None:
@@ -626,9 +895,16 @@ class Bridge:
                 self.box_from_report()
         if self.last['tau'] is None or now - self.last['tau'] >= CONTROL_DT:
             self.send_arm_tau(now)
+        if self.box_route is not None:
+            self.box_route.step(now)
         if now - self.last['bus'] >= 0.1:
             self.last['bus'] = now
             self.publish_state()
+        if now - self.last['ref'] >= 1.0 / REF_HZ:
+            self.last['ref'] = now
+            f = self.frame_now()
+            self.bus.publish(REF_TOPIC, {'mode': self.mode, 'qpos': np.round(f.qpos[0:36], 4).tolist(),   # (36,)
+                                         'held_box': None if f.ghost_box is None else np.round(f.ghost_box, 4).tolist()})
 
     def planner_yaw(self):
         """The map yaw of the node's planner frame +x: the robot's heading when the planner started (] or P back
@@ -686,9 +962,9 @@ class Bridge:
                     # after the grasp, often after the place was asked for, and the target kept made the controller
                     # put down the box it had just failed to lift again.
                     w.place_target = None
-                    print(f"[box] grip check: the reference lifted the box but it is still on the floor at "
+                    self.say(f"grip check: the reference lifted the box but it is still on the floor at "
                           f"({meas['pos'][0]:.2f}, {meas['pos'][1]:.2f}) m: the hold is dropped, the controller picks "
-                          f'it up again ({self.drops} so far)', flush=True)
+                          f'it up again ({self.drops} so far)')
             return
         self.grip.update(frame, w.holding_id, None)
         if self.runner.pending(self.cur, b['id']) or self.grasp.ramp > 0:
@@ -715,8 +991,7 @@ class Bridge:
             self.sim.force_search = True
         self.syncs += 1
         if moved > 0.1:
-            print(f'[box] the box moved {moved:.2f} m to ({pos[0]:.2f}, {pos[1]:.2f}) m: moved in the world too',
-                  flush=True)
+            self.say(f'the box moved {moved:.2f} m to ({pos[0]:.2f}, {pos[1]:.2f}) m: moved in the world too')
 
     # -- the grasp ----------------------------------------------------------------------------------------------
     def send_arm_tau(self, now):
@@ -772,7 +1047,12 @@ class Bridge:
             'stick': self.move_stick()[:2].tolist(), 'max_speed': self.max_speed, 'route': self.route_follow.state(),
             'seeds': None if r is None else r.seeds, 'held_back': None if r is None else r.held_back,
             'kept_out': None if r is None else r.kept_out,
-            'phase': self.phase, 'task': task})
+            'phase': self.phase, 'task': task,
+            'box_route': None if self.box_route is None else self.box_route.state(),
+            'driver': 'box', 'ui': self.ui, 'frame': self.args.frame, 'keys_from': self.keys_from,
+            'params': None if self.flags is None else self.flags.spec(),
+            'argv': None if self.flags is None else self.flags.argv(),
+            'notices': [] if self.flags is None else list(self.flags.notices)})
 
     def close(self):
         if self.trace is not None:
@@ -789,6 +1069,7 @@ class Bridge:
 
 def run_headless(args):
     br = Bridge(args)
+    br.ui, br.box_route = 'headless', None
     time.sleep(1.0)                                       # PUB slow joiner
     t0 = time.monotonic()
     step, t_step, t_start, next_poll = 'wait', t0, None, 0.0
@@ -870,8 +1151,30 @@ def run_headless(args):
         br.close()
 
 
-def run_terminal(args):
+def run_web(args, flags):
     br = Bridge(args)
+    br.ui, br.flags = 'web', flags
+    op = OP.Operator(br.map, 'box')
+    br.say("--web: no window, UI 3 drives this bridge (the map server's /ui3 page, http://localhost:8780/ui3)")
+    try:
+        while True:
+            now = time.monotonic()
+            for c in op.poll(now):
+                br.operator_command(c, br.close)
+            br.drive_sticks(now, op)
+            br.phase = br.sim.controller.semantics
+            br.tick(now)
+            time.sleep(0.003)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        br.close()
+
+
+def run_terminal(args, flags):
+    br = Bridge(args)
+    br.ui, br.flags = 'terminal', flags
+    op = OP.Operator(br.map, 'box')
     keys, lock = [], threading.Lock()
 
     def reader():
@@ -902,8 +1205,13 @@ def run_terminal(args):
                     br.stop()
                 elif k == 'q':
                     return
+            now = time.monotonic()
+            for c in op.poll(now):
+                br.operator_command(c, br.close)
+            if not br.walking:
+                br.drive_sticks(now, op)
             br.phase = br.sim.controller.semantics
-            br.tick(time.monotonic())
+            br.tick(now)
             time.sleep(0.003)
     except KeyboardInterrupt:
         pass
@@ -990,15 +1298,22 @@ def main():
     ap.add_argument('--carry-s', type=float, default=0.0, help='headless: s walking forward with the box before the place')
     ap.add_argument('--auto-stop', action='store_true')
     ap.add_argument('--terminal', action='store_true', help='terminal keys (letter + Enter) instead of the window')
+    ap.add_argument('--web', action='store_true',
+                    help="no window: UI 3 (the map server's /ui3 page) sends the keys, the box keys and the mode commands")
     ap.add_argument('--smoke-frames', type=int, default=None, help='(testing) close the window after N drawn frames')
     args = ap.parse_args()
+    flags = OP.Flags(ap, args, LIVE_FLAGS, RESTART_FLAGS)
     if args.headless is not None:
         run_headless(args)
+    elif args.web:
+        run_web(args, flags)
     elif args.terminal:
-        run_terminal(args)
+        run_terminal(args, flags)
     else:
         from box_window import run_window
-        run_window(Bridge(args), args)
+        br = Bridge(args)
+        br.ui, br.flags = 'window', flags
+        run_window(br, args)
 
 
 if __name__ == '__main__':

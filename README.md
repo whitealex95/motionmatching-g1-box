@@ -25,6 +25,7 @@ MuJoCo sim. The robot's pose comes from the map server (the Mid-360 with FAST-LI
 | `sonic_g1_box/run_slam.py` | `phys/engine.js` (`graspStep`), `app.js` | the bridge: the SLAM pose, the box reports, the palm force, the keys, the headless sequence |
 | `sonic_g1_box/box_window.py` | | the bridge's window (UI 2): the loco driver's window and keys, plus the box task |
 | `sonic_g1_box/route_follow.py` | | UI 1's trajectory, walked with `T`: a copy of the loco driver's `RouteFollow` |
+| `sonic_g1_box/operator_link.py` | | UI 3's link through the map server: its keys and commands, the bridge's flags, the restart. The same file as the loco driver's |
 | `sonic_g1_box/deploy_link.py` | | the node's ZMQ topics and the desktop's JSON bus, mirrored from motionmatching-g1-deploy |
 | `tools/page_parity/` | | the parity check against the page's own modules, run in node |
 | `assets/unitree_g1/` | | the G1 model the window draws |
@@ -39,7 +40,9 @@ The parity check needs node and a checkout of lmm-g1-box.
 
 In motionmatching-g1-deploy, the box sessions of `README_BOX_SIM.md` and `README_BOX_REAL.md` (*The session*) run
 `python sonic_g1_box/run_slam.py` from this repo's root: its window (UI 2) by default, `--terminal` for letter +
-Enter keys. The window has the keys of motionmatching-g1-loco's MM driver window (`]`, `P`, `O`, `Enter`, `W A S D`,
+Enter keys, `--web` for no window (UI 3, the map server's `/ui3` page, drives it, and takes part in the other modes
+too). UI 1's *Box task* card (the map server's `box_task` op) sets a pick, a carry and a put-down that `BoxRoute` in
+`run_slam.py` walks in POSE. The window has the keys of motionmatching-g1-loco's MM driver window (`]`, `P`, `O`, `Enter`, `W A S D`,
 the arrows, `Shift`, `F`, `T`, `Esc`), and the box task adds `X`, a click on a reported box, `B`, `C`, `V` and `L`.
 The arrows are not the page's: they turn the character (the controller's optional `face` input), and like the page's
 keys they take over from a pick or a place while held. Headless, that repo's launcher:
