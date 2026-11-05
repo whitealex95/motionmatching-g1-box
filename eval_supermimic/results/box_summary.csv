@@ -1,0 +1,9 @@
+heuristic,release,sonic_v1_1,supermimic
+none,0,0,0
+shoulder,0,2,12
+wrist,1,0,0
+shoulder+wrist,7,1,11
+palm15,11,10,17
+palm25,13,15,18
+palm40,14,16,17
+palm25+biases,14,6,16

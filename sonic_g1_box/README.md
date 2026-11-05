@@ -109,3 +109,24 @@ No root-position feedback exists on hardware (SONIC never observes root XY and
 the robot has no odometry here), so the reference is open loop: steer by
 watching the robot, and press `i` in the deploy terminal to re-align heading
 while standing still.
+
+## SuperMimic physical tracking
+
+Pass `--tracker supermimic` to `run_grasp.py`, `run_interactive.py`, or
+`run_track_clips.py` to use the locally downloaded SuperMimic demo actor.
+SONIC remains the default. The adapter uses native MuJoCo physics and the
+SuperMimic demo's PD gains and torque limits.
+
+Setup and runtime details: [SuperMimic adapter](../tools/supermimic_tracking/README.md).
+The [comparison workflow](../eval_supermimic/README.md) evaluates all 20
+OmniRetarget clips with nine grasp heuristics and builds a local
+page with videos, per-clip outcomes, and source/checkpoint provenance.
+
+The complete OmniRetarget comparison includes all 20 clips under nine heuristics,
+with a 60 N per-palm column and a SuperMimic row that clips PD before adding
+virtual-force torque. Use `--tracker supermimic --torque-clip before-force` in
+`run_track_clips.py` for that variant. In `run_grasp.py`, also pass
+`--palm-force-via torque` so the virtual force is added after PD clipping. It moves both the demo and
+scene limits onto PD torque and disables final MuJoCo motor and joint
+actuator-force clipping. See [the recording instructions](../eval_supermimic/README.md)
+for the 720-video sweep and local comparison page.

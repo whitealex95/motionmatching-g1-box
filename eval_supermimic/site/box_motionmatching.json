@@ -1,0 +1,106 @@
+{
+  "conditions": [
+    {
+      "tracker": "sonic",
+      "command": [
+        "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python",
+        "-u",
+        "sonic_g1_box/run_grasp.py",
+        "--tracker",
+        "sonic",
+        "--sonic",
+        "release",
+        "--max-seconds",
+        "60",
+        "--pick-here",
+        "--palm-force",
+        "25",
+        "--shoulder-squeeze",
+        "0",
+        "--wrist-squeeze",
+        "0",
+        "--video",
+        "eval_supermimic/results/box_mm_sonic.mp4"
+      ],
+      "environment": {
+        "MUJOCO_GL": "egl",
+        "SONIC_ORT_THREADS": "2"
+      },
+      "summary": "[demo:grasp] INCOMPLETE -- 60.0 s sim, 42 s wall, lifted=True (max z 0.47 m), placed=False (z 0.10, upright=False), fallen=False, robot-box dist 0.41 m",
+      "video": "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_mm_sonic.mp4",
+      "video_sha256": "0090c9e4460c96ae889c152407766ad714b54d82954cbda68239b682e82ed956",
+      "success": false
+    },
+    {
+      "tracker": "supermimic",
+      "command": [
+        "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python",
+        "-u",
+        "sonic_g1_box/run_grasp.py",
+        "--tracker",
+        "supermimic",
+        "--max-seconds",
+        "60",
+        "--pick-here",
+        "--palm-force",
+        "25",
+        "--shoulder-squeeze",
+        "0",
+        "--wrist-squeeze",
+        "0",
+        "--video",
+        "eval_supermimic/results/box_mm_supermimic.mp4"
+      ],
+      "environment": {
+        "MUJOCO_GL": "egl",
+        "SONIC_ORT_THREADS": "2"
+      },
+      "summary": "[demo:grasp] SUCCESS -- 26.9 s sim, 20 s wall, lifted=True (max z 0.89 m), placed=True (z 0.15, upright=True), fallen=False, robot-box dist 1.30 m",
+      "video": "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_mm_supermimic.mp4",
+      "video_sha256": "1f8703e87a9964b757266afed02d2f881384cf30d2ed75eba8c361e413108b7c",
+      "success": true
+    }
+  ],
+  "video_composition": {
+    "command": [
+      "ffmpeg",
+      "-y",
+      "-v",
+      "error",
+      "-filter_complex_threads",
+      "2",
+      "-threads",
+      "2",
+      "-i",
+      "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_mm_sonic.mp4",
+      "-threads",
+      "2",
+      "-i",
+      "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_mm_supermimic.mp4",
+      "-filter_complex",
+      "[0:v]fps=25,scale=640:360,setsar=1,tpad=stop_mode=clone:stop_duration=0.1,trim=duration=60.0,setpts=PTS-STARTPTS,pad=640:408:0:48:color=0x172528,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='SONIC release | incomplete at 60 s':fontcolor=white:fontsize=17:x=14:y=14[v0];[1:v]fps=25,scale=640:360,setsar=1,tpad=stop_mode=clone:stop_duration=33.2,trim=duration=60.0,setpts=PTS-STARTPTS,pad=640:408:0:48:color=0x172528,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='SuperMimic | success at 26.9 s, then frozen':fontcolor=white:fontsize=17:x=14:y=14[v1];[v0][v1]hstack=inputs=2,pad=iw:ih+38:0:0:color=0x172528,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Motion matching | pick here | palm force 25 N | shoulder and wrist biases 0':fontcolor=white:fontsize=15:x=16:y=h-27[out]",
+      "-map",
+      "[out]",
+      "-an",
+      "-c:v",
+      "libx264",
+      "-threads",
+      "2",
+      "-preset",
+      "fast",
+      "-crf",
+      "21",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_motionmatching_comparison.mp4"
+    ],
+    "source_durations_s": [
+      60.0,
+      26.9
+    ],
+    "output": "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_motionmatching_comparison.mp4"
+  },
+  "protocol": "Full motion matching pipeline, pick-here start, SceneBot box, 0.25 kg, palm force 25 N, shoulder and wrist squeeze zero, anchor reference correction. Final frame is frozen after an episode ends."
+}

@@ -105,7 +105,13 @@ class Demo:
             d.qpos[self.bq:self.bq + 7] = self.matcher.box_qpos()
         mujoco.mj_forward(self.model, d)
 
-        self.policy = SonicPolicy(variant=args.sonic, device='cpu')
+        if args.tracker == 'supermimic':
+            from supermimic_tracking.policy import SuperMimicPolicy
+            self.policy = SuperMimicPolicy()
+            self.policy.bind_mujoco(self.model, self.data)
+            self.kps, self.kds = self.policy.kps.copy(), self.policy.kds.copy()
+        else:
+            self.policy = SonicPolicy(variant=args.sonic, device='cpu')
         self.policy.streaming = True
         self.policy.set_motion(self.motion)
         # One shared world frame: pin heading alignment to identity so the
@@ -317,11 +323,15 @@ class Demo:
         target = self._adjust_target(target, f)
         extra = self._ctrl_extra(f)
         self._sync_box(f)
+        from torque_control import compose_torque, configure_torque_clipping
+        if not hasattr(self, '_torque_clip_function'):
+            self._torque_clip_function = configure_torque_clipping(
+                self.model, self.policy, self.args.tracker, self.args.torque_clip)
+        clip = self._torque_clip_function
         for _ in range(self.args.substeps):
-            d.ctrl[:29] = (self.kps * (target - d.qpos[self.q_at])
-                           - self.kds * d.qvel[self.dq_at])
-            if extra is not None:
-                d.ctrl[:29] += extra
+            d.ctrl[:29] = compose_torque(
+                self.kps * (target - d.qpos[self.q_at]) - self.kds * d.qvel[self.dq_at],
+                extra, clip, self.args.torque_clip)
             mujoco.mj_step(self.model, d)
             self._post_substep(f)
 
@@ -513,6 +523,8 @@ class Demo:
             self.viewer.close()
         if self.renderer is not None:
             self.renderer.close()
+        if self.args.tracker == 'supermimic':
+            self.policy.close()
         for line in (self.seeder or self.anchor).summary_lines():
             print(line)
         d = self.data
@@ -537,6 +549,8 @@ class Demo:
 
 def build_argparser(video_name):
     ap = argparse.ArgumentParser()
+    from torque_control import add_torque_clip_argument
+    add_torque_clip_argument(ap)
     ap.add_argument('--no-video', action='store_true')
     ap.add_argument('--viewer', action='store_true',
                     help='watch live (needs a display)')
@@ -545,6 +559,7 @@ def build_argparser(video_name):
     ap.add_argument('--width', type=int, default=1280)
     ap.add_argument('--height', type=int, default=720)
     ap.add_argument('--ref-mode', choices=RM.MODES, default='anchor')
+    ap.add_argument('--tracker', choices=['sonic', 'supermimic'], default='sonic')
     ap.add_argument('--sonic', choices=list(P.SONIC_VARIANTS),
                     default=P.DEFAULT_VARIANT,
                     help='SONIC checkpoint: release (v1.0), low_latency '

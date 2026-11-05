@@ -1,0 +1,15 @@
+{
+  "pid": 3538738,
+  "command": [
+    "/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python",
+    "-u",
+    "eval_supermimic/run_comparison.py",
+    "--jobs",
+    "6",
+    "--video",
+    "--video-fps",
+    "25",
+    "--out",
+    "eval_supermimic/results/box_all_videos"
+  ]
+}

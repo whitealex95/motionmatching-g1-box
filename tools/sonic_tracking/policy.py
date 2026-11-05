@@ -28,6 +28,7 @@ Faithfully replicated semantics (all verified against the C++ source):
     (CreatePolicyCommand / CurrentFrameAdvancement).
 """
 
+import os
 import numpy as np
 import onnxruntime as ort
 import yaml
@@ -128,8 +129,13 @@ class SonicPolicy:
                 pass
         providers = (['CUDAExecutionProvider', 'CPUExecutionProvider']
                      if device == 'cuda' else ['CPUExecutionProvider'])
-        self.enc = ort.InferenceSession(enc_path, providers=providers)
-        self.dec = ort.InferenceSession(dec_path, providers=providers)
+        options = ort.SessionOptions()
+        if os.environ.get('SONIC_ORT_THREADS'):
+            options.intra_op_num_threads = int(os.environ['SONIC_ORT_THREADS'])
+            if options.intra_op_num_threads < 1:
+                raise ValueError('SONIC_ORT_THREADS must be positive')
+        self.enc = ort.InferenceSession(enc_path, sess_options=options, providers=providers)
+        self.dec = ort.InferenceSession(dec_path, sess_options=options, providers=providers)
         if device == 'cuda' and 'CUDAExecutionProvider' not in self.enc.get_providers():
             print('[sonic] WARNING: --device cuda requested but onnxruntime '
                   'fell back to CPU (CUDA provider unavailable); the policy '

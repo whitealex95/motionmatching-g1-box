@@ -1,0 +1,10 @@
+{
+  "episodes": 720,
+  "videos": 720,
+  "exact_baseline_repeats": 480,
+  "exact_no_virtual_force_repeats": 80,
+  "before_force_episodes_exceeding_demo_limits": 58,
+  "max_before_force_excess_nm": 4.144350357291589,
+  "video_bytes": 3870458947,
+  "passed": true
+}

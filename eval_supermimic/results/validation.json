@@ -1,0 +1,40 @@
+{
+  "checked_at": "2026-10-21T22:40:47.441922+00:00",
+  "native_reference_parity": {
+    "actor_steps": 20,
+    "max_absolute_target_error": 0.0
+  },
+  "rejects_wrong_engine_checksum": true,
+  "box_episodes": 480,
+  "rendered_repeats": 9,
+  "exact_repeat_fields": [
+    "success",
+    "fallen",
+    "peak",
+    "carry_end_z",
+    "end_z"
+  ],
+  "browser": {
+    "javascript_errors": [],
+    "desktop": [
+      1440,
+      1050
+    ],
+    "mobile": [
+      390,
+      844
+    ],
+    "mobile_horizontal_overflow": false,
+    "box_and_locomotion_synchronized_playback": true,
+    "checkpoint_switch": true,
+    "full_motion_matching_seek_and_play": true
+  },
+  "http_range": {
+    "status": 206,
+    "requested": "bytes=10-99",
+    "returned_bytes": 90
+  },
+  "python_compile": true,
+  "javascript_syntax": true,
+  "git_diff_whitespace": true
+}

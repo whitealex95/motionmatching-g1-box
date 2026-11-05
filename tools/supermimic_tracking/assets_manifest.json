@@ -1,0 +1,49 @@
+{
+  "source": "https://supermimic.github.io/demo/",
+  "downloaded_at": "2026-10-21T22:25:20.847388+00:00",
+  "format": "SuperMimic browser demo runtime and model bundle",
+  "files": [
+    {
+      "file": "weights.bin",
+      "url": "https://supermimic.github.io/demo/weights.bin",
+      "bytes": 33014908,
+      "sha256": "f1d923a3084955869c75f5bc06fc25e64d854dbeecd33d139b689eb62f73d87f"
+    },
+    {
+      "file": "engine.wasm",
+      "url": "https://supermimic.github.io/demo/engine.wasm",
+      "bytes": 140028,
+      "sha256": "a48c757becd0f2ed7c658fc18b9d765df25b63ba944ffd0d74e09b2053cf4930"
+    },
+    {
+      "file": "engine.cfg",
+      "url": "https://supermimic.github.io/demo/engine.cfg",
+      "bytes": 14104,
+      "sha256": "45153ee8d52d5f9def4ea9fb3b1dece6ecd03b23ac4a139f043389cd69fd92d8"
+    },
+    {
+      "file": "robot.json",
+      "url": "https://supermimic.github.io/demo/robot.json",
+      "bytes": 10851,
+      "sha256": "2dd14d28134d547ca2596d800abf16b5ab4174a51fc52ea3dfb063449cbe8f26"
+    },
+    {
+      "file": "scene.xml",
+      "url": "https://supermimic.github.io/demo/scene.xml",
+      "bytes": 27513,
+      "sha256": "52c5c169a6516334144db449a3c220349cc6435bef1a260bf46652e0f1474cb0"
+    },
+    {
+      "file": "motion00.bin",
+      "url": "https://supermimic.github.io/demo/motions/00.bin",
+      "bytes": 277844,
+      "sha256": "570ebaa69b774587c8430203056e32029568ae443b76521fd312840217d128bb"
+    },
+    {
+      "file": "supermimic-constants.json",
+      "url": "https://supermimic.github.io/demo/constants.json",
+      "bytes": 4468,
+      "sha256": "3f2dbdce7da3f1ca3cef64763d84fea001d4e3eddcf89c259c41f7ba66bb447d"
+    }
+  ]
+}

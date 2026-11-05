@@ -1,0 +1,45 @@
+{
+  "settings": {
+    "clips": [
+      "sub12_largebox_071_original_mujoco"
+    ],
+    "tracker": "sonic",
+    "output_dir": "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_videos/videos/palm25__sonic_v1_1",
+    "results_json": "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_videos/episodes/palm25__sonic_v1_1.json",
+    "sonic": [
+      "sonic_v1_1"
+    ],
+    "shoulder_squeeze": 0.0,
+    "wrist_squeeze": 0.0,
+    "palm_force": 25.0,
+    "shoulder_open": 0.4,
+    "arm_kp": 1.0,
+    "arm_kd": 1.0,
+    "box_mass": 0.25,
+    "box_friction": 1.5,
+    "box_scale": 1.0,
+    "box_offset": 0.0,
+    "substeps": 20,
+    "settle": 1.0,
+    "speed": 1.0,
+    "video": true,
+    "viewer": false
+  },
+  "records": [
+    {
+      "clip": "sub12_largebox_071_original_mujoco",
+      "checkpoint": "sonic_v1_1",
+      "lifted": true,
+      "peak": 0.9148667207104817,
+      "ref_peak": 0.9306520819664001,
+      "success": true,
+      "end_z": 0.17292243260678095,
+      "fallen": false,
+      "fall_f": null,
+      "carry_end_frame": 230,
+      "carry_end_z": 0.37920687333336034,
+      "z_rest": 0.1844538152217865,
+      "video": "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_videos/videos/palm25__sonic_v1_1/sub12_largebox_071_original_mujoco_sonic_v1_1_success.mp4"
+    }
+  ]
+}

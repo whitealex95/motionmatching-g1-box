@@ -1,0 +1,46 @@
+  t=  0.0s mm=PICK         x=-2.23 box_z= 0.15 held=False
+  t=  2.0s mm=PICK         x=-2.28 box_z= 0.15 held=False
+  t=  4.0s mm=CARRY        x=-2.29 box_z= 0.46 held=True
+[  4.34s] GRIP FAILED (ref box z 0.71, physical 0.16) -> retry
+[  4.56s] CARRY (box z 0.18 m)
+  t=  6.0s mm=PICK         x=-2.26 box_z= 0.10 held=False
+  t=  8.0s mm=PICK         x=-2.32 box_z= 0.10 held=True
+[  9.06s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 10.0s mm=PICK         x=-2.26 box_z= 0.10 held=True
+  t= 12.0s mm=PICK         x=-2.33 box_z= 0.10 held=False
+[ 13.80s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 14.0s mm=PICK         x=-2.31 box_z= 0.10 held=True
+  t= 16.0s mm=PICK         x=-2.32 box_z= 0.10 held=False
+  t= 18.0s mm=PICK         x=-2.34 box_z= 0.10 held=True
+[ 18.54s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 20.0s mm=PICK         x=-2.28 box_z= 0.10 held=False
+  t= 22.0s mm=PICK         x=-2.34 box_z= 0.10 held=True
+[ 23.26s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 24.0s mm=PICK         x=-2.28 box_z= 0.10 held=True
+  t= 26.0s mm=PICK         x=-2.35 box_z= 0.10 held=False
+[ 28.00s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 28.0s mm=PICK         x=-2.34 box_z= 0.10 held=True
+  t= 30.0s mm=PICK         x=-2.35 box_z= 0.10 held=False
+  t= 32.0s mm=PICK         x=-2.37 box_z= 0.10 held=True
+[ 32.74s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 34.0s mm=PICK         x=-2.29 box_z= 0.10 held=False
+  t= 36.0s mm=PICK         x=-2.37 box_z= 0.10 held=True
+[ 37.46s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 38.0s mm=PICK         x=-2.29 box_z= 0.10 held=True
+  t= 40.0s mm=PICK         x=-2.35 box_z= 0.10 held=False
+  t= 42.0s mm=CARRY        x=-2.30 box_z= 0.10 held=True
+[ 42.20s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 44.0s mm=PICK         x=-2.24 box_z= 0.10 held=False
+  t= 46.0s mm=PICK         x=-2.28 box_z= 0.10 held=True
+[ 46.94s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 48.0s mm=PICK         x=-2.23 box_z= 0.10 held=False
+  t= 50.0s mm=PICK         x=-2.29 box_z= 0.10 held=False
+[ 51.66s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 52.0s mm=PICK         x=-2.22 box_z= 0.10 held=True
+  t= 54.0s mm=PICK         x=-2.23 box_z= 0.10 held=False
+  t= 56.0s mm=PICK         x=-2.16 box_z= 0.10 held=True
+[ 56.40s] GRIP FAILED (ref box z 0.56, physical 0.10) -> retry
+  t= 58.0s mm=PICK         x=-2.15 box_z= 0.10 held=False
+[root] mode anchor (continuous, gain 0.2): drift mean 0.030 m, p95 0.061 m, max 0.081 m (1829 corrections)
+[demo:grasp] INCOMPLETE -- 60.0 s sim, 42 s wall, lifted=True (max z 0.47 m), placed=False (z 0.10, upright=False), fallen=False, robot-box dist 0.41 m
+[demo] wrote eval_supermimic/results/box_mm_sonic.mp4

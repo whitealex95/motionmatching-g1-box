@@ -1,0 +1,5 @@
+controller,none,shoulder,wrist,shoulder+wrist,palm15,palm25,palm40,palm60,palm25+biases
+SONIC release,0,0,1,7,11,13,14,14,14
+SONIC v1.1,0,2,0,1,10,15,16,15,6
+"SuperMimic, clip after force",0,12,0,11,17,18,17,18,16
+"SuperMimic, clip before force",0,12,0,11,17,18,17,18,15

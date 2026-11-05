@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-10-22T03:10:48.165129+00:00",
+  "passed": true,
+  "torque_control_tests": 5,
+  "physics_source_and_asset_hashes_unchanged": true,
+  "browser": {
+    "desktop_viewport": [
+      1440,
+      1050
+    ],
+    "mobile_viewport": [
+      390,
+      844
+    ],
+    "javascript_errors": [],
+    "mobile_overflow": false,
+    "clip_options": 20,
+    "heuristic_options": 9,
+    "controller_rows": 4,
+    "all_video_mappings": 720,
+    "synchronized_playback": true,
+    "summary_cell_selection": true,
+    "episode_cell_selection": true,
+    "http_range_status": 206
+  },
+  "python_compilation": true,
+  "javascript_syntax": true,
+  "git_diff_whitespace": true
+}

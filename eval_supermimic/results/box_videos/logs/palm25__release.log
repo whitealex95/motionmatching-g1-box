@@ -1,0 +1,6 @@
+["/home/jkim3662/miniconda3/envs/mm-g1-sonic/bin/python", "/home/jkim3662/Projects/motionmatching-g1-box/sonic_g1_box/run_track_clips.py", "--tracker", "sonic", "--clips", "sub12_largebox_071_original_mujoco", "--box-mass", "0.25", "--box-offset", "0.0", "--box-friction", "1.5", "--box-scale", "1", "--substeps", "20", "--settle", "1", "--speed", "1", "--shoulder-open", "0.4", "--arm-kp", "1", "--arm-kd", "1", "--results-json", "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_videos/episodes/palm25__release.json", "--shoulder-squeeze", "0", "--wrist-squeeze", "0", "--palm-force", "25", "--sonic", "release", "--video", "--output-dir", "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/box_videos/videos/palm25__release"]
+exit=0 wall_seconds=17.41662378096953
+
+=== release (1 clips) ===
+  sub12_largebox_071_original_mujoco         SUCCESS  peak 0.82 (ref 0.93) end z 0.19
+  -> 1/1 carried without dropping

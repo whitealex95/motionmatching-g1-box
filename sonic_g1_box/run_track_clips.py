@@ -10,6 +10,7 @@ exactly as in run_grasp, driven by the clip's own labels (sidecar or rule).
     python run_track_clips.py --viewer --sonic release --clips sub12_largebox_071_original_mujoco
 """
 import argparse
+import json
 import math
 import os
 import sys
@@ -34,6 +35,7 @@ from mm_g1.states import Phase
 
 import box_scene
 from demo_base import GHOST_RGBA, CONTACT_RGBA, _EYE3
+from torque_control import compose_torque, add_torque_clip_argument, configure_torque_clipping
 from mm_stream import nlerp
 from run_grasp import (L_SHOULDER_ROLL, R_SHOULDER_ROLL,
                        L_WRIST_YAW, R_WRIST_YAW, CUSTOM_ARM_JOINTS)
@@ -70,7 +72,8 @@ class ClipMotion:
 
 
 class _Render:
-    def __init__(self, model, data, bq, q_at, ghost, path=None, viewer=False):
+    def __init__(self, model, data, bq, q_at, ghost, path=None, viewer=False,
+                 video_fps=50):
         self.model, self.data, self.bq, self.q_at = model, data, bq, q_at
         self.ghost = ghost                       # (centre, axes, half) box OBB
         self.gdata = mujoco.MjData(model)        # ghost FK only
@@ -79,12 +82,15 @@ class _Render:
                         != 'largebox']
         self.writer = self.renderer = self.viewer = None
         self.look = self._focus()
+        self.frame_index = 0
+        self.video_stride = int(POLICY_FPS / video_fps)
         if path:
             import imageio
             os.makedirs(os.path.dirname(path), exist_ok=True)
             self.renderer = mujoco.Renderer(model, 720, 1280)
-            self.writer = imageio.get_writer(path, fps=int(POLICY_FPS),
+            self.writer = imageio.get_writer(path, fps=video_fps,
                                              codec='libx264', quality=8,
+                                             ffmpeg_params=['-threads', '2'],
                                              macro_block_size=None)
             self.cam = mujoco.MjvCamera()
             self.cam.distance, self.cam.azimuth, self.cam.elevation = \
@@ -138,11 +144,12 @@ class _Render:
 
     def frame(self, ref_q, in_contact):
         self.look += 0.06 * (self._focus() - self.look)
-        if self.renderer is not None:
+        if self.renderer is not None and self.frame_index % self.video_stride == 0:
             self.cam.lookat[:] = self.look
             self.renderer.update_scene(self.data, camera=self.cam)
             self._draw_ghost(self.renderer.scene, ref_q, in_contact)
             self.writer.append_data(self.renderer.render())
+        self.frame_index += 1
         if self.viewer is not None:
             import time
             scn = getattr(self.viewer, 'user_scn', None)
@@ -156,6 +163,8 @@ class _Render:
     def close(self):
         if self.writer is not None:
             self.writer.close()
+        if self.renderer is not None:
+            self.renderer.close()
         if self.viewer is not None:
             self.viewer.close()
 
@@ -206,7 +215,15 @@ def track_clip(stem, variant, args):
     data.qpos[2] -= foot_lo - 0.002
     mujoco.mj_forward(model, data)
 
-    policy = SonicPolicy(variant=variant, device='cpu')
+    if variant == 'supermimic':
+        from supermimic_tracking.policy import SuperMimicPolicy
+        policy = SuperMimicPolicy()
+        policy.bind_mujoco(model, data)
+        kps, kds = policy.kps.copy(), policy.kds.copy()
+        kps[CUSTOM_ARM_JOINTS] *= args.arm_kp
+        kds[CUSTOM_ARM_JOINTS] *= args.arm_kd
+    else:
+        policy = SonicPolicy(variant=variant, device='cpu')
     policy.streaming = True                       # hold the last frame at the end
     policy.set_motion(motion)
     # Shared world frame: pin heading alignment to identity (as in demo_base).
@@ -220,6 +237,10 @@ def track_clip(stem, variant, args):
     arm_idx = [list(range(15, 22)), list(range(22, 29))]
     palm_ramp = [0.0, 0.0]
     jacp = np.zeros((3, model.nv))
+    torque_stats = dict(max_applied_abs_nm=0., max_limit_excess_nm=0.,
+                        substeps_exceeding_limits=0, measured_substeps=0)
+    clip = configure_torque_clipping(model, policy,
+        'supermimic' if variant == 'supermimic' else 'sonic', args.torque_clip)
 
     def palm_tau(lc, rc):
         """Jacobian squeeze: tau = J^T f pressing each labeled palm toward
@@ -263,16 +284,27 @@ def track_clip(stem, variant, args):
             target[R_SHOULDER_ROLL] -= args.shoulder_open
         tau = palm_tau(lc, rc) if args.palm_force > 0.0 else None
         for _ in range(args.substeps):
-            data.ctrl[:29] = (kps * (target - data.qpos[q_at])
-                              - kds * data.qvel[dq_at])
-            if tau is not None:
-                data.ctrl[:29] += tau
+            data.ctrl[:29] = compose_torque(
+                kps * (target - data.qpos[q_at]) - kds * data.qvel[dq_at],
+                tau, clip, args.torque_clip)
             mujoco.mj_step(model, data)
+            applied = data.qfrc_actuator[dq_at]
+            torque_stats['measured_substeps'] += 1
+            torque_stats['max_applied_abs_nm'] = max(
+                torque_stats['max_applied_abs_nm'], float(np.max(np.abs(applied))))
+            if clip is not None:
+                limits = policy.torque_limits
+                excess = max(0., float(np.max(applied-limits[:, 1])),
+                             float(np.max(limits[:, 0]-applied)))
+                torque_stats['max_limit_excess_nm'] = max(
+                    torque_stats['max_limit_excess_nm'], excess)
+                torque_stats['substeps_exceeding_limits'] += int(excess > 1e-6)
 
-    tmp = (os.path.join(HERE, 'out', 'track_clips', f'.{variant}_{stem}.tmp.mp4')
+    output_dir = getattr(args, 'output_dir', None) or os.path.join(HERE, 'out', 'track_clips')
+    tmp = (os.path.join(output_dir, f'.{variant}_{stem}.tmp.mp4')
            if args.video else None)
     ren = _Render(model, data, bq, q_at, ids['ghost'], path=tmp,
-                  viewer=args.viewer)
+                  viewer=args.viewer, video_fps=args.video_fps)
     # Success = still holding when the reference starts the put-down.
     ref_z = motion.qpos[:, 38]
     carry = np.flatnonzero(ref_z > z_rest + 0.25)
@@ -293,21 +325,36 @@ def track_clip(stem, variant, args):
             fallen, fall_f = True, int(policy.current_frame)
             break
     ren.close()
+    if variant == 'supermimic':
+        policy.close()
     lifted = peak > z_rest + 0.25
     success = (lifted and not fallen and z_at_carry_end is not None
                and z_at_carry_end > z_rest + 0.15)
     if tmp:
-        final = os.path.join(HERE, 'out', 'track_clips',
+        final = os.path.join(output_dir,
                              f'{stem}_{variant}_'
                              f'{"success" if success else "fail"}.mp4')
         os.replace(tmp, final)
     return dict(lifted=lifted, peak=peak, ref_peak=ref_peak, success=success,
-                end_z=float(data.qpos[bq + 2]), fallen=fallen, fall_f=fall_f)
+                end_z=float(data.qpos[bq + 2]), fallen=fallen, fall_f=fall_f,
+                carry_end_frame=carry_end, carry_end_z=z_at_carry_end,
+                z_rest=z_rest, video=final if tmp else None,
+                torque_clip=args.torque_clip if clip is not None else 'none',
+                torque=torque_stats,
+                actuator_force_limited=model.actuator_forcelimited[:29].tolist(),
+                actuator_control_limited=model.actuator_ctrllimited[:29].tolist(),
+                joint_actuator_force_limited=model.jnt_actfrclimited[model.actuator_trnid[:29, 0]].tolist())
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--clips', nargs='*', default=None)
+    ap.add_argument('--tracker', choices=['sonic', 'supermimic'], default='sonic')
+    add_torque_clip_argument(ap)
+    ap.add_argument('--video-fps', type=int, choices=[25, 50], default=50,
+                    help='Recording frame rate. Physics and policy remain at 50 Hz.')
+    ap.add_argument('--output-dir', default=None)
+    ap.add_argument('--results-json', default=None)
     ap.add_argument('--sonic', nargs='+', default=['release', 'sonic_v1_1'],
                     choices=list(P.SONIC_VARIANTS))
     ap.add_argument('--shoulder-squeeze', type=float, default=0.6)
@@ -336,11 +383,13 @@ def main():
     args = ap.parse_args()
     stems = args.clips or _box_clip_names()
 
-    for variant in args.sonic:
+    records = []
+    for variant in (['supermimic'] if args.tracker == 'supermimic' else args.sonic):
         print(f'\n=== {variant} ({len(stems)} clips) ===')
         wins = 0
         for stem in stems:
             r = track_clip(stem, variant, args)
+            records.append(dict(clip=stem, checkpoint=variant, **r))
             wins += r['success']
             status = (f"FELL@{r['fall_f']}" if r['fallen'] else
                       'SUCCESS' if r['success'] else
@@ -348,6 +397,10 @@ def main():
             print(f'  {stem:42s} {status:8s} peak {r["peak"]:.2f} '
                   f'(ref {r["ref_peak"]:.2f}) end z {r["end_z"]:.2f}')
         print(f'  -> {wins}/{len(stems)} carried without dropping')
+    if args.results_json:
+        os.makedirs(os.path.dirname(os.path.abspath(args.results_json)), exist_ok=True)
+        with open(args.results_json, 'w') as f:
+            json.dump(dict(settings=vars(args), records=records), f, indent=2)
 
 
 if __name__ == '__main__':

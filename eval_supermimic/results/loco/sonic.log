@@ -1,0 +1,13 @@
+["/home/jkim3662/miniconda3/envs/mm-g1/bin/python", "-u", "-m", "sonic_tracking.interactive", "--scene", "00_maindemo", "--controller", "emm", "--tracker", "sonic", "--auto", "--record", "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/loco/sonic.mp4", "--metrics-out", "/home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/loco/sonic.json", "--max-seconds", "60", "--ref-mode", "snap-xy", "--lookahead", "0.4", "--seed", "0", "--device", "cpu", "--width", "1280", "--height", "720"]
+[interactive] live -- autopilot, recording -> /home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/loco/sonic.mp4
+  tick 500 (10 s)
+  tick 1000 (20 s)
+  tick 1500 (30 s)
+  tick 2000 (40 s)
+  tick 2500 (50 s)
+  tick 3000 (60 s)
+[interactive] wrote /home/jkim3662/Projects/motionmatching-g1-box/eval_supermimic/results/loco/sonic.mp4 (3000 frames, 60.0 s), upright
+[tour] waypoint 9/13 after 60 s, robot path 49.6 m
+[pen]  obstacle penetration: mean 0.000 m, max 0.000 m, inside 0% of samples
+[track] joint error: mean 0.1090 rad, p95 0.1349 rad, max 0.1667 rad
+[root] mode snap-xy: pre-seed error mean 0.040 m, p95 0.083 m, max 0.165 m (290 projections; zero immediately after each seed)

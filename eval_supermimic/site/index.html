@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SuperMimic × SONIC | Physical tracking</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+<header><a class="brand" href="#">G1 <span>/</span> PHYSICAL TRACKING</a><a href="data.json" download>Download results ↗</a></header>
+<main>
+  <div class="eyebrow">LOCAL EXPERIMENT · OCTOBER 2026</div>
+  <h1>SuperMimic <span>×</span> SONIC</h1>
+  <p class="lede">Two tracking methods. The same task conditions.<br>Watch the physical rollouts and inspect every box outcome.</p>
+  <div class="protocol"><span>Unitree G1 · 29 joints</span><span>MuJoCo physics</span><span>50 Hz control</span><span>Native PD gains per tracker</span></div>
+  <p id="status" role="status">Loading measured results…</p>
+  <nav class="tabs" aria-label="Task"><button class="active" data-tab="box" aria-pressed="true">01 &nbsp; Box carry</button><button data-tab="loco" aria-pressed="false">02 &nbsp; Locomotion</button></nav>
+  <section id="box">
+    <div class="section-title"><div><div class="eyebrow">20 OMNIRETARGET CLIPS · 9 HEURISTICS · 4 CONTROLLER SETTINGS</div><h2>Can the robot keep hold?</h2></div><label>Video heuristic<select id="heuristic"></select></label></div>
+    <p class="note">Recorded references drive a physical robot and frictional carton. A successful carry requires a lift, no fall, and retention through the reference carry end. Select any of the 20 clips below. Every table cell opens its recorded comparison.</p>
+    <div class="video-options"><label>OmniRetarget clip<select id="clip"></select></label><label>SuperMimic torque clipping<select id="supermimic-version"><option value="supermimic">After virtual force</option><option value="supermimic_before_force">Before virtual force</option></select></label></div>
+    <div class="players">
+      <article class="player sonic"><div class="player-head"><label for="sonic-version">SONIC</label><select id="sonic-version"><option value="release">release</option><option value="sonic_v1_1">v1.1</option></select><span id="sonic-outcome" class="outcome"></span></div><video id="box-sonic" controls preload="metadata" playsinline muted></video></article>
+      <article class="player supermimic"><div class="player-head"><strong>SuperMimic</strong><span class="muted" id="supermimic-clip-label">clip after force</span><span id="supermimic-outcome" class="outcome"></span></div><video id="box-supermimic" controls preload="metadata" playsinline muted></video></article>
+    </div>
+    <div class="transport"><button id="box-play">Play both</button><button id="box-reset" class="secondary">Reset</button><label class="scrub">Time<input id="box-seek" type="range" min="0" max="12" step="0.02" value="0"></label><output id="box-time">0.00 s</output></div>
+    <p class="note">Videos start with 1 s of settling. The amber skeleton and translucent box show the reference. Green marks labelled hand contact. A low final box height can follow a successful put-down.</p>
+    <details id="motion-matching" hidden><summary>Full motion matching: pick, carry, place, and walk away</summary><p>This separate run starts at the pickup location with the SceneBot box, 25 N palm force, and zero shoulder and wrist squeeze. SuperMimic completes the task in 26.9 s. SONIC remains upright but does not finish within 60 s. The SuperMimic panel freezes after its episode ends.</p><video id="box-mm-video" controls preload="metadata" playsinline style="width:100%"></video></details>
+    <div class="section-title"><div><div class="eyebrow">MEASURED CARRIES</div><h2>Every heuristic, all 20 clips.</h2></div><div class="legend"><span class="blue">● SONIC release</span><span class="purple">● SONIC v1.1</span><span class="orange">● SuperMimic</span></div></div>
+    <div class="table-wrap"><table id="summary"><thead><tr></tr></thead><tbody></tbody></table></div>
+    <p class="note">Each cell is successful carries / 20. “Clip before force” computes clip(PD) + Jᵀf, allowing total torque to exceed the demo limits. “Clip after force” computes clip(PD + Jᵀf). SONIC uses its existing torque path. Force columns specify newtons per palm.</p>
+    <div class="section-title"><h2>Inspect individual clips</h2><label>Heuristic<select id="outcome-condition"></select></label></div>
+    <div class="table-wrap"><table id="episodes"><thead><tr><th>OmniRetarget clip</th><th>SONIC release</th><th>SONIC v1.1</th><th>SuperMimic · clip after force</th><th>SuperMimic · clip before force</th></tr></thead><tbody></tbody></table></div>
+    <details><summary>Evaluation protocol and limitations</summary><div id="box-protocol"></div></details>
+  </section>
+  <section id="loco" hidden>
+    <div class="section-title"><div><div class="eyebrow">EMM AUTOPILOT · MAIN DEMO SCENE · SEED 0</div><h2>Follow the same route.</h2></div></div>
+    <p class="note">Both runs use <code>snap-xy</code> reference correction, a 0.4 s reference lead, and a 60 s cap. Physical feedback changes the generated references, so the trajectories can diverge. Obstacles in this scene are visual overlays used by the matcher.</p>
+    <div class="players">
+      <article class="player sonic"><div class="player-head"><strong>SONIC</strong><span class="muted">release</span></div><video id="loco-sonic" controls preload="metadata" playsinline muted></video></article>
+      <article class="player supermimic"><div class="player-head"><strong>SuperMimic</strong><span class="muted">demo weights</span></div><video id="loco-supermimic" controls preload="metadata" playsinline muted></video></article>
+    </div>
+    <div class="transport"><button id="loco-play">Play both</button><button id="loco-reset" class="secondary">Reset</button><label class="scrub">Time<input id="loco-seek" type="range" min="0" max="60" step="0.02" value="0"></label><output id="loco-time">0.00 s</output></div>
+    <div class="table-wrap"><table id="loco-metrics"><thead><tr><th>Measured quantity</th><th>SONIC release</th><th>SuperMimic</th></tr></thead><tbody></tbody></table></div>
+    <p class="note">Joint error is the mean absolute joint-angle error against each run's own reference. Penetration measures overlap of the physical root with the matcher's obstacle regions. This single-scene run is a demonstration, not a locomotion benchmark.</p>
+  </section>
+  <section class="downloads"><div><div class="eyebrow">REPRODUCE & REVIEW</div><h2>Keep the evidence with the result.</h2><p>Exact commands, checkpoint hashes, source hashes, per-clip outcomes, and measured wall time accompany the evaluations.</p></div><div id="downloads"></div></section>
+  <footer><p>SuperMimic uses the browser demo bundle downloaded on 2026-10-21. Its paper training checkpoint identity is unspecified. The local adapter supplies reference motions to the pinned WebAssembly actor. All physical rollouts here use native MuJoCo.</p><a href="https://supermimic.github.io/demo/" target="_blank" rel="noreferrer">SuperMimic source demo ↗</a></footer>
+</main>
+</body>
+</html>

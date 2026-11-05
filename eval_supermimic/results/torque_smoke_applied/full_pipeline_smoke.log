@@ -1,0 +1,3 @@
+  t=  0.0s mm=PICK         x=-2.20 box_z= 0.15 held=False
+[root] mode anchor (continuous, gain 0.2): drift mean 0.014 m, p95 0.029 m, max 0.030 m (89 corrections)
+[demo:grasp] INCOMPLETE -- 2.0 s sim, 1 s wall, lifted=False (max z 0.15 m), placed=True (z 0.15, upright=True), fallen=False, robot-box dist 0.39 m

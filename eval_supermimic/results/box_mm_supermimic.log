@@ -1,0 +1,19 @@
+  t=  0.0s mm=PICK         x=-2.20 box_z= 0.15 held=False
+  t=  2.0s mm=PICK         x=-2.23 box_z= 0.15 held=False
+  t=  4.0s mm=CARRY        x=-2.27 box_z= 0.56 held=True
+[  4.56s] CARRY (box z 0.76 m)
+  t=  6.0s mm=CARRY        x=-2.22 box_z= 0.75 held=True
+  t=  8.0s mm=PLACE        x=-2.22 box_z= 0.71 held=True
+  t= 10.0s mm=PLACE        x=-2.29 box_z= 0.15 held=True
+  t= 12.0s mm=PLACE        x=-2.33 box_z= 0.15 held=False
+[ 13.22s] PLACED (box z 0.15 m)
+  t= 14.0s mm=PICK         x=-2.28 box_z= 0.15 held=False
+  t= 16.0s mm=PICK         x=-2.26 box_z= 0.18 held=True
+  t= 18.0s mm=PLACE        x=-2.28 box_z= 0.81 held=True
+  t= 20.0s mm=PLACE        x=-2.27 box_z= 0.15 held=False
+  t= 22.0s mm=LOCOMOTION   x=-2.25 box_z= 0.15 held=False
+  t= 24.0s mm=LOCOMOTION   x=-2.13 box_z= 0.15 held=False
+  t= 26.0s mm=LOCOMOTION   x=-1.70 box_z= 0.15 held=False
+[root] mode anchor (continuous, gain 0.2): drift mean 0.027 m, p95 0.071 m, max 0.090 m (836 corrections)
+[demo:grasp] SUCCESS -- 26.9 s sim, 20 s wall, lifted=True (max z 0.89 m), placed=True (z 0.15, upright=True), fallen=False, robot-box dist 1.30 m
+[demo] wrote eval_supermimic/results/box_mm_supermimic.mp4

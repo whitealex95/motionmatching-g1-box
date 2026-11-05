@@ -95,8 +95,9 @@ class App:
         self.demo, self.inp = demo, inp
         if not glfw.init():
             raise RuntimeError('glfw.init() failed -- needs a display')
+        tracker_name = 'SuperMimic' if demo.args.tracker == 'supermimic' else 'SONIC'
         self.window = glfw.create_window(
-            width, height, 'SONIC interactive -- WASD move, B box', None, None)
+            width, height, f'{tracker_name} interactive -- WASD move, B box', None, None)
         glfw.make_context_current(self.window)
         glfw.swap_interval(1)
         self.cam = mujoco.MjvCamera()
