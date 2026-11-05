@@ -1,6 +1,5 @@
-# Interactive motion matching for the Unitree G1.
-# Tested with Python 3.10 on Linux + NVIDIA GPU (MUJOCO_GL=glfw).
 mujoco>=3.3
 glfw>=2.6
 numpy>=1.24
-scipy>=1.10
+pyzmq>=25
+msgpack>=1.0

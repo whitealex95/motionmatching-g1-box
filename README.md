@@ -1,254 +1,104 @@
-# Interactive Motion Matching for the Unitree G1 — with box pick / carry / place
+# The box task for the Unitree G1
 
-Steer a **Unitree G1** humanoid around a MuJoCo scene in real time with the keyboard, and
-**pick up, carry, and set down a box** on command. Hold **WASD** and a
-[motion-matching](https://www.gdcvault.com/play/1023280/Motion-Matching-and-The-Road)
-search stitches GMR-retargeted LAFAN1 **walk**, **run** and **push-and-stumble** clips
-into one continuous, responsive gait; press **B** at the box (or **M** to walk over to it) and the controller
-switches to a small **pick → carry → place** state machine driven by
-[OmniRetarget](https://github.com/) robot-object clips — no neural network, no training,
-just nearest-neighbour search over per-phase feature databases.
+The G1 walks to a box, picks it up, carries it and puts it down, the way of lmm-g1-box's page
+([jhkim.me/lmm-g1-box](https://jhkim.me/lmm-g1-box/?physics=1&tracker=sonic_release&variant=holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60&tab=play):
+the variant `holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60`, the Play tab, physics on, the tracker
+`sonic_release`). The page's controller is ported here from its JavaScript (lmm-g1-box `web/js/`, commit `1721681`)
+to Python in `mm_g1/`, and the page's motion data is copied into `data/` (`data/README.md` lists each file, its
+SHA-256 and its terms). Nothing here reads lmm-g1-box.
 
-This repo is **fully self-contained**: the G1 model, all motion data, and the code live in
-this one folder. Clone it, create the conda env, and go.
+`sonic_g1_box/run_slam.py` streams the reference to the SONIC node of
+[motionmatching-g1-deploy](https://github.com/whitealex95/motionmatching-g1-deploy), on the real G1 or in that repo's
+MuJoCo sim. The robot's pose comes from the map server (the Mid-360 with FAST-LIO2) and the box from `live.sam3box`
+(SAM3 on the G1's D435i). The sessions are in that repo's `README_BOX_SIM.md` and `README_BOX_REAL.md`.
 
-```
-W / A / S / D    move (relative to the camera)
-Shift (hold)     run instead of walk
-B                pick up right here (the box pose plays no part), set down while carrying
-M                walk over to the box and pick it up (M again cancels the walk)
-Space            reset to the start pose
-T                toggle the command trajectory gizmo
-left-drag        orbit camera
-right-drag       pan camera
-scroll           zoom
-Esc              quit
-```
+## Files
 
-A box spawns a short distance in front of the character. **Press M from anywhere**: the
-controller plans a walking route to the pick stance in front of the box (green line),
-walks it, settles, and rides the pick clip; the box then rides along in its hands. You are
-now **carrying** — move around (the box follows), then press **B** to play the
-put-down and set the box back on the floor. M during the walk-over cancels it. **B** plays
-the pick right where the character stands, whatever the box pose: there is one pick
-motion, so it needs no walk-over (the box eases into the hands from wherever it rests;
-B during the walk-over picks there and then).
+| file | port of (lmm-g1-box `web/js/`) | what it holds |
+|---|---|---|
+| `mm_g1/database.py` | `controller.js` (`loadMMData`, `loadLoco`, `MMBackend`) | the Animation Database, the Box Matching Database and the Locomotion Matching Database (`emmboth` is built at load time from `emm_loco` and `emm_carry`), exact search |
+| `mm_g1/controller.py` | `controller.js` (`Controller`) | Locomotion and the box controller, inertialization, the simulation object and trajectory, root warping, the moving-target rules |
+| `mm_g1/ik.py` | `ik.js` | foot locking |
+| `mm_g1/sim.py` | `sim.js`, `scenario.js` | the boxes, the pick and place targets, the grasp and the release, the scripted sequence |
+| `mm_g1/mathq.py` | `math.js` | vectors, quaternions, springs |
+| `mm_g1/runner.py` | `phys/runner.js` | the stream for a tracked robot: 60 Hz poses resampled to 50 Hz frames, a re-plan every 10 frames with snap-xyyaw, no seed while bent down, the grip check, the box sync |
+| `sonic_g1_box/run_slam.py` | `phys/engine.js` (`graspStep`), `app.js` | the bridge: the SLAM pose, the box reports, the palm force, the keys, the headless sequence |
+| `sonic_g1_box/box_window.py` | | the bridge's window (UI 2) |
+| `sonic_g1_box/deploy_link.py` | | the node's ZMQ topics and the desktop's JSON bus, mirrored from motionmatching-g1-deploy |
+| `tools/page_parity/` | | the parity check against the page's own modules, run in node |
+| `assets/unitree_g1/` | | the G1 model the window draws |
 
-A red **command gizmo** (à la GenoView's `DrawTrajectory`) is drawn on the ground: a
-sphere at each predicted future position with a short stick pointing in the predicted
-facing direction. It shows exactly the trajectory the matcher is being asked to follow —
-press **T** to toggle it.
+## Install
 
-## Box manipulation (pick / carry / place)
+The bridge runs in motionmatching-g1-deploy's conda env `mm-g1-deploy` (that repo's `INSTALL.md`). On its own it
+needs Python 3.10 or newer and `pip install -r requirements.txt`. The window needs an OpenGL display (`libglfw3`).
+The parity check needs node and a checkout of lmm-g1-box.
 
-On this branch (`scenebot_g1_box_single`) the pick and the drop come from **one single
-motion**: the SceneBot web demo's squat pickup (clip 11 of the vendored motion graph,
-frames 0..120 at 50 Hz). The demo plays it at **half speed forward** for the pickup and
-the **same frames backward at full speed** for the put-down, and both playbacks are baked
-into the library exactly as played (`mm_g1/scenebot_pick.py`), resampled to 30 Hz,
-**together with the demo's own per-frame contact labels** (feet + wrists, `lib['contact']`).
-The clip has no box, so a box trajectory for the SceneBot free box (0.3 × 0.2 × 0.3 m) is
-synthesized: it rests where the clip's hands close (0.29 m ahead of the stance) and rides
-the wrist midpoint from that frame on. The [OmniRetarget](https://github.com/) robot-object
-clips contribute **only their carry frames** (their own pick/place phases are disabled);
-`mm_g1/boxes.py` still segments them and marks where the box is **attached**.
+## Running it
 
-A state machine with a shelf-style approach drives it (`mm_g1/controller.py`):
-
-```
-LOCOMOTION --M--> MOVE-TO-PICK (walk the planned route, settle) --> PICK (ride)
-LOCOMOTION --B--> PICK (ride)
-    --> CARRY (search) --B--> PLACE (ride) --> LOCOMOTION
-```
-
-**MOVE-TO-PICK** (approach heuristics, ported from `motionmatching-g1-shelf`): M inverts
-the recorded stance-to-box offset at the LIVE box pose (the box's 2-fold symmetry gives
-two stance candidates; the nearer way-in point wins), plans a polyline route — straight to
-a way-in point 0.6 m behind the stance, a rounded corner, then in along the stance heading
-— and synthesizes the walk command from a look-ahead point on it, with the matcher's
-future trajectory taps read straight off the route. On the final leg the root is pinned to
-the rail (cross-track and yaw errors decay with a 1 s half-life); near the stance it
-servos to a stop, and the pick entry fires once the root has settled there. Unlike the
-shelf demo (which cuts into its clip at the stance crossing, still walking), the entry
-waits for a settled stop: the SceneBot tracking policy cannot follow an instant reference
-stop, and the demo's own sequence also settles before the squat.
-
-- **PICK** and **PLACE** are *ridden*: entered from the start of the
-  phase by a nearest-neighbour match of the live pose **+ box pose**, then played to the
-  phase end with no mid-phase search. B's pick matches the pose alone: the box pose
-  plays no part, and the two box-yaw folds are the same motion.
-- **CARRY** is searched every `SEARCH_TIME` like locomotion, but only among `carry` frames,
-  with the box pose added to the query.
-- The **only** database transitions ever made are those in the chain above (so e.g. you can
-  never match from locomotion straight into a carry, or from a pick into a place).
-
-Each searchable database has its **own feature space** (`mm_g1/features.py`), all expressed
-in the smoothed sim-root (gravity-aligned base) frame:
-
-| database | dims | contents                                                       |
-|----------|------|----------------------------------------------------------------|
-| `loco`   | 27   | pose (15) + future trajectory (12)        — unchanged genoview  |
-| `carry`  | 27   | pose + future trajectory — **box-agnostic**, the same space as `loco` |
-| `pick` / `place` | 20 | pose + **box** planar pos/orient — **no** future trajectory |
-
-`carry` is deliberately box-agnostic: a WASD command steers it exactly the way it steers
-locomotion. The box is not matched on, it simply **rides** the robot — frozen in the
-gravity-aligned base frame at the pose the pick left it in (`carry_local` in
-`mm_g1/controller.py`). That freeze matters because the carry frames come from two sources
-whose recorded box poses disagree by up to 160°, and the EMM spans have no captured box at
-all, so reading the box off the matched frame made it flip at every search cut.
-
-The box block is `[ position (3) · orientation as scaled-angle-axis (3) · linear velocity
-(3) ]` in the base frame. While the box is held it is reconstructed each frame as
-`root ∘ box-in-base` (exactly like the pelvis), so it tracks the character; a short
-inertialization offset captured at grab time hides the pop from its resting spot.
-
-## Quick start
+In motionmatching-g1-deploy, the box sessions of `README_BOX_SIM.md` and `README_BOX_REAL.md` (*The session*) run
+`python sonic_g1_box/run_slam.py` from this repo's root: its window (UI 2) by default, `--terminal` for letter +
+Enter keys. Headless, that repo's launcher:
 
 ```bash
-git clone https://github.com/whitealex95/motionmatching-g1-box.git
-cd motionmatching-g1-box
-conda create -n mm-g1-sonic python=3.10 -y
-conda activate mm-g1-sonic
-pip install -r requirements.txt
-python run.py                   # opens the window — WASD to move
+tools/headless_box_run.sh $PWD/runs/box_pick --secs 300
+tools/headless_box_run.sh $PWD/runs/box_shift --secs 300 --box-shift 0.5
 ```
 
-The first launch builds a feature cache (`data/motion_lib.npz`, ~1 s); later launches
-start instantly. The viewer needs a display — run it on a desktop or an X-forwarded
-session with `MUJOCO_GL=glfw` (the default).
+The box must be the variant's, 0.338 x 0.335 x 0.36 m. `README_BOX_SIM.md` (*The bridge*, *Results*) and
+`README_BOX_REAL.md` (*Keys in the box bridge window*, *Bridge options*) have the keys, the results and what
+each default below is for.
 
-Full install notes (the SONIC sim extras and the real-robot bridge) are in
-[`INSTALL.md`](INSTALL.md).
+## What differs from the page
 
-## How it works
+The page simulates the robot. Here the robot is measured, a little late and with some error, and these differ
+(each a default of `run_slam.py`):
 
-Each frame the loop does four things:
+- `--lookahead 60` (the page: 25). The node plays a streamed frame only once 46 frames follow it.
+- The seed compares the SLAM pelvis with the reference frame of the pose's own time plus `--track-delay 0.1` s, and
+  turns `--yaw-gain 0.3` of the yaw gap (the page: the frame tracked now, all of the gap).
+- The box is `live.sam3box`'s report, a few times a second and 0.2 to 0.6 s late. A move is taken after
+  `--sync-need 2` reports that agree, the grip check after `--grip-need 2` reports.
+- The palm force aims at a fresh report of the box on the floor until the reference lifts the box, then at the box
+  where the reference holds it (the page: the physical box always).
+- In locomotion no seed puts the controller's simulation object inside a box's collision zone (the box's half size
+  plus `collisionRadius` 0.36 m). The controller pushes the simulation object out of the zone at its next step, so
+  such a seed is undone within 0.1 s. After a place the robot often stands 0.2 to 0.3 m closer to the box than the
+  reference, and seeding it every 0.2 s made the reference shuffle in place until the robot kicked the box.
+- A grip-check drop clears the place target. On the page the drop comes during the rise, before any place is asked
+  for. Here the D435i sees the box left on the floor some 2 s after the grasp, and a place asked for meanwhile made
+  the controller put down the box right after its next lift, held or not.
 
-1. **Read the keys → a desired trajectory.** Held WASD become a desired
-   `(speed, heading)` relative to the camera. `predict_trajectory` slews the heading
-   toward the input at a fixed turn rate and integrates forward to a short predicted
-   path (`mm_g1/commands.py`).
-2. **Build a query and search.** The query is `[ predicted trajectory | the current
-   frame's pose features ]`, standardized the same way as the database. A KD-tree
-   returns the nearest library frame (`mm_g1/controller.py`).
-3. **Continue or jump, with hysteresis.** We only switch to the nearest neighbour when
-   it is clearly better (by `jump_margin`) than continuing the current clip — this keeps
-   the character on long continuous fragments, so the motion stays smooth.
-4. **Stitch and blend.** The chosen frame is placed into the world by a planar (SE2)
-   alignment so the root path is C0-continuous; pose pops at a switch are cross-faded
-   over ~0.4 s (`mm_g1/kinematics.py`).
+## Parity with the page
 
-The feature vector (27-D, `mm_g1/features.py`) is computed entirely in each frame's
-root-local frame so matching is heading-invariant:
-
-| block      | dims | contents                                                |
-|------------|------|---------------------------------------------------------|
-| trajectory | 12   | future root offset + facing at +10/+20/+30 frames       |
-| pose       | 15   | local foot positions (2×3), foot velocities (2×3), root velocity (3) |
-
-Searching every `MM_SEARCH_INTERVAL` frames (default 15, ~0.5 s) rather than every frame
-reduces pops; commanding a higher speed (Shift) pulls the match into the **run** clip,
-a lower speed back into the **walk** clip.
-
-## Layout
-
-```
-motionmatching-g1-box/
-├── run.py                       # entry point: python run.py
-├── requirements.txt
-├── mm_g1/
-│   ├── config/                  # split by concern: paths / library / matching / state_machine
-│   ├── states.py                # Skill data labels + State runtime states
-│   ├── g1_model.py              # qpos conversion, quaternion yaw, FK for the feet, mirror
-│   ├── data.py                  # build / load + cache the loco + box library
-│   ├── boxes.py                 # pick/carry/place segmentation + entry indexing
-│   ├── features.py              # per-phase feature DBs (loco 27 / carry 32 / pick·place 20)
-│   ├── springs.py               # critically-damped trajectory + inertialization springs
-│   ├── scenebot_pick.py         # SceneBot clip 11 baked as the pick / drop pair
-│   ├── emm_clips.py             # EMM walking-carry spans: hold detection + box synthesis
-│   ├── controller.py            # real-time matcher + pick/carry/place state machine
-│   └── viewer.py                # GLFW + MuJoCo window, held-key input, follow-camera, box
-├── sonic_g1_box/                # the motion-matched motion tracked by SONIC in physics
-├── tools/sonic_tracking/        # SONIC ONNX policy port + G1 deploy constants
-├── tools/scenebot_tracking/     # SceneBot policy + motion-graph port (from their web demo)
-├── assets/unitree_g1/           # MuJoCo G1 model (g1.xml, scene.xml, scene_box.xml, meshes)
-├── assets/sonic/                # SONIC policy weights + NVIDIA 29-DoF G1 scene
-├── assets/scenebot/             # SceneBot policy, clips, motion graph, flat-hand G1 (vendored)
-├── assets/largebox/             # the box mesh (largebox.obj)
-├── data/gmr_lafan1_g1/          # GMR-retargeted LAFAN1 clips (walk / run / pushAndStumble, .pkl)
-├── data/robot_object_g1/        # OmniRetarget robot-object pick/carry/place clips (.npz)
-└── data/emm_g1/                 # EMM walking-carry clips (.npz) + preview videos
+```bash
+node tools/page_parity/js_trace.mjs ~/Projects/lmm-g1-box /tmp/js.jsonl --states /tmp/states.jsonl
+python tools/page_parity/check_parity.py /tmp/js.jsonl --forced /tmp/states.jsonl
+node tools/page_parity/js_match_cases.mjs ~/Projects/lmm-g1-box /tmp/cases.json
+python tools/page_parity/check_parity.py /tmp/cases.json --cases
 ```
 
-## Tuning
+The forced check loads the page's whole state before each frame of the page's scripted sequence, steps once and
+compares the state after it. A free run follows the page until rounding decides a near tie in the search, and from
+there it takes another path of the same controller. In one test the costs were 4.1112789 and 4.1112797 at frame 484.
 
-Configuration lives in `mm_g1/config/`, split by concern (all names stay flat:
-`from mm_g1 import config as C`, then `C.<NAME>`). The low-level tracking
-controller (SONIC PD gains, joint orderings, rates) is configured separately
-in `tools/sonic_tracking/params.py`.
+The scripted sequence gives the same trace with lmm-g1-box `a41bd3f` and `1721681`: there the search never jumps
+while a SceneBot pick or place plays before its grasp or release, so the rules for these frames are not checked by
+it. `--cases` checks `Controller.match` alone on 3,424 searches made around the SceneBot pick and place. The playing
+frame is every 5th frame of each SceneBot range plus 60 random frames, and each query is a database frame's features
+plus noise. The rule for the place that `1721681` added decides 420 of them, so a port of `a41bd3f` fails this check.
 
-`config/library.py` — what the motion library contains. Every value in the
-file is fingerprinted into `data/motion_lib.npz`, so any edit rebuilds the
-cache automatically on the next load (~1 s); `LIB_VERSION` only needs a bump
-when the bake *code* changes:
+## Results
 
-- `CLIPS` — which locomotion clips form the library (drop extra GMR `.pkl` clips into
-  `data/gmr_lafan1_g1/` and list them here).
-- `CLIP_TRIM` — per-clip `[start:stop]` frame windows cropping the LAFAN1 T-pose
-  lead-in/out. These mirror GenoView's hand-picked indices
-  (its 60 fps starts of walk=160 / run=172 → our 30 fps 80 / 86); add an entry per new clip.
-- `BOX_CLIPS` — which robot-object clips to load (`"all"` or an explicit list of stems).
-- Per-clip label sidecars: `python tools/make_labels.py <stem>` writes
-  `data/robot_object_g1/<stem>.labels.yaml` with the box-height rule's output
-  (phases + hand-contact spans, rule internals in comments). Hand-tune it — the
-  loader prefers the sidecar over the rule, edits rebuild the cache
-  automatically, and deleting the file falls back to the rule.
-- `BOX_CARRY_FRAC`, `BOX_HOLD_DZ`, `BOX_HOLD_SPEED` — phase-segmentation thresholds
-  (`mm_g1/boxes.py`): how high the box must rise to count as *carry* / be *attached*.
-- `EMM_CLIPS` and the `EMM_HOLD_*` band — which EMM takes contribute walking-carry frames,
-  and the two-handed-hold test that finds them (`mm_g1/emm_clips.py`). The clips are
-  robot-only, so a box is synthesized at the wrist midpoint for drawing. `EMM_HOLD_MAX_Z`
-  is the load-bearing one: the source take also contains overhead arm raises, which pass
-  every other test. The default clip, `emm_extra__box_omni`, is the EMM take re-retargeted
-  with OmniRetargeting and the carried box shrunk to this project's box, palms facing it
-  (`tools/omniretarget_emm/`); the GMR retarget `emm_extra__box` is kept for comparison.
-
-`config/matching.py` — the search:
-
-- `SEARCH_TIME` — seconds between searches (lower = more reactive, more pops).
-- `SEARCH_TAIL` — frames at each clip's end excluded from the *search only* (GenoView's
-  `cKDTree(X[rs:re-30])`): the tail still plays but can't be matched into, so the
-  character never runs off the end of a clip.
-- `PICK_` / `CARRY_` / `PLACE_BOX_POS_WEIGHT` and `..._ROT_WEIGHT` — how much the box
-  blocks weigh against the body pose, named per phase so each database is tuned on its
-  own. For the ridden phases (pick, place) the ROT weight is the one that matters: it
-  picks the box-yaw fold, while every entry shares the same stance-to-box offset.
-- `BOX_INERT_HALFLIFE` — how quickly the box settles into the hands at grab time.
-
-`config/state_machine.py` — the B / M-driven behavior:
-
-- `MAX_SPEED` / `RUN_SCALE` — full-stick command speed (walk, 0.8 m/s) and the Shift run scale (1.5).
-- `MOVE_*` / `SNAP_*` — the move-to-pick approach (way-in point, arrive tolerances,
-  rail pin).
-- `BOX_SPAWN_FWD` / `BOX_SPAWN_LAT` — where the box spawns, in the robot's start frame.
-
-> **Note on the carry data.** The OmniRetarget carry clips are essentially in-place (the
-> robot holds the box and barely translates). The **EMM** spans (`data/emm_g1/`) are the
-> walking-while-carrying data that fixes this: the actor walks and turns while holding a
-> box. With the GMR retarget only 25.3 s over three spans passed the hold test, because the
-> actor's box was ~0.52 m wide and the hands 0.6 m apart; the OmniRetargeting clip holds the
-> project's box with the wrists 0.42 m apart like the pick, and **142.5 s over nine spans**
-> pass. (With the old spans, a 1.2 m/s forward command through a 10 s carry travelled
-> 8.0 m against 6.0 m with no EMM data at all.)
+In the sim with the LiDAR, FAST-LIO2 and SAM3 (motionmatching-g1-deploy's `README_BOX_SIM.md` *Results* has the
+tables): picking the box up and putting it down in front worked on the first try in all four runs, the box landing
+0.06 to 0.20 m beyond the place target. When the box jumps 0.5 m back as the hands reach it, the regrasp is not
+reliable: one run lifted it on the first regrasp, one on the second, four on the third to fifth crouch, and one not in
+300 s. The regrasp bends down 0.5 to 0.9 m from the box, and the hands reach it from about 0.5 m. One run of each
+scenario (pick9, shift7) ran the port of `1721681`, the others the port of `a41bd3f`. Untested on the robot.
 
 ## Credits
 
-- **G1 model** — [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie)
-  `unitree_g1` (license in `assets/unitree_g1/LICENSE`).
-- **Motion data** — [LAFAN1](https://github.com/ubisoft/ubisoft-laforge-animation-dataset)
-  (Ubisoft La Forge), retargeted to the G1 with
-  [GMR (General Motion Retargeting)](https://github.com/YanjieZe/GMR). See
-  `data/gmr_lafan1_g1/README.md` for the clip list and pickle format.
-- **Approach** — adapted from a MuJoCo G1 motion-matching / motion-graph project and the
-  real-time, keyboard-driven control of GenoView's motion-matching demo.
+- G1 model: [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) `unitree_g1` (license in
+  `assets/unitree_g1/LICENSE`).
+- Motion data and method: `data/README.md`.

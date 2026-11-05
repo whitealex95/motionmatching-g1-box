@@ -1,25 +1,4 @@
-# Python
 __pycache__/
 *.pyc
 .venv/
 *.egg-info/
-
-# Built motion-matching cache (regenerated from the CSVs on first run)
-data/motion_lib.npz
-
-# SONIC low_latency / sonic_v1_1 decoders are ~150 MB (over GitHub's 100 MB
-# file limit); assets/sonic/policy/fetch_models.sh downloads them
-assets/sonic/policy/low_latency/*.onnx
-assets/sonic/policy/sonic_v1_1/*.onnx
-
-# Rendered demo videos under any <project>/out/. They are regenerable from the
-# runners, and they do not delta-compress: 19 re-records of one grasp video alone
-# put 277 MB into .git. Reports, plots, metrics and stills under out/ still commit.
-*/out/*.mp4
-*/out/**/*.mp4
-
-# per-clip tracking sweep videos + their logs stay on disk
-sonic_g1_box/out/track_clips/
-
-# eval_v02 rendered strips (regenerate with run_heuristic_videos.py)
-eval_v02/results/videos/*.mp4
