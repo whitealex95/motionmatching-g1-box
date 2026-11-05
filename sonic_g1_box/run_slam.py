@@ -40,8 +40,13 @@ What differs from the page, because the robot is measured, not simulated:
     python sonic_g1_box/run_slam.py --terminal             # terminal keys (letter + Enter)
     python sonic_g1_box/run_slam.py --headless 240 --auto-start --start-after-anchor
 
-The window takes the same keys pressed in it (no Enter), plus a left click on a reported box (that one is picked
-up, in locomotion only), L (the legend) and T (the reference's path ahead); Q or Esc quits.
+The window has the loco driver's keys (motionmatching-g1-loco sonic_g1_loco/mm_driver.py): ] start, P planner <->
+POSE, O stop, Enter re-send the mode, W A S D move (along the controller's heading, F: camera-relative), the arrows
+face, Shift runs (0.8 m/s, Shift 1.2 m/s), T walks UI 1's trajectory, Esc quits. In planner mode the same keys walk
+the node's own planner, and the reference is put on the robot every 0.2 s until POSE. The box task adds X (the box
+reported nearest the robot, again: the next one), a left click on a reported box (that one, in locomotion only),
+B (put it down ahead), C (cancel), V (the reference's path ahead) and L (the legend). A pick or a place goes before
+the trajectory, and a key held takes over from both, as on lmm-g1-box's page.
 
 Terminal keys (type the letter, then Enter):
   ]  start (planner mode, the robot stands)     p  planner <-> POSE
@@ -79,6 +84,7 @@ from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPE
 from mm_g1.mathq import hypot, qyaw
 from mm_g1.runner import CONTROL_DT, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box, to_present
 from mm_g1.sim import Sim
+from route_follow import ROUTE_NAMES, RouteFollow
 
 STATE_TOPIC = '/mm_driver/state'
 GRID_DIM = 17 * 11
@@ -90,6 +96,7 @@ GRASP_RAMP = 0.15
 SHOULDER_ROLL_KP = 14.251                              # the node's default shoulder roll kp (the page's SONIC kp too)
 G1_XML = os.path.join(ROOT, 'assets', 'unitree_g1', 'g1.xml')
 MODEL_VERSION = 'lmm-g1-box sbplace, Locomotion emmboth'
+LOCO_NAMES = {0: 'IDLE', 1: 'SLOW_WALK', 2: 'WALK', 3: 'RUN'}
 TASK_STATES = {'pick-pre': 'PICK', 'pick-post': 'PICK', 'place-pre': 'PLACE', 'place-post': 'PLACE'}
 HUD = {'locomotion': ('Locomotion', 'Carrying'), 'navigate': ('Walking to the box', 'Carrying the box to the marker'),
        'pick-pre': ('Picking up',) * 2, 'pick-post': ('Lifting the box',) * 2, 'place-pre': ('Putting down',) * 2,
@@ -274,7 +281,8 @@ class Bridge:
         self.sim.box_size = list(args.box_size)
         self.sim.reset_robot()
         step = self.sim.step
-        self.sim.step = lambda stick=None, slow=False: step(self.stick() if stick is None else stick, slow)
+        self.sim.step = lambda: step(*self.controller_input())
+        self.max_speed = self.sim.controller.p['walkFwd']      # m/s at full stick, the planner's scale too
         self.runner = None
         self.link = DeployLink(args.bind, args.port)
         self.robot = RobotState(args.robot_host, args.robot_port)
@@ -293,11 +301,17 @@ class Bridge:
         self.slam_wall = 0.0
         self.last_seed_xy = None
         self.seed_skips = 0
+        self.pose_corr_yaw = 0.0        # the runner's seed yaw when POSE started
         self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0, 'objects': -1.0, 'pose': -1.0, 'tau': None}
         self.box_id = None
         self.move_seen = None
+        self.stick = (np.zeros(3), np.zeros(3))     # (move, face): the loco driver's left and right sticks
+        self.last_face = None          # map frame, None: the robot's heading when the planner started
+        self.planner_start_yaw = 0.0   # the robot's map yaw when this bridge last switched the node into PLANNER
+        self.last_planner_cmd = None
         self.walking = False
         self.walk_dir = None
+        self.route_follow = RouteFollow(self, args.tour, args.tour_speed)
         self.lost = False
         self.drops = 0
         self.syncs = 0
@@ -415,13 +429,31 @@ class Bridge:
         print('[box] targets cleared', flush=True)
 
     def walk(self, on):
+        """The terminal's w and the headless carry: forward along the controller's heading now, until called off."""
         self.walking = on
         yaw = qyaw(self.sim.controller.pose.rootRot)
         self.walk_dir = [math.cos(yaw), math.sin(yaw)]
         print(f"[box] {'walking forward' if on else 'stop walking'}", flush=True)
 
-    def stick(self):
-        return self.walk_dir if self.walking else None
+    def heading(self):
+        return qyaw(self.sim.controller.pose.rootRot)
+
+    def move_stick(self):
+        """(3,) the move stick in units of max_speed: the window's keys or the route, else the walk forward."""
+        move = self.stick[0]
+        if np.linalg.norm(move) < 1e-6 and self.walking:
+            return np.array([*self.walk_dir, 0.0])
+        return move
+
+    def controller_input(self):
+        """(stick, slow, face) for the controller's step, stick and face [x, y] world directions or None."""
+        move, face = self.move_stick(), self.stick[1]
+        return ([float(move[0]), float(move[1])] if np.linalg.norm(move) > 1e-6 else None, False,
+                [float(face[0]), float(face[1])] if np.linalg.norm(face) > 1e-6 else None)
+
+    def has_target(self):
+        w = self.sim.world
+        return w.pick_id is not None or w.place_target is not None
 
     # -- modes ---------------------------------------------------------------------------------------------------
     def start(self):
@@ -430,13 +462,20 @@ class Bridge:
             return
         self.link.command(start=True, planner=True)
         self.mode = MODE_PLANNER
+        self.planner_started()
         print('[box] start=1 planner=1 -> PLANNER (stand)', flush=True)
+
+    def planner_started(self):
+        p = self.poll_pose()
+        self.planner_start_yaw = float(p['root_yaw']) if p is not None else self.heading()
+        self.last_face = None
 
     def toggle_pose(self):
         if self.mode == MODE_PLANNER:
             self.link.command(planner=False)
             self.mode = MODE_POSE
             if self.runner is not None:
+                self.pose_corr_yaw = self.runner.corr[0]
                 # the node plays the newest chunk from its first frame: without this one, the chunk of the last
                 # replan, which starts up to 9 frames before the bridge's frame
                 newest = self.runner.produced - 1
@@ -446,9 +485,14 @@ class Bridge:
         elif self.mode == MODE_POSE:
             self.link.command(planner=True)
             self.mode = MODE_PLANNER
+            self.planner_started()
             print('[box] planner=1 -> PLANNER (stand)', flush=True)
         else:
             print('[box] press ] first', flush=True)
+
+    def resend_mode(self):
+        if self.mode in (MODE_PLANNER, MODE_POSE):
+            self.link.command(planner=self.mode == MODE_PLANNER)
 
     def stop(self):
         self.link.command(stop=True, planner=self.mode == MODE_PLANNER)
@@ -466,24 +510,31 @@ class Bridge:
         print(f'[box] the controller starts at ({xy[0]:.2f}, {xy[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg', flush=True)
 
     def replan(self, F):
-        robot, p = None, None
-        if self.mode == MODE_POSE:
+        """POSE: the page's snap-xyyaw, --yaw-gain of the yaw gap, against the frame the robot played when the pose
+        was measured. IDLE and PLANNER: all of the yaw, against the frame of the pose's time, as the loco driver
+        snaps its controller onto the robot before POSE. The robot does not play the stream then, and so POSE starts
+        where the node's planner walked it."""
+        robot, p, gain = None, None, None
+        if self.mode != MODE_STOPPED:
             p = self.poll_pose()
-            if p is not None:
-                xy = np.asarray(p['root_xy'][:2], float)
-                jump = 0.0 if self.last_seed_xy is None else float(np.linalg.norm(xy - self.last_seed_xy))
-                self.last_seed_xy = xy
-                if jump > self.args.max_seed_jump:
-                    self.seed_skips += 1
-                    print(f'[box] the SLAM pose jumped {jump:.2f} m in 0.2 s: no seed this time '
-                          f'({self.seed_skips} so far)', flush=True)
-                else:
-                    robot = ((xy[0], xy[1]), float(p['root_yaw']), float(p.get('age_s', 0.0)) + self.args.track_delay)
+        if p is not None:
+            xy = np.asarray(p['root_xy'][:2], float)
+            jump = 0.0 if self.last_seed_xy is None else float(np.linalg.norm(xy - self.last_seed_xy))
+            self.last_seed_xy = xy
+            age = float(p.get('age_s', 0.0))
+            if self.mode != MODE_POSE:
+                robot, gain = ((xy[0], xy[1]), float(p['root_yaw']), age), 1.0
+            elif jump > self.args.max_seed_jump:
+                self.seed_skips += 1
+                print(f'[box] the SLAM pose jumped {jump:.2f} m in 0.2 s: no seed this time '
+                      f'({self.seed_skips} so far)', flush=True)
+            else:
+                robot = ((xy[0], xy[1]), float(p['root_yaw']), age + self.args.track_delay)
         if self.trace is not None:
             self.trace_replan(F, p, robot)
         r = self.runner
         seeds, kept_out = r.seeds, r.kept_out
-        first, _ = r.replan(F, robot)
+        first, _ = r.replan(F, robot, yaw_gain=gain)
         if self.trace is not None and r.seeds > seeds:
             self.trace.write(json.dumps({'seed': r.last_seed, 'F': F}) + '\n')
         if self.trace is not None and r.kept_out > kept_out:
@@ -515,14 +566,26 @@ class Bridge:
             'phase': c.box_phase() or c.mode, 'sem': c.semantics}) + '\n')
 
     def send(self, first, last):
+        """The node takes the stream's heading at the start of POSE as the robot's and from then on turns the robot
+        with every change of it (it never sees the root position). In POSE each frame's heading is therefore sent
+        without the seeds' turns since then: a seed puts the controller on the robot, and the robot does not turn
+        with it. Sent with them, a yaw gap at the start of POSE never closed: each seed turned the reference toward
+        the robot, the robot turned as much, and the two turned on forever."""
         r = self.runner
         lo = max(r.base, first - 1)
-        q = np.stack([r.frame_at(f).qpos for f in range(lo, last + 1)])           # (M, 36), M = N or N + 1
+        frames = [r.frame_at(f) for f in range(lo, last + 1)]
+        q = np.stack([f.qpos for f in frames])                                     # (M, 36), M = N or N + 1
         jp = q[:, 7:36][:, MUJOCO_TO_ISAACLAB]                                     # (M, 29) IsaacLab order
         jv = np.zeros_like(jp)
         jv[1:] = (jp[1:] - jp[:-1]) / CONTROL_DT
+        bq = q[:, 3:7]                                                             # (M, 4) w, x, y, z
+        if self.mode == MODE_POSE:
+            half = -0.5 * (np.array([f.corr[0] for f in frames]) - self.pose_corr_yaw)   # (M,)
+            c, s = np.cos(half), np.sin(half)
+            bq = np.stack([c * bq[:, 0] - s * bq[:, 3], c * bq[:, 1] - s * bq[:, 2],
+                           c * bq[:, 2] + s * bq[:, 1], c * bq[:, 3] + s * bq[:, 0]], axis=1)   # Rz(-yaw) * q
         k = first - lo
-        self.link.pose(jp[k:], jv[k:], q[k:, 3:7], np.arange(first, last + 1))
+        self.link.pose(jp[k:], jv[k:], bq[k:], np.arange(first, last + 1))
 
     def flush(self):
         r = self.runner
@@ -548,7 +611,7 @@ class Bridge:
             self.last['heartbeat'] = now
         if self.mode == MODE_PLANNER and now - self.last['planner'] >= 0.1:
             self.last['planner'] = now
-            self.link.planner_idle()
+            self.send_planner()
         if now - self.last['pose'] >= 0.1:
             self.last['pose'] = now
             self.poll_pose()
@@ -561,6 +624,43 @@ class Bridge:
         if now - self.last['bus'] >= 0.1:
             self.last['bus'] = now
             self.publish_state()
+
+    def planner_yaw(self):
+        """The map yaw of the node's planner frame +x. The planner starts its motion at zero yaw on the robot's
+        heading each time it starts (] or P back from POSE, which stops it), and the node then sets its heading state
+        to the robot's IMU orientation, which g1_debug carries. So a restarted bridge finds the planner's frame too.
+        Without a heading state: the robot's yaw when this bridge last switched the node into PLANNER."""
+        st = self.robot.heading_state()
+        if st is None or self.slam is None:
+            return self.planner_start_yaw
+        base, init, delta = st
+        return quat_yaw(init) + delta + float(self.slam['root_yaw']) - quat_yaw(base)
+
+    def send_planner(self):
+        """The loco driver's: in PLANNER the move stick walks the node's own planner, the face stick turns it. The
+        sticks are in the map frame, the planner's commands in its own (planner_yaw). The loco driver sends the map
+        frame as it is: right only while the robot faces map +x when the planner starts. Else W walks the robot off
+        its heading, and with W along the heading the robot circles."""
+        vel = self.move_stick() * self.max_speed
+        speed = float(np.linalg.norm(vel))
+        face = self.stick[1]
+        if np.linalg.norm(face) > 1e-6:
+            self.last_face = face / np.linalg.norm(face)
+        elif speed >= 0.05:
+            self.last_face = vel / speed
+        a = -self.planner_yaw()
+        c, s = math.cos(a), math.sin(a)
+        to_planner = lambda v: np.array([c * v[0] - s * v[1], s * v[0] + c * v[1], 0.0])
+        if speed < 0.05:
+            loco, movement, sp = 0, np.zeros(3), -1.0
+        else:
+            movement = to_planner(vel / speed)
+            loco, sp = (1 if speed < 0.8 else (2 if speed < 2.5 else 3)), speed
+        facing = np.array([1.0, 0.0, 0.0]) if self.last_face is None else to_planner(self.last_face)
+        self.link.planner_command(loco, movement, facing, sp)
+        if self.last_planner_cmd != loco:
+            print(f'[box] planner -> {LOCO_NAMES[loco]}', flush=True)
+        self.last_planner_cmd = loco
 
     def frame_now(self):
         return self.runner.frame_at(self.cur)
@@ -666,7 +766,7 @@ class Bridge:
             'map_ok': False, 'localized': self.slam is not None,
             'sync_err_m': None if last is None else last['d'],
             'heading_err_deg': None if last is None else math.degrees(last['dyaw']),
-            'stick': [0.0, 0.0] if self.stick() is None else self.stick(), 'max_speed': 1.0, 'route': None,
+            'stick': self.move_stick()[:2].tolist(), 'max_speed': self.max_speed, 'route': self.route_follow.state(),
             'seeds': None if r is None else r.seeds, 'held_back': None if r is None else r.held_back,
             'kept_out': None if r is None else r.kept_out,
             'phase': self.phase, 'task': task})
@@ -837,11 +937,24 @@ def main():
     ap.add_argument('--shoulder-kp', type=float, default=SHOULDER_ROLL_KP,
                     help="the node's shoulder roll kp, which turns --shoulder-open into an arm_tau torque (the node's "
                          "default gains; 40 with the lab's --debug-arm-pd-gains)")
+    ap.add_argument('--run-scale', type=float, default=1.5,
+                    help="stick scale with Shift held (run), as the loco driver's: 0.8 m/s x this")
+    ap.add_argument('--frame', choices=('heading', 'camera'), default='heading',
+                    help="the window: W along the controller's heading or into the screen (F toggles)")
+    ap.add_argument('--tour', default=None,
+                    help=f"the desired trajectory to seed the map server with and walk (T): {' | '.join(ROUTE_NAMES)}, "
+                         "'x,y;x,y;...' (map frame), a .json from UI 1, or 'server' (what UI 1 holds)")
+    ap.add_argument('--tour-speed', type=float, default=0.8, help='m/s on the desired trajectory')
+    ap.add_argument('--obstacle-radius', type=float, default=8.0,
+                    help='m: the window draws the real map within this distance of the robot')
+    ap.add_argument('--follow-s', type=float, default=0.3,
+                    help='s: the window camera eases toward the robot with this time constant (0 = locked on it)')
     ap.add_argument('--place-ahead', type=float, default=0.8, help='m in front of the controller b puts the box down')
     ap.add_argument('--place-left', type=float, default=0.0, help='m to the left, the same way')
     ap.add_argument('--yaw-gain', type=float, default=0.3,
-                    help='share of the yaw gap a seed turns (the page: 1). SONIC tracks the reference\'s heading, so the '
-                         'seed only has to remove an offset, and the SLAM pelvis yaw sways with the gait at another phase')
+                    help='POSE: share of the yaw gap between the SLAM pelvis and the reference a seed turns the '
+                         'controller (the page: 1). The SLAM pelvis yaw sways with the gait at another phase. The robot '
+                         'does not turn with a seed (see send)')
     ap.add_argument('--track-delay', type=float, default=0.1,
                     help='s the robot plays behind the frame sent, added to the pose age when the seed looks back for the '
                          'frame to compare (SONIC\'s tracking delay: the leg joints match the frames 4-6 back in the sim)')

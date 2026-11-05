@@ -169,16 +169,17 @@ class StreamRunner:
             del self.frames[:drop]
             self.base += drop
 
-    def replan(self, F, robot=None):
+    def replan(self, F, robot=None, yaw_gain=None):
         """Keeps the frames up to F, the frame the robot plays now, and makes the rest again. robot: None (no seed),
-        or (xy, yaw, age_s): the measured pelvis and how old the measurement is. Returns the first frame made."""
+        or (xy, yaw, age_s): the measured pelvis and how old the measurement is. yaw_gain: the seed's, in place of
+        the runner's. Returns the first frame made."""
         self.drop_after(F)
         seeded = False
         if robot is not None:
             if self.hold(self.sim.controller):
                 self.held_back += 1
             else:
-                seeded = self.seed(F, *robot)
+                seeded = self.seed(F, *robot, yaw_gain=yaw_gain)
         self.produce_until(F + REPLAN_TICKS)
         commit = self.commit_state()
         self.sim.speculative = True
@@ -191,13 +192,13 @@ class StreamRunner:
         self.trim(F)
         return F + 1, seeded
 
-    def seed(self, F, xy, yaw, age_s=0.0):
+    def seed(self, F, xy, yaw, age_s=0.0, yaw_gain=None):
         """Turns and moves the controller so that the frames made next start from the robot (snap-xyyaw)."""
         fm = max(self.base, F - int(round(max(0.0, age_s) / CONTROL_DT)))
         f = self.frame_at(fm)
         ref, ref_yaw = to_present(f.qpos[0:2], pelvis_yaw(f.qpos), f.corr, self.corr)
         d = [xy[0] - ref[0], xy[1] - ref[1]]
-        dyaw = self.yaw_gain * wrap_angle(yaw - ref_yaw)
+        dyaw = (self.yaw_gain if yaw_gain is None else yaw_gain) * wrap_angle(yaw - ref_yaw)
         c, fl = self.sim.controller, self.sim.foot_lock
         if c.mode == 'loco' and self.in_collision_zone(c, dyaw, ref, d):
             self.kept_out += 1

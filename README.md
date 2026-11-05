@@ -23,7 +23,8 @@ MuJoCo sim. The robot's pose comes from the map server (the Mid-360 with FAST-LI
 | `mm_g1/mathq.py` | `math.js` | vectors, quaternions, springs |
 | `mm_g1/runner.py` | `phys/runner.js` | the stream for a tracked robot: 60 Hz poses resampled to 50 Hz frames, a re-plan every 10 frames with snap-xyyaw, no seed while bent down, the grip check, the box sync |
 | `sonic_g1_box/run_slam.py` | `phys/engine.js` (`graspStep`), `app.js` | the bridge: the SLAM pose, the box reports, the palm force, the keys, the headless sequence |
-| `sonic_g1_box/box_window.py` | | the bridge's window (UI 2) |
+| `sonic_g1_box/box_window.py` | | the bridge's window (UI 2): the loco driver's window and keys, plus the box task |
+| `sonic_g1_box/route_follow.py` | | UI 1's trajectory, walked with `T`: a copy of the loco driver's `RouteFollow` |
 | `sonic_g1_box/deploy_link.py` | | the node's ZMQ topics and the desktop's JSON bus, mirrored from motionmatching-g1-deploy |
 | `tools/page_parity/` | | the parity check against the page's own modules, run in node |
 | `assets/unitree_g1/` | | the G1 model the window draws |
@@ -38,7 +39,10 @@ The parity check needs node and a checkout of lmm-g1-box.
 
 In motionmatching-g1-deploy, the box sessions of `README_BOX_SIM.md` and `README_BOX_REAL.md` (*The session*) run
 `python sonic_g1_box/run_slam.py` from this repo's root: its window (UI 2) by default, `--terminal` for letter +
-Enter keys. Headless, that repo's launcher:
+Enter keys. The window has the keys of motionmatching-g1-loco's MM driver window (`]`, `P`, `O`, `Enter`, `W A S D`,
+the arrows, `Shift`, `F`, `T`, `Esc`), and the box task adds `X`, a click on a reported box, `B`, `C`, `V` and `L`.
+The arrows are not the page's: they turn the character (the controller's optional `face` input), and like the page's
+keys they take over from a pick or a place while held. Headless, that repo's launcher:
 
 ```bash
 tools/headless_box_run.sh $PWD/runs/box_pick --secs 300
@@ -56,7 +60,14 @@ The page simulates the robot. Here the robot is measured, a little late and with
 
 - `--lookahead 60` (the page: 25). The node plays a streamed frame only once 46 frames follow it.
 - The seed compares the SLAM pelvis with the reference frame of the pose's own time plus `--track-delay 0.1` s, and
-  turns `--yaw-gain 0.3` of the yaw gap (the page: the frame tracked now, all of the gap).
+  turns `--yaw-gain 0.3` of the yaw gap (the page: the frame tracked now, all of the gap). Before POSE it moves the
+  controller onto the robot with all of the yaw, as the loco driver does.
+- In POSE each frame's heading is sent without the seeds' turns since POSE started. The deploy node takes the stream's
+  heading at the start of POSE as the robot's and turns the robot with every change of it, so a seed sent with its
+  turn turned the robot as much as the reference, and a yaw gap at the start of POSE never closed: both turned on
+  forever.
+- In planner mode the keys go to the node's planner (the page has none), turned from the map frame into the planner's
+  own, whose +x is the robot's heading when the planner started (the node's heading state on `g1_debug`).
 - The box is `live.sam3box`'s report, a few times a second and 0.2 to 0.6 s late. A move is taken after
   `--sync-need 2` reports that agree, the grip check after `--grip-need 2` reports.
 - The palm force aims at a fresh report of the box on the floor until the reference lifts the box, then at the box

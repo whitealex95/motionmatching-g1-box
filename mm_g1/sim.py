@@ -291,11 +291,11 @@ class Sim:
     def floor_pose(self, box):
         return {'pos': [box['pos'][0], box['pos'][1], self.box_size[2] / 2], 'rot': qfrom_yaw(box['yaw'])}
 
-    def step(self, stick=None, slow=False):
+    def step(self, stick=None, slow=False, face=None):
         dt, w = self.controller.dt, self.world
         if self.scenario:
             self.tick_scenario(dt)
-        inp = {'stick': self.drive_stick() if self.scenario and self.scenario['drive'] else stick, 'slow': slow,
+        inp = {'stick': self.drive_stick() if self.scenario and self.scenario['drive'] else stick, 'slow': slow, 'face': face,
                'holding': w.holding_id is not None, 'pickBox': w.pick_box(), 'placeTarget': w.place_target,
                'boxes': w.floor_boxes(), 'boxHalf': [self.box_size[0] / 2, self.box_size[1] / 2],
                'forceSearch': self.force_search}

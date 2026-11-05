@@ -1,5 +1,7 @@
-"""UI 2: run_slam.py's window. The measured robot at its SLAM pelvis, the reference it plays, the controller's
-box, the map server's reports, a status panel, a key panel and a legend, drawn with MuJoCo over the G1 scene."""
+"""UI 2: run_slam.py's window. The loco driver's window (motionmatching-g1-loco sonic_g1_loco/mm_driver.py
+run_window: its keys, the measured robot at its SLAM pelvis, the reference it plays, the map around the robot, the
+lab's furniture, the command, UI 1's trajectory) with the box task on top: the controller's box, the map server's
+reports, the box keys, the box rows of the status panel and a legend."""
 import math
 import os
 import time
@@ -12,7 +14,6 @@ from deploy_link import MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED
 from mm_g1.mathq import qfrom_yaw, qmul, qyaw
 
 SCENE_XML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'unitree_g1', 'scene.xml')
-FOLLOW_S = 0.3                  # s: the window camera eases toward the robot (SLAM jitter, head bob)
 DRAW_S = 1.0 / 60               # s between drawn frames: the bridge ticks every few ms in between
 POSE_POLL_S = 1.0 / 30          # s between the window's pose requests, for a smooth robot (the bridge asks at 10 Hz)
 BOX_RGBA = np.array([0.82, 0.52, 0.22, 1.0], np.float32)    # the box's brown, UI 1's too
@@ -26,18 +27,50 @@ BOX_EDGES = ((0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0,
 ROBOT_LABEL_DZ, REF_LABEL_DZ = 0.62, 0.82   # m above torso_link: the two labels stack when the figures overlap (POSE)
 BOX_LABEL_DZ, REPORT_LABEL_DZ = 0.10, 0.30  # m above a box's top: the linked report and the controller's box overlap
 PATH_EVERY = 5                  # frames between the dots of the reference's path ahead
+HEIGHT_CAP = 1.0                # m: the map's heights are drawn up to this (the loco driver's scandot clip)
 OVERLAY_CHARS = 499             # mjr_overlay's buffer per column (MuJoCo 3.3), measured
 GHOST_WORD = {MODE_IDLE: 'gray', MODE_PLANNER: 'blue', MODE_POSE: 'orange', MODE_STOPPED: 'dark gray'}
 GHOST_RGBA = {MODE_IDLE: np.array([0.6, 0.6, 0.6, 0.6], np.float32), MODE_PLANNER: np.array([0.3, 0.6, 1.0, 0.7], np.float32),
               MODE_POSE: np.array([1.0, 0.75, 0.2, 0.7], np.float32), MODE_STOPPED: np.array([0.45, 0.45, 0.45, 0.5], np.float32)}
 MODE_WORD = {MODE_IDLE: 'IDLE', MODE_PLANNER: 'PLANNER', MODE_POSE: 'POSE', MODE_STOPPED: 'STOPPED'}
-KEYS_L = ']\nP\nX\nClick\nB\nW\nC\nO\nT\nL\nQ, Esc\nMouse'
-KEYS_R = ('start control (planner mode, the robot stands)\ntoggle planner <-> POSE\n'
-          'pick up the box reported nearest the robot (again: the next one)\n'
+KEYS_L = ']\nP\nO\nEnter\nW A S D\nArrows\nShift\nF\nT\nEsc\n\nX\nClick\nB\nC\nV\nL\nMouse'
+KEYS_R = ('start control (planner mode)\ntoggle planner <-> POSE\nstop -> damping (final)\n'
+          're-send mode\nmove\nface\nhold to run\nWASD frame heading/camera\n'
+          'drive the UI 1 trajectory on/off\nquit\n'
+          '\npick up the box reported nearest the robot (again: the next one)\n'
           'pick up the clicked box (in locomotion only)\nput the held box down ahead\n'
-          'walk forward / stop (with or without the box)\ncancel the pick or the place\n'
-          'stop -> damping (final)\ntoggle the path ahead\ntoggle the legend (what each shape is)\nquit\n'
+          'cancel the pick or the place\ntoggle the path ahead\ntoggle the legend (what each shape is)\n'
           'drag orbits, right-drag pans, scroll zooms')
+COMMAND_RGBA = (0.89, 0.34, 0.29, 1.0)
+
+
+def keyboard_stick(window, stick, walk_scale=0.4, cam_azimuth=None):
+    """A copy of the loco repo's genoview_g1.keyboard_stick: a world-plane (3,) vector, 'left' = WASD move,
+    'right' = arrows face, left Shift scales it to walk_scale. With cam_azimuth (deg) W/Up is along that heading and
+    A/Left to its left, else W is world +x."""
+    def down(k):
+        return glfw.get_key(window, k) == glfw.PRESS
+
+    x = y = 0.0
+    if stick == 'left':
+        if down(glfw.KEY_W): x += 1.0
+        if down(glfw.KEY_S): x -= 1.0
+        if down(glfw.KEY_A): y += 1.0
+        if down(glfw.KEY_D): y -= 1.0
+    else:
+        if down(glfw.KEY_UP): x += 1.0
+        if down(glfw.KEY_DOWN): x -= 1.0
+        if down(glfw.KEY_LEFT): y += 1.0
+        if down(glfw.KEY_RIGHT): y -= 1.0
+    mag = np.hypot(x, y)
+    if mag > 0.0:
+        speed = walk_scale if down(glfw.KEY_LEFT_SHIFT) else 1.0
+        x, y = x / mag * speed, y / mag * speed
+    if cam_azimuth is not None:
+        a = np.radians(cam_azimuth)
+        v = x * np.array([np.cos(a), np.sin(a)]) + y * np.array([-np.sin(a), np.cos(a)])
+        return np.array([v[0], v[1], 0.0])
+    return np.array([x, y, 0.0])
 
 
 def is_active(o):
@@ -118,11 +151,17 @@ def run_window(br, args):
             self.click = None
             self.show_legend = True
             self.show_path = True
+            self.heading_frame = args.frame == 'heading'
+            self.auto = False
+            self.obstacles = {'boxes': [], 'pad': [], 'dynamic': [], 't': 0.0}
+            self.shapes = {'list': [], 't': 0.0}
             self.quit = False
-            self.actions = {glfw.KEY_RIGHT_BRACKET: br.start, glfw.KEY_P: br.toggle_pose, glfw.KEY_X: br.pick_nearest,
-                            glfw.KEY_B: br.place_ahead, glfw.KEY_W: lambda: br.walk(not br.walking),
-                            glfw.KEY_C: br.cancel, glfw.KEY_O: br.stop, glfw.KEY_T: self._toggle_path,
-                            glfw.KEY_L: self._toggle_legend, glfw.KEY_Q: self._quit, glfw.KEY_ESCAPE: self._quit}
+            # the loco driver's keys, then the box task's on keys it leaves free (Q quits no more: it is next to W, A)
+            self.actions = {glfw.KEY_RIGHT_BRACKET: br.start, glfw.KEY_P: br.toggle_pose, glfw.KEY_O: br.stop,
+                            glfw.KEY_ENTER: br.resend_mode, glfw.KEY_F: self._toggle_frame, glfw.KEY_T: self._toggle_drive,
+                            glfw.KEY_ESCAPE: self._quit,
+                            glfw.KEY_X: br.pick_nearest, glfw.KEY_B: br.place_ahead, glfw.KEY_C: br.cancel,
+                            glfw.KEY_V: self._toggle_path, glfw.KEY_L: self._toggle_legend}
 
         def _on_key(self, window, key, scancode, action, mods):
             if action == glfw.PRESS and key in self.actions:
@@ -169,6 +208,29 @@ def run_window(br, args):
 
         def _toggle_path(self):
             self.show_path = not self.show_path
+
+        def _toggle_frame(self):
+            self.heading_frame = not self.heading_frame
+
+        def _toggle_drive(self):
+            rf = br.route_follow
+            rf.set_drive(not rf.drive)
+            print(f'[box] drive the desired trajectory: {"on" if rf.drive else "off"}', flush=True)
+
+        def _sticks(self, now):
+            """The loco driver's: WASD and the arrows, else UI 1's trajectory while Drive is on. A pick or a place
+            (X, B, the grip check) goes before the trajectory."""
+            rf = br.route_follow
+            az = math.degrees(br.heading()) if self.heading_frame else self.cam.azimuth
+            left = keyboard_stick(self.window, 'left', args.run_scale, az)
+            right = keyboard_stick(self.window, 'right', 1.0, az)
+            rf.poll(now)
+            auto = None
+            if (br.mode in (MODE_PLANNER, MODE_POSE) and not br.has_target()
+                    and np.linalg.norm(left) < 1e-6 and np.linalg.norm(right) < 1e-6):
+                auto = rf.stick(rf.robot_xy(), br.max_speed)
+            self.auto = auto is not None
+            br.stick = (left, right) if auto is None else auto
 
         def _click_select(self, x, y):
             """The reported box under the cursor: the first one its ray enters, else the one
@@ -233,6 +295,105 @@ def run_window(br, args):
             for i, j in BOX_EDGES:
                 self._edge(pts[i], pts[j], radius, rgba)
             return c + np.array([0.0, 0.0, h[2] + REPORT_LABEL_DZ])
+
+        def _yaw_mat(self, yaw):
+            c, s = math.cos(yaw), math.sin(yaw)
+            return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], float).ravel()
+
+        def _draw_obstacles(self):
+            """The real map around the robot, as the loco driver's window and UI 1 draw it: orange to dark red by
+            height, the padding as flat light-pink tiles, tracked blobs not in the static map gray (new) or orange
+            (moving, with the disc swept 0.5 s along their velocity)."""
+            ob = self.obstacles
+            if time.monotonic() - ob['t'] > 0.5:
+                ob['t'] = time.monotonic()
+                r = br.map.request({'op': 'obstacles', 'radius': args.obstacle_radius})
+                if r is not None:
+                    ob['boxes'], ob['pad'], ob['dynamic'] = r['boxes'], r['pad'], r.get('dynamic', [])
+            G = mujoco.mjtGeom
+            for d in ob['dynamic']:
+                if d['confirmed']:
+                    continue
+                h = max(d['h'], 0.05)
+                rgba = (0.88, 0.35, 0.16, 0.55) if d['moving'] else (0.5, 0.5, 0.5, 0.35)
+                self._geom(G.mjGEOM_CYLINDER, (d['r'], 0.5 * h, 0), (d['x'], d['y'], 0.5 * h), rgba)
+                if d['moving']:
+                    self._geom(G.mjGEOM_CYLINDER, (d['r'], 0.5 * h, 0),
+                               (d['x'] + 0.5 * d['vx'], d['y'] + 0.5 * d['vy'], 0.5 * h), (0.88, 0.35, 0.16, 0.2))
+            for x, y, hx, hy in ob['pad']:
+                self._geom(G.mjGEOM_BOX, (hx, hy, 0.004), (x, y, 0.004), (0.97, 0.77, 0.75, 0.55))
+            for x, y, hx, hy, top in ob['boxes']:
+                t = min(top / HEIGHT_CAP, 1.0)
+                self._geom(G.mjGEOM_BOX, (hx, hy, 0.5 * top), (x, y, 0.5 * top),
+                           (1.0 - 0.24 * t, 0.96 - 0.84 * t, 0.9 - 0.78 * t, 0.7))
+
+        def _draw_shapes(self):
+            """The map server's virtual objects and the lab's furniture (one box per link footprint), purple."""
+            sh_ = self.shapes
+            if time.monotonic() - sh_['t'] > 1.0:
+                sh_['t'] = time.monotonic()
+                r = br.map.request({'op': 'shapes'})
+                if r is not None:
+                    sh_['list'] = r['shapes']
+            G, rgba = mujoco.mjtGeom, (0.49, 0.30, 0.84, 0.45)
+            for sh in sh_['list']:
+                if sh['kind'] == 'part':
+                    for pl in sh.get('polys', []):
+                        q = np.asarray(pl['poly'], float)                                 # (4, 2) corners
+                        a, b = q[1] - q[0], q[3] - q[0]
+                        top = max(min(pl['top'], HEIGHT_CAP), 0.02)
+                        self._geom(G.mjGEOM_BOX, (0.5 * np.linalg.norm(a), 0.5 * np.linalg.norm(b), 0.5 * top),
+                                   (*q.mean(0), 0.5 * top), rgba, self._yaw_mat(math.atan2(a[1], a[0])))
+                    continue
+                h = max(sh['h'], 0.02)
+                if sh['kind'] == 'circle':
+                    self._geom(G.mjGEOM_CYLINDER, (sh['r'], 0.5 * h, 0), (sh['x'], sh['y'], 0.5 * h), rgba)
+                else:
+                    self._geom(G.mjGEOM_BOX, (0.5 * sh['sx'], 0.5 * sh['sy'], 0.5 * h), (sh['x'], sh['y'], 0.5 * h),
+                               rgba, self._yaw_mat(sh.get('yaw', 0.0)))
+
+        def _draw_command(self):
+            """The command as the controller reads it (the loco driver's gizmo): the simulation object 0.33, 0.67 and
+            1.0 s ahead and its facing there. The controller runs ahead of the robot, so this is re-rooted at the
+            robot."""
+            if br.slam is None:
+                return
+            c = br.sim.controller
+            root, yaw = np.asarray(c.pose.rootPos[:2], float), qyaw(c.pose.rootRot)
+            rel = np.asarray(c.trajectory['pos'], float)[1:, :2] - root                      # (3, 2)
+            d = np.array([[math.cos(qyaw(q)), math.sin(qyaw(q))] for q in c.trajectory['rot'][1:]])   # (3, 2)
+            dyaw = float(br.slam['root_yaw']) - yaw
+            R = np.array([[math.cos(dyaw), -math.sin(dyaw)], [math.sin(dyaw), math.cos(dyaw)]])
+            G = mujoco.mjtGeom
+            for p, u in zip(np.asarray(br.slam['root_xy'][:2], float) + rel @ R.T, d @ R.T):
+                base = np.array([p[0], p[1], 0.05])
+                self._geom(G.mjGEOM_SPHERE, (0.042, 0, 0), base, COMMAND_RGBA)
+                gm = self._geom(G.mjGEOM_ARROW, np.zeros(3), np.zeros(3), COMMAND_RGBA)
+                if gm is not None:
+                    mujoco.mjv_connector(gm, G.mjGEOM_ARROW, 0.015, base, base + 0.32 * np.array([u[0], u[1], 0.0]))
+
+        def _draw_route(self):
+            """UI 1's trajectory as the follower holds it: the target waypoint larger, an arrow from the robot to it
+            while the follower steers."""
+            rf = br.route_follow
+            f = rf.follower
+            if f is None:
+                return
+            on = rf.drive and not f.done and self.auto
+            rgba = (0.1, 0.55, 0.65, 0.9) if rf.drive and not f.done else (0.4, 0.5, 0.55, 0.5)
+            G = mujoco.mjtGeom
+            pts = [(x, y, 0.03) for x, y in f.wp]
+            for i, p in enumerate(pts):
+                self._geom(G.mjGEOM_SPHERE, (0.07 if on and i == f.idx else 0.035, 0, 0), p, rgba)
+            for a, b in zip(pts, pts[1:] + (pts[:1] if f.loop else [])):
+                gm = self._geom(G.mjGEOM_CAPSULE, np.zeros(3), np.zeros(3), rgba)
+                if gm is not None:
+                    mujoco.mjv_connector(gm, G.mjGEOM_CAPSULE, 0.012, np.asarray(a, float), np.asarray(b, float))
+            if on and br.slam is not None and f.idx < len(pts):
+                gm = self._geom(G.mjGEOM_ARROW, np.zeros(3), np.zeros(3), rgba)
+                if gm is not None:
+                    mujoco.mjv_connector(gm, G.mjGEOM_ARROW, 0.02, np.array([*br.slam['root_xy'][:2], 0.06]),
+                                         np.asarray(pts[f.idx], float) + (0, 0, 0.03))
 
         def _pose_robot(self):
             """The measured robot at its SLAM pelvis pose, never at the reference's (that one runs ahead of the robot).
@@ -340,11 +501,11 @@ def run_window(br, args):
             else:
                 robot = f'hidden: {self.robot_why}'
             if br.mode == MODE_POSE:
-                ref = f"moved onto the robot's SLAM pose every 0.2 s, not while bent down"
+                ref = "moved onto the robot's SLAM pose every 0.2 s, not while bent down"
             elif br.mode == MODE_STOPPED:
                 ref = 'stopped: the node no longer tracks it'
             else:
-                ref = 'not on the robot until POSE (P): it starts where the robot stood'
+                ref = 'put on the robot every 0.2 s, the robot plays it from POSE (P)'
             rows = [('robot model', robot),
                     (f'{GHOST_WORD[br.mode]} stick figure', 'reference the robot plays: gray IDLE, blue PLANNER, orange POSE'),
                     ('', ref)]
@@ -357,8 +518,14 @@ def run_window(br, args):
                      ('', "thick = the controller's box or x's next, dim = unseen for 1 s")]
             if br.sim.world.place_target is not None:
                 rows.append(('yellow patch', 'where the box is put down (b)'))
-            rows.append(('small balls', 'reference pelvis path ahead, 0.1 s apart (T hides)') if self.show_path else
-                        ('path off', 'T shows the reference pelvis path ahead'))
+            rows.append(('small balls', 'reference pelvis path ahead, 0.1 s apart (V hides)') if self.show_path else
+                        ('path off', 'V shows the reference pelvis path ahead'))
+            rows.append(('red balls, arrows', 'the command (keys, route): 0.33 to 1 s ahead'))
+            rows.append(('orange to red blocks', 'the map around the robot, by height'))
+            if self.shapes['list']:
+                rows.append(('purple blocks', "the lab's furniture and UI 1's virtual objects"))
+            if br.route_follow.follower is not None:
+                rows.append(('teal balls, line', "UI 1's trajectory (T walks it)"))
             rows.append(('dark floor patches', 'shadows'))
             return fit_overlay(rows)
 
@@ -366,10 +533,10 @@ def run_window(br, args):
             w, c, r = br.sim.world, br.sim.controller, br.runner
             state, hud, sem = br.task_words(frame)
             mode = {MODE_IDLE: 'IDLE       next: ] (planner mode, the robot stands)',
-                    MODE_PLANNER: 'PLANNER    the robot stands; next: P -> POSE',
+                    MODE_PLANNER: "PLANNER    the node's planner (WASD walks it); next: P -> POSE",
                     MODE_POSE: 'POSE       the controller drives the robot',
                     MODE_STOPPED: 'STOPPED    damping; restart deploy.sh to resume'}[br.mode]
-            task = f"{hud}   [{state}, {c.mode} {c.semantics}]" + ('   walking (w)' if br.walking else '')
+            task = f"{hud}   [{state}, {c.mode} {c.semantics}]"
             b = br.world_box()
             if b is None:
                 boxl = 'none: x takes the nearest report, a click the clicked one'
@@ -413,7 +580,8 @@ def run_window(br, args):
             robot = 'LIVE' if live else ('no g1_debug' if br.robot.get() is None else 'NOT LOCALIZED')
             rows = [('mode', mode), ('task', task), ('box', boxl), ('reports', objl), ('target', targ),
                     ('grip check', grip), ('box moves', f'{br.syncs} taken from the reports'), ('palm force', palm),
-                    ('robot (SLAM)', locl), ('ref vs robot', sync), ('robot state', robot), ('link', br.link.endpoint)]
+                    ('robot (SLAM)', locl), ('ref vs robot', sync), ('robot state', robot), ('link', br.link.endpoint),
+                    ('trajectory', br.route_follow.text(self.auto))]
             return fit_overlay(rows)
 
         def draw(self):
@@ -423,15 +591,19 @@ def run_window(br, args):
             # follow the robot (the reference without it), eased so SLAM jitter does not shake the view
             target = np.asarray(br.slam['root_xy'][:2], float) if live else np.asarray(frame.qpos[0:2], float)
             t = time.monotonic()
-            if self.follow['xy'] is None:
+            if self.follow['xy'] is None or args.follow_s <= 0:
                 self.follow['xy'] = target.copy()
             else:
-                self.follow['xy'] += (1.0 - math.exp(-(t - self.follow['t']) / FOLLOW_S)) * (target - self.follow['xy'])
+                self.follow['xy'] += (1.0 - math.exp(-(t - self.follow['t']) / args.follow_s)) * (target - self.follow['xy'])
             self.follow['t'] = t
             self.cam.lookat[0], self.cam.lookat[1] = float(self.follow['xy'][0]), float(self.follow['xy'][1])
             fw, fh = glfw.get_framebuffer_size(self.window)
             vp = mujoco.MjrRect(0, 0, fw, fh)
             mujoco.mjv_updateScene(model, data, self.opt, None, self.cam, mujoco.mjtCatBit.mjCAT_ALL, self.scene)
+            self._draw_obstacles()
+            self._draw_shapes()
+            self._draw_command()
+            self._draw_route()
             self._draw_reports(target)
             self._draw_boxes(frame)
             self._draw_reference(frame)
@@ -458,6 +630,7 @@ def run_window(br, args):
                     if max_frames is not None and frames >= max_frames:
                         break
                     now = time.monotonic()
+                    self._sticks(now)
                     br.phase = br.sim.controller.semantics
                     br.tick(now)
                     if now >= next_draw:

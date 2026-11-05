@@ -311,12 +311,13 @@ class Controller:
         l = hypot(d[0], d[1]) or 1.0
         return [d[0] / l, d[1] / l]
 
-    def predict_trajectory(self, stick, speed, obstacles):
+    def predict_trajectory(self, stick, speed, obstacles, face=None):
         sim, dt = self.sim, 20 * self.dt
         rots, drot, dvel = [list(sim['rot'])], [list(self.desiredRot)], [list(self.desiredVel)]
+        face_rot = qfrom_yaw(math.atan2(face[1], face[0])) if face else None
         for i in range(1, 4):
             dv = self.desired_velocity(stick, rots[i - 1], speed)
-            drot.append(qfrom_yaw(math.atan2(dv[1], dv[0])) if stick else drot[i - 1])
+            drot.append(face_rot if face_rot else qfrom_yaw(math.atan2(dv[1], dv[0])) if stick else drot[i - 1])
             x, _ = simple_spring_damper_quat(list(sim['rot']), list(sim['ang']), drot[i], self.p['simRotationHalflife'], i * dt)
             rots.append(x)
             dvel.append(self.desired_velocity(stick, rots[i], speed))
@@ -437,7 +438,9 @@ class Controller:
 
     def update(self, inp):
         """inp: stick [x, y] world direction or None, slow, holding, pickBox {pos, yaw, id} or None,
-        placeTarget {pos, yaw} or None, boxes (floor boxes [{pos, yaw, id}]), boxHalf [x, y], forceSearch."""
+        placeTarget {pos, yaw} or None, boxes (floor boxes [{pos, yaw, id}]), boxHalf [x, y], forceSearch.
+        face [x, y] world direction or None is not the page's: the arrows of the loco driver's window. It turns the
+        character there instead of toward the stick and, like the stick, takes over from the box task."""
         dt, p, b = self.dt, self.p, self.backend
         self.holding = inp['holding']
         self.events = {'grasp': False, 'release': False}
@@ -449,9 +452,9 @@ class Controller:
         obstacles = [{'id': o['id'], 'pos': o['pos'], 'yaw': o['yaw'], 'half': inp['boxHalf']} for o in inp['boxes']
                      if not (self.mode == 'box' and pick_box and o['id'] == pick_box['id'])]
 
-        stick = inp.get('stick')
+        stick, face = inp.get('stick'), inp.get('face')
         navigating = False
-        if not stick and goal and self.mode == 'loco':
+        if not stick and not face and goal and self.mode == 'loco':
             d = [goal['pos'][0] - self.sim['pos'][0], goal['pos'][1] - self.sim['pos'][1]]
             dist = hypot(d[0], d[1])
             if dist > 0.05:
@@ -464,9 +467,11 @@ class Controller:
         dvel = self.desired_velocity(stick, self.sim['rot'], speed)
         dvel_change = length(sub(dvel, self.desiredVel)) / dt
         self.desiredVel = dvel
-        if stick and hypot(stick[0], stick[1]) > 0.01:
+        if face:
+            self.desiredRot = qfrom_yaw(math.atan2(face[1], face[0]))
+        elif stick and hypot(stick[0], stick[1]) > 0.01:
             self.desiredRot = qfrom_yaw(math.atan2(dvel[1], dvel[0]))
-        self.predict_trajectory(stick, speed, obstacles)
+        self.predict_trajectory(stick, speed, obstacles, face)
         if inp.get('forceSearch'):
             self.forceSearch = True
         if not navigating and dvel_change > 50 * 0.25:
@@ -502,7 +507,7 @@ class Controller:
             c = self.commit or {'boxId': pick_box['id'] if phase == 'pick-pre' and pick_box else None,
                                 'side': t['side'], 'pos': list(t['pos']), 'yaw': t['yaw'], 'dir': list(t['dir'])}
             want = 'pick' if phase == 'pick-pre' else 'place'
-            abort = bool(self.calledOff or activity != want or inp.get('stick')
+            abort = bool(self.calledOff or activity != want or inp.get('stick') or inp.get('face')
                          or (pick_box and phase == 'pick-pre' and c['boxId'] != pick_box['id'])
                          or hypot(sides[c['side']]['pos'][0] - c['pos'][0], sides[c['side']]['pos'][1] - c['pos'][1]) > p['movedTolerance']
                          or abs(wrap_angle(sides[c['side']]['yaw'] - c['yaw'])) > p['movedAngle']) if sides else True
@@ -647,12 +652,12 @@ class Controller:
         elif self.mode == 'box':
             if phase in ('pick-post', 'place-post'):
                 use_box = bool(box_match)
-            elif not activity or inp.get('stick'):
+            elif not activity or inp.get('stick') or inp.get('face'):
                 use_box = not self.is_upright() and bool(box_match)
             else:
                 dist = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1])
                 use_box = bool(box_match) and not (self.is_upright() and self.boxCost > leave and dist > engage + 0.3)
-        elif box_match and not inp.get('stick'):
+        elif box_match and not (inp.get('stick') or inp.get('face')):
             near = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1]) < engage
             use_box = self.boxCost < enter or (near and self.reapproach is None)
             if use_box:
