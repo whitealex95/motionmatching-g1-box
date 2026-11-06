@@ -30,9 +30,10 @@ BOX_LABEL_DZ, REPORT_LABEL_DZ = 0.10, 0.30  # m above a box's top: the linked re
 PATH_EVERY = 5                  # frames between the dots of the reference's path ahead
 HEIGHT_CAP = 1.0                # m: the map's heights are drawn up to this (the loco driver's scandot clip)
 OVERLAY_CHARS = 499             # mjr_overlay's buffer per column (MuJoCo 3.3), measured
-GHOST_WORD = {MODE_IDLE: 'gray', MODE_PLANNER: 'blue', MODE_POSE: 'orange', MODE_STOPPED: 'dark gray'}
-GHOST_RGBA = {MODE_IDLE: np.array([0.6, 0.6, 0.6, 0.6], np.float32), MODE_PLANNER: np.array([0.3, 0.6, 1.0, 0.7], np.float32),
-              MODE_POSE: np.array([1.0, 0.75, 0.2, 0.7], np.float32), MODE_STOPPED: np.array([0.45, 0.45, 0.45, 0.5], np.float32)}
+GHOST_WORD = {MODE_IDLE: 'gray', MODE_PLANNER: 'yellow', MODE_POSE: 'blue', MODE_STOPPED: 'dark gray'}
+GHOST_RGBA = {MODE_IDLE: np.array([0.6, 0.6, 0.6, 0.6], np.float32),                  # lmm-g1-box's yellow and its ghost's blue
+              MODE_PLANNER: np.array([0.99, 0.77, 0.10, 0.7], np.float32),
+              MODE_POSE: np.array([0.30, 0.67, 0.97, 0.7], np.float32), MODE_STOPPED: np.array([0.45, 0.45, 0.45, 0.5], np.float32)}
 MODE_WORD = {MODE_IDLE: 'IDLE', MODE_PLANNER: 'PLANNER', MODE_POSE: 'POSE', MODE_STOPPED: 'STOPPED'}
 KEYS_L = ']\nP\nO\nEnter\nW A S D\nArrows\nShift\nF\nT\nEsc\n\nX\nClick\nB\nC\nV\nL\nMouse'
 KEYS_R = ('start control (planner mode)\ntoggle planner <-> POSE\nstop -> damping (final)\n'
@@ -351,19 +352,13 @@ def run_window(br, args):
                                rgba, self._yaw_mat(sh.get('yaw', 0.0)))
 
         def _draw_command(self):
-            """The command as the controller reads it (the loco driver's gizmo): the simulation object 0.33, 0.67 and
-            1.0 s ahead and its facing there. The controller runs ahead of the robot, so this is re-rooted at the
-            robot."""
+            """br.command_local() at the robot's SLAM pose, as UI 3 draws it too."""
             if br.slam is None:
                 return
-            c = br.sim.controller
-            root, yaw = np.asarray(c.pose.rootPos[:2], float), qyaw(c.pose.rootRot)
-            rel = np.asarray(c.trajectory['pos'], float)[1:, :2] - root                      # (3, 2)
-            d = np.array([[math.cos(qyaw(q)), math.sin(qyaw(q))] for q in c.trajectory['rot'][1:]])   # (3, 2)
-            dyaw = float(br.slam['root_yaw']) - yaw
-            R = np.array([[math.cos(dyaw), -math.sin(dyaw)], [math.sin(dyaw), math.cos(dyaw)]])
+            local, yaw = br.command_local(), float(br.slam['root_yaw'])   # (3, 4)
+            R = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
             G = mujoco.mjtGeom
-            for p, u in zip(np.asarray(br.slam['root_xy'][:2], float) + rel @ R.T, d @ R.T):
+            for p, u in zip(np.asarray(br.slam['root_xy'][:2], float) + local[:, :2] @ R.T, local[:, 2:] @ R.T):
                 base = np.array([p[0], p[1], 0.05])
                 self._geom(G.mjGEOM_SPHERE, (0.042, 0, 0), base, COMMAND_RGBA)
                 gm = self._geom(G.mjGEOM_ARROW, np.zeros(3), np.zeros(3), COMMAND_RGBA)
@@ -505,7 +500,7 @@ def run_window(br, args):
             else:
                 ref = 'put on the robot every 0.2 s, the robot plays it from POSE (P)'
             rows = [('robot model', robot),
-                    (f'{GHOST_WORD[br.mode]} stick figure', 'reference the robot plays: gray IDLE, blue PLANNER, orange POSE'),
+                    (f'{GHOST_WORD[br.mode]} stick figure', 'reference the robot plays: gray IDLE, yellow PLANNER, blue POSE'),
                     ('', ref)]
             if br.sim.world.boxes:
                 rows += [('solid brown box', "controller's box, from a report: it walks there, picks it up"),

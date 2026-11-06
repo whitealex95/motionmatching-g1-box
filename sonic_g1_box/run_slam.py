@@ -904,7 +904,20 @@ class Bridge:
             self.last['ref'] = now
             f = self.frame_now()
             self.bus.publish(REF_TOPIC, {'mode': self.mode, 'qpos': np.round(f.qpos[0:36], 4).tolist(),   # (36,)
-                                         'held_box': None if f.ghost_box is None else np.round(f.ghost_box, 4).tolist()})
+                                         'held_box': None if f.ghost_box is None else np.round(f.ghost_box, 4).tolist(),
+                                         'command': self.command_local().round(3).tolist()})              # (3, 4)
+
+    def command_local(self):
+        """The command as the controller reads it (the loco driver's gizmo): the simulation object 0.33, 0.67 and
+        1.0 s ahead and its facing there, [dx, dy, ux, uy] each in the controller root's heading frame (x forward,
+        y left). The controller runs ahead of the robot, so the window and UI 3 put it at the robot's map pose."""
+        c = self.sim.controller
+        yaw = qyaw(c.pose.rootRot)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        R = np.array([[cy, -sy], [sy, cy]])
+        rel = (np.asarray(c.trajectory['pos'], float)[1:, :2] - np.asarray(c.pose.rootPos[:2], float)) @ R   # (3, 2)
+        d = np.array([[math.cos(qyaw(q) - yaw), math.sin(qyaw(q) - yaw)] for q in c.trajectory['rot'][1:]])   # (3, 2)
+        return np.concatenate([rel, d], axis=1)                                                              # (3, 4)
 
     def planner_yaw(self):
         """The map yaw of the node's planner frame +x: the robot's heading when the planner started (] or P back
