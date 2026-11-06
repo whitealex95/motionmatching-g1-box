@@ -552,11 +552,15 @@ def run_window(br, args):
                         'holding, b puts it down')
             elif w.pick_id is not None:
                 targ = f"pick up box {w.find(w.pick_id)['label']}" + (' again (grip check)' if w.regrasp == w.pick_id else '')
+            elif w.regrasp is not None:
+                targ = 'the box left the hands: picked up again once the camera sees it'
             else:
                 targ = 'none (x picks up, b puts down)'
-            grip = (f'{br.drops} drop{"s" if br.drops != 1 else ""}, picked up again' if br.drops else 'no drop')
+            grip = (f'{br.drops} drop{"s" if br.drops != 1 else ""}' if br.drops else 'no drop')
             if w.holding_id is not None and br.mode == MODE_POSE:
                 grip += f', {br.grip.count} of {args.grip_need} reports on the floor now'
+                if br.grasp.gap is not None:
+                    grip += f', palms {br.grasp.gap:.2f} m apart'
             g = br.grasp
             palm = ('off (--palm-force 0)' if g.force <= 0 else
                     f"{g.force:.0f} N {'pressing' if g.on else 'off'}, ramp {g.ramp:.0%}")

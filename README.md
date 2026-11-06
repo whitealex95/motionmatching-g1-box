@@ -82,6 +82,16 @@ The page simulates the robot. Here the robot is measured, a little late and with
 - A grip-check drop clears the place target. On the page the drop comes during the rise, before any place is asked
   for. Here the D435i sees the box left on the floor some 2 s after the grasp, and a place asked for meanwhile made
   the controller put down the box right after its next lift, held or not.
+- The page presses the palms only while the physical box is within 0.45 m of their midpoint (`graspStep`) and checks
+  the grip on the physics' box at every step (`checkGrip`). The bridge has no such box, so the measured palms take
+  its place: closer together than the box is wide minus 0.08 m for 0.3 s, they hold no box, and the hold is dropped
+  as by the grip check. The force stays off until the frames of the re-plan after the drop play: in the middle of a
+  lift the controller grasps again on its first frame (the clip's held output is high and `graspReach` is horizontal
+  only), as the page's controller does.
+- Leaving POSE (`P`, `O`) drops the hold and clears the targets. Out of POSE the node's planner has the arms and the
+  palm force is off, and the reference went on carrying with its hands together, which the next POSE went back to.
+- UI 3's *Box task state* card draws the task as a state machine: the state at the played frame, the signals its
+  transitions read, and the last 16 transitions with their causes (the bridge's state, `fsm`).
 
 ## Parity with the page
 

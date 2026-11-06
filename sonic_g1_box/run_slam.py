@@ -35,6 +35,15 @@ What differs from the page, because the robot is measured, not simulated:
     the box
   - a grip-check drop clears the place target: the drop comes some 2 s after the grasp, often after the place was
     asked for, and the controller then put down the box it had just failed to lift again
+  - the page presses the palms only while the physical box is within 0.45 m of their midpoint and checks the grip
+    on it at every step (engine.js graspStep, runner.js checkGrip). With no such box, the measured palms closer
+    together than the box is wide minus HANDS_EMPTY_GAP for HANDS_EMPTY_S drop the hold too: before, a box that
+    slipped out kept the palms pressed together until SAM3 saw it on the floor. The force stays off until the
+    frames of the next re-plan play
+  - leaving POSE (P, O) drops the hold and clears the targets: the node's planner has the arms then, and the
+    reference went on carrying with its hands together, which the next POSE went back to
+  - the task's state machine (FSM_STATES at the played frame, its signals and transitions) goes to UI 3 in the
+    state's 'fsm'
 
     python sonic_g1_box/run_slam.py                        # the window (UI 2, sonic_g1_box/box_window.py)
     python sonic_g1_box/run_slam.py --terminal             # terminal keys (letter + Enter)
@@ -78,6 +87,7 @@ for _k in ('OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'OMP_NUM_THREADS'):
     os.environ.setdefault(_k, '1')     # one thread searches these sizes faster than many, and leaves the CPU free
 
 import argparse
+import collections
 import json
 import math
 import sys
@@ -96,7 +106,7 @@ import zmq
 import operator_link as OP
 from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED, BusPublisher, DeployLink, RobotState
 from mm_g1.mathq import hypot, qyaw
-from mm_g1.runner import CONTROL_DT, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box, to_present
+from mm_g1.runner import CONTROL_DT, GRIP_REF_DZ, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box, to_present
 from mm_g1.sim import Sim
 from route_follow import ROUTE_NAMES, RouteFollow
 
@@ -115,6 +125,10 @@ MUJOCO_TO_ISAACLAB = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10
                                27, 21, 28])           # isaac[i] = mujoco[MUJOCO_TO_ISAACLAB[i]]
 GRASP_REACH = 0.45
 GRASP_RAMP = 0.15
+HANDS_EMPTY_GAP = 0.08     # m: palms this much closer together than the box is wide hold no box between them
+HANDS_EMPTY_S = 0.3        # s they must stay that close
+FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
+FSM_HISTORY = 16
 SHOULDER_ROLL_KP = 14.251                              # the node's default shoulder roll kp (the page's SONIC kp too)
 G1_XML = os.path.join(ROOT, 'assets', 'unitree_g1', 'g1.xml')
 MODEL_VERSION = 'lmm-g1-box sbplace, Locomotion emmboth'
@@ -232,6 +246,8 @@ class PalmGrasp:
         self.ramp = 0.0
         self.on = False
         self.palms = None
+        self.gap = None            # m between the palms
+        self.released = False      # the hold was dropped: no force while the frames made before it play
 
     def pose_robot(self, base_quat, body_q):
         """The palms (2, 3) in the pelvis heading frame."""
@@ -256,11 +272,12 @@ class PalmGrasp:
         None. Returns tau (14,) for arm_tau."""
         tau = np.zeros(14)
         if robot is None:
-            self.ramp, self.on, self.palms = 0.0, False, None
+            self.ramp, self.on, self.palms, self.gap = 0.0, False, None, None
             return tau
         palms = self.palms = self.pose_robot(*robot)
+        self.gap = float(np.linalg.norm(palms[0] - palms[1]))
         mid = 0.5 * (palms[0] + palms[1])
-        on = frame.held is not None
+        on = frame.held is not None and not self.released
         if on and floor_box is not None:
             on = bool(hypot(floor_box[0] - mid[0], floor_box[1] - mid[1]) < GRASP_REACH)
         k = dt / GRASP_RAMP
@@ -357,7 +374,7 @@ class BoxRoute:
 
     def regrasp(self):
         w = self.br.sim.world
-        return w.holding_id is None and w.pick_id is not None
+        return w.holding_id is None and (w.pick_id is not None or w.regrasp is not None)
 
     def after_pick(self):
         t, b = self.task, self.br
@@ -408,8 +425,11 @@ class BoxRoute:
         elif self.phase == 'to_box':
             if self.picked():
                 self.after_pick()
-            elif w.pick_id is None and w.holding_id is None:
+            elif w.pick_id is None and w.holding_id is None and w.regrasp is None:
                 self.finish('failed', 'failed: the pick was given up')
+            elif w.pick_id is None and w.regrasp is not None and now - self.t_phase > self.FIND_S:
+                self.finish('failed', f'failed: the box left the hands and is not seen on the floor '
+                                      f'(for {self.FIND_S:.0f} s)')
         elif self.phase == 'carry':
             rf = b.route_follow
             f = rf.follower
@@ -482,6 +502,9 @@ class Bridge:
         self.lost = False
         self.drops = 0
         self.syncs = 0
+        self.hands_empty_s = 0.0
+        self.release = None        # {'F': first re-plan's frame after the drop, 'regrasp'}: frames up to F still hold it
+        self.fsm = {'state': None, 'since': time.time(), 'history': collections.deque(maxlen=FSM_HISTORY), 'why': None}
         self.phase = 'idle'
         self.trace = open(args.trace, 'w') if args.trace else None
         self.ui = None                  # 'window' | 'terminal' | 'web' | 'headless'
@@ -609,6 +632,8 @@ class Bridge:
         self.walking = False
         self.sim.force_search = True
         self.say('targets cleared')
+        if not from_task:
+            self.fsm_cause('C: the pick and the put-down are cancelled')
         if not from_task and self.box_route is not None and self.box_route.active():
             self.box_route.finish('stopped', 'cancelled (C)')
 
@@ -761,6 +786,7 @@ class Bridge:
             self.mode = MODE_PLANNER
             self.planner_started()
             self.say('planner=1 -> PLANNER (stand)')
+            self.leave_pose('planner mode (P)')
         else:
             self.say('press ] first')
 
@@ -772,6 +798,7 @@ class Bridge:
         self.link.command(stop=True, planner=self.mode == MODE_PLANNER)
         self.mode = MODE_STOPPED
         self.say('stop=1 -> damping')
+        self.leave_pose('stop (O)')
 
     # -- the stream ----------------------------------------------------------------------------------------------
     def begin(self):
@@ -807,6 +834,8 @@ class Bridge:
         if self.trace is not None:
             self.trace_replan(F, p, robot)
         r = self.runner
+        if self.release is not None and self.release['F'] is None:
+            self.release['F'] = F
         seeds, kept_out = r.seeds, r.kept_out
         first, _ = r.replan(F, robot, yaw_gain=gain)
         if self.trace is not None and r.seeds > seeds:
@@ -877,9 +906,13 @@ class Bridge:
             self.t0 = now
             self.begin()
         self.cur = int((now - self.t0) / CONTROL_DT)
+        if self.release is not None and self.release['F'] is not None and self.cur > self.release['F']:
+            self.release = None
+            self.grasp.released = False
         if self.cur >= self.runner.next_replan:
             self.replan(self.cur)
         self.flush()
+        self.update_fsm(self.frame_now())
         if self.mode in (MODE_PLANNER, MODE_POSE) and now - self.last['heartbeat'] >= 1.0:
             self.link.command(planner=self.mode == MODE_PLANNER)
             self.last['heartbeat'] = now
@@ -967,19 +1000,19 @@ class Bridge:
         if w.holding_id == b['id']:
             self.move_seen = None
             if self.mode == MODE_POSE and self.grip.update(frame, w.holding_id, meas):
-                yaw = box_yaw_near(meas['yaw'], b['yaw'], self.box_turn)
-                if self.sim.drop(b['id'], [meas['pos'][0], meas['pos'][1]], yaw):
-                    self.drops += 1
-                    # A place target is for a held box (set_place needs one). The page's grip check comes during the
-                    # rise, before any place is asked for. Here the camera sees the box left on the floor some 2 s
-                    # after the grasp, often after the place was asked for, and the target kept made the controller
-                    # put down the box it had just failed to lift again.
-                    w.place_target = None
-                    self.say(f"grip check: the reference lifted the box but it is still on the floor at "
-                          f"({meas['pos'][0]:.2f}, {meas['pos'][1]:.2f}) m: the hold is dropped, the controller picks "
-                          f'it up again ({self.drops} so far)')
+                self.release_hold(f"grip check: the reference lifted the box but it is still on the floor at "
+                                  f"({meas['pos'][0]:.2f}, {meas['pos'][1]:.2f}) m", True, meas)
             return
         self.grip.update(frame, w.holding_id, None)
+        if w.regrasp == b['id'] and w.pick_id is None and meas['pos'][2] - self.args.box_size[2] / 2 < self.args.grip_phys_dz:
+            b['pos'] = [float(meas['pos'][0]), float(meas['pos'][1])]
+            b['yaw'] = box_yaw_near(meas['yaw'], b['yaw'], self.box_turn)
+            w.pick_id = b['id']
+            self.sim.force_search = True
+            self.fsm_cause('the box is seen on the floor: picking it up again')
+            self.say(f"the box is seen on the floor at ({b['pos'][0]:.2f}, {b['pos'][1]:.2f}) m: the controller "
+                     'picks it up again')
+            return
         if self.runner.pending(self.cur, b['id']) or self.grasp.ramp > 0:
             return
         if meas['pos'][2] - self.args.box_size[2] / 2 > 0.15:
@@ -1022,6 +1055,134 @@ class Bridge:
         if meas is not None and self.slam is not None and meas['pos'][2] - self.args.box_size[2] / 2 < self.args.grip_phys_dz:
             floor = to_heading_frame(meas['pos'], self.slam['root_xy'], float(self.slam['root_yaw']))
         self.link.arm_tau(self.grasp.step(dt, frame, self.robot.get(), held, floor))
+        self.check_hands(dt, frame)
+
+    def check_hands(self, dt, frame):
+        """lmm-g1-box presses the palms only while the physical box is within reach of them, which its physics knows
+        at every step. Here the camera's reports are late and miss a box at the feet or behind the arms, so the palms
+        are measured instead: closer together than the box is wide for HANDS_EMPTY_S, they hold no box."""
+        g, w = self.grasp, self.sim.world
+        width = min(self.args.box_size[:2])
+        empty = (frame.held is not None and w.holding_id == frame.held and g.ramp >= 1.0 and g.gap is not None
+                 and g.gap < width - HANDS_EMPTY_GAP)
+        self.hands_empty_s = self.hands_empty_s + dt if empty else 0.0
+        if self.hands_empty_s >= HANDS_EMPTY_S:
+            self.hands_empty_s = 0.0
+            self.release_hold(f'the palms are {g.gap:.2f} m apart, the box is {width:.2f} m wide: no box between them',
+                              True)
+
+    def release_hold(self, why, regrasp, meas=None):
+        """The box left the hands: the world drops its hold and the palm force stops at once. A report of the box on
+        the floor (meas, else a fresh one) puts it there, and with regrasp the controller picks it up again (the grip
+        check of the page). Without one it is put on the floor under the palms, and with regrasp the pick waits for a
+        report of it on the floor, else for X."""
+        w, b = self.sim.world, self.world_box()
+        if b is None or w.holding_id != b['id']:
+            return False
+        if meas is None:
+            meas = self.reports.fresh(self.args.reach_fresh_s)
+            if meas is not None and meas['pos'][2] - self.args.box_size[2] / 2 >= self.args.grip_phys_dz:
+                meas = None
+        if meas is not None:
+            pos, yaw = [float(meas['pos'][0]), float(meas['pos'][1])], box_yaw_near(meas['yaw'], b['yaw'], self.box_turn)
+        else:
+            pos, yaw = self.palms_on_floor(), b['yaw']
+        if not self.sim.drop(b['id'], pos, yaw):
+            return False
+        self.drops += 1
+        # A place target is for a held box (set_place needs one). The page's grip check comes during the rise, before
+        # any place is asked for. Here the camera sees the box left on the floor some 2 s after the grasp, often after
+        # the place was asked for, and the target kept made the controller put down the box it had just failed to lift.
+        w.place_target = None
+        # The frames made before the drop still hold the box, and with the reference mid-lift the controller grasps
+        # again on the first frame it makes (the clip's held output is high), so the played hold never ends: the
+        # force stays off until the frames of the next re-plan play.
+        self.grasp.released = True
+        self.grasp.ramp = 0.0
+        self.release = {'F': None, 'regrasp': bool(regrasp)}
+        if meas is None or not regrasp:
+            w.pick_id = None
+            if not regrasp:
+                w.regrasp = None
+        where = f'({pos[0]:.2f}, {pos[1]:.2f}) m' + ('' if meas is not None else ', under the palms (not seen)')
+        then = ('the controller picks it up again' if regrasp and meas is not None
+                else 'the pick waits until the camera sees it on the floor' if regrasp else 'X picks it up again')
+        self.fsm_cause(why)
+        self.say(f'{why}: the hold is dropped, the box is at {where}, {then} ({self.drops} so far)')
+        return True
+
+    def palms_on_floor(self):
+        """The floor under the palms' midpoint in the map frame (the controller's root without a SLAM pose)."""
+        palms = self.grasp.palms
+        if palms is None or self.slam is None:
+            return list(self.sim.controller.pose.rootPos[:2])
+        mid = 0.5 * (palms[0] + palms[1])
+        xy, yaw = self.slam['root_xy'], float(self.slam['root_yaw'])
+        c, s = math.cos(yaw), math.sin(yaw)
+        return [xy[0] + c * mid[0] - s * mid[1], xy[1] + s * mid[0] + c * mid[1]]
+
+    def leave_pose(self, why):
+        """Out of POSE the node's planner (or damping) has the arms and the palm force is off, so a held box falls.
+        The hold is dropped and the targets cleared: POSE starts again from locomotion, not from a pick, a place or a
+        regrasp that the reference went on with while the robot stood."""
+        self.release_hold(f'{why}: the arms let go of the box', False)
+        if self.has_target() or self.sim.world.regrasp is not None:
+            self.fsm_cause(f'{why}: the targets are cleared')
+            self.cancel(from_task=True)
+
+    # -- the box task's state for UI 3 ----------------------------------------------------------------------------
+    def fsm_cause(self, why):
+        self.fsm['why'] = (time.time(), why)
+
+    def fsm_state(self, frame):
+        """The task state at the frame the robot plays (FSM_STATES). 'lost': from a drop that picks the box up again
+        until the frames made after it play, and while the box that left the hands is not seen on the floor."""
+        w = self.sim.world
+        if (self.release is not None and self.release['regrasp']) or (
+                w.holding_id is None and w.regrasp is not None and w.pick_id is None):
+            return 'lost'
+        sem = frame.tag['semantics']
+        if sem in ('pick-pre', 'pick-post', 'place-pre', 'place-post'):
+            return sem
+        held = frame.held is not None
+        if sem == 'navigate':
+            return 'to_place' if held else 'to_box'
+        return 'carry' if held else 'locomotion'
+
+    def update_fsm(self, frame):
+        f, now = self.fsm, time.time()
+        s = self.fsm_state(frame)
+        if s == f['state']:
+            return
+        why = f['why'][1] if f['why'] is not None and now - f['why'][0] < 3.0 else None
+        if why is None and f['state'] == 'lost' and (self.sim.world.pick_id is not None or self.sim.world.holding_id is not None):
+            why = 'the frames made after the drop play: the controller picks the box up again where the camera saw it'
+        if f['state'] is not None:
+            f['history'].append((round(now, 2), f['state'], s, why))
+        f['state'], f['since'], f['why'] = s, now, None
+
+    def fsm_signals(self, frame):
+        w, g, b = self.sim.world, self.grasp, self.world_box()
+        rest = self.args.box_size[2] / 2
+        meas = self.reports.last
+        age = None if meas is None else time.time() - meas['wall']
+        xy = self.robot_xy()
+        return {
+            'mode': self.mode, 'holding': w.holding_id, 'pick': w.pick_id, 'regrasp': w.regrasp,
+            'place': None if w.place_target is None else [round(v, 2) for v in w.place_target['pos']],
+            'ref_held': frame.held is not None,
+            'ref_box_dz': None if frame.ghost_box is None else round(float(frame.ghost_box[2]) - rest, 3),
+            'grip_ref_dz': GRIP_REF_DZ,
+            'force_on': bool(g.on), 'ramp': round(g.ramp, 2), 'released': bool(g.released),
+            'gap': None if g.gap is None else round(g.gap, 3), 'width': min(self.args.box_size[:2]),
+            'gap_min': round(min(self.args.box_size[:2]) - HANDS_EMPTY_GAP, 3),
+            'empty_s': round(self.hands_empty_s, 2), 'empty_need': HANDS_EMPTY_S,
+            'grip_count': self.grip.count, 'grip_need': self.grip.need, 'grip_dz': self.args.grip_phys_dz,
+            'report': None if meas is None else {
+                'track': self.reports.track, 'age_s': round(age, 2), 'dz': round(float(meas['pos'][2]) - rest, 3),
+                'dist': round(hypot(meas['pos'][0] - xy[0], meas['pos'][1] - xy[1]), 2)},
+            'box_xy': None if b is None else [round(b['pos'][0], 2), round(b['pos'][1], 2)],
+            'drops': self.drops}
 
     # -- the state for UI 1, UI 2, the recorder and box_eval ------------------------------------------------------
     def task_words(self, frame):
@@ -1062,6 +1223,9 @@ class Bridge:
             'kept_out': None if r is None else r.kept_out,
             'phase': self.phase, 'task': task,
             'box_route': None if self.box_route is None else self.box_route.state(),
+            'fsm': None if cur is None or self.fsm['state'] is None else {
+                'state': self.fsm['state'], 'since_s': round(time.time() - self.fsm['since'], 1),
+                'history': list(self.fsm['history']), 'signals': self.fsm_signals(cur)},
             'driver': 'box', 'ui': self.ui, 'frame': self.args.frame, 'keys_from': self.keys_from,
             'params': None if self.flags is None else self.flags.spec(),
             'argv': None if self.flags is None else self.flags.argv(),
