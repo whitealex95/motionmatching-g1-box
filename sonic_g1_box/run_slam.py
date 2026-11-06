@@ -43,7 +43,7 @@ What differs from the page, because the robot is measured, not simulated:
   - leaving POSE (P, O) drops the hold and clears the targets: the node's planner has the arms then, and the
     reference went on carrying with its hands together, which the next POSE went back to
   - the task's state machine (FSM_STATES at the played frame, its signals and transitions) goes to UI 3 in the
-    state's 'fsm'
+    state's 'fsm', and the page's clip view of the clips the robot plays and the stream reaches in 'match' 'views'
 
 The page's Play panel settings are flags with the page's defaults (the data variant's config.json where the page takes
 them from it), set live from UI 3's Settings tab:
@@ -120,7 +120,7 @@ import zmq
 import operator_link as OP
 from db_page import DbPage
 from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED, BusPublisher, DeployLink, RobotState
-from mm_g1.controller import QUERY_DB
+from mm_g1.controller import QUERY_DB, torso_tilt
 from mm_g1.mathq import hypot, qyaw
 from mm_g1.runner import (CONTROL_DT, GRIP_REF_DZ, HOLDS, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box,
                           to_present)
@@ -157,6 +157,7 @@ HANDS_EMPTY_S = 0.3        # s they must stay that close
 FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
 FSM_HISTORY = 16
 CLIP_FPS = 60
+CLIP_VIEW_POINTS = 160                                 # samples of a clip's pelvis and torso curves sent to UI 3
 WALK_DONE_M = 0.25         # app.js playStick: a walk to a clicked point ends this near it, slows down within 1 m
 SHOULDER_ROLL_KP = 14.251                              # the node's default shoulder roll kp (the page's SONIC kp too)
 WRIST_YAW_KP = 16.778                                  # the node's default wrist yaw kp (policy_parameters.hpp STIFFNESS_4010)
@@ -354,20 +355,69 @@ def to_heading_frame(p, xy, yaw):
 
 class ClipTable:
     """The clip of a row of the controller's Animation Database: the variant's clips, then the EMM takes' and the carry
-    spans' in use, in the order of the page's StatePanel (states.js clipRows)."""
+    spans' in use, in the order of the page's StatePanel (states.js clipRows). view(i) is what the StatePanel draws
+    of clip i, for UI 3."""
 
-    def __init__(self, backend):
+    def __init__(self, backend, torso):
         parts = [(backend.cfg['clips'], 0)] + [(e.cfg['clips'], e.first) for e in (backend.emm, backend.emm_carry) if e]
-        self.clips = [(c['names'][n], bool(mirror), first + start, first + stop)
-                      for c, first in parts for n, mirror, start, stop, _, _ in c['rows']]
+        self.clips = [(c['names'][n], bool(mirror), first + start, first + stop, attach, release)
+                      for c, first in parts for n, mirror, start, stop, attach, release in c['rows']]
         self.starts = [c[2] for c in self.clips]
+        self.b, self.torso = backend, torso
+        self.lanes = db_lanes(backend)                                                    # (2, nframes)
+        self.views = {}
 
     def of(self, g):
         if g is None:
             return None
-        name, mirror, start, stop = self.clips[max(0, bisect.bisect_right(self.starts, g) - 1)]
-        return {'name': name, 'mirror': mirror, 'at_s': round((g - start) / CLIP_FPS, 2),
+        i = max(0, bisect.bisect_right(self.starts, g) - 1)
+        name, mirror, start, stop = self.clips[i][:4]
+        return {'i': i, 'f': int(g - start), 'name': name, 'mirror': mirror, 'at_s': round((g - start) / CLIP_FPS, 2),
                 'len_s': round((stop - start) / CLIP_FPS, 2)}
+
+    def view(self, i):
+        if i not in self.views:
+            self.views[i] = self.make_view(i)
+        return self.views[i]
+
+    def make_view(self, i):
+        """The pelvis height and torso lean every k frames (and at the last frame), the frames of the Locomotion and
+        Box Matching Databases as [start, stop, value] runs (db_lanes), the last steps and the grasp and release."""
+        b, L = self.b, self.b.L
+        name, mirror, start, stop, attach, release = self.clips[i]
+        n = stop - start
+        k = max(1, math.ceil(n / CLIP_VIEW_POINTS))
+        fs = list(range(0, n, k)) + ([n - 1] if (n - 1) % k else [])
+        rows = b.pose[start:stop]                                                           # (n, W)
+        h, j0 = L['hip_quat'][0], L['joints'][0]
+        pelvis = [round(float(rows[f, L['hip_pos'][0] + 2]), 3) for f in fs]
+        lean = [round(torso_tilt(self.torso, rows[f, h:h + 4], rows[f, j0:]), 1) for f in fs]
+
+        def runs(lane):
+            v = lane[start:stop]                                                            # (n,)
+            edges = [0, *(np.flatnonzero(np.diff(v)) + 1).tolist(), n]
+            return [[a, e, int(v[a])] for a, e in zip(edges[:-1], edges[1:]) if v[a]]
+
+        steps = b.steps[i] if i < len(b.steps) else []
+        event = lambda f: int(f) if f is not None and 0 <= f < n else None
+        return {'i': i, 'name': name, 'mirror': mirror, 'n': n, 'fps': CLIP_FPS, 'k': k, 'pelvis': pelvis, 'lean': lean,
+                'loco': runs(self.lanes[0]), 'box': runs(self.lanes[1]),
+                'steps': [[s['step'], s['lift'], s['kind'], s['event']] for s in steps],
+                'attach': event(attach), 'release': event(release)}
+
+
+def db_lanes(b):
+    """markFrames of the page's StatePanel, per frame of the Animation Database: in the Locomotion Matching Database
+    1 empty-handed or 2 carrying, in the Box Matching Database 1 pick or 2 place, plus 2 for the frames the box search
+    does not jump into (MMBackend.noEntry), 0 in none."""
+    lanes = np.zeros((2, len(b.pose)), np.uint8)                                            # (2, nframes)
+    held = b.pose[:, b.L['held'][0]] > 0.5                                                  # (nframes,)
+    idx = b.db['loco'].idx
+    lanes[0, idx] = np.where(held[idx], 2, 1)
+    d, ne = b.db['box'], b.no_entry('box')
+    for r, (a, e) in enumerate(d.ranges):
+        lanes[1, d.idx[a:e]] = (2 if d.range_kind[r] else 1) + 2 * ne[a:e]
+    return lanes
 
 
 class BoxRoute:
@@ -572,7 +622,7 @@ class Bridge:
         self.flags = None               # OP.Flags: UI 3's list of the bridge's flags
         self.keys_from = None
         self.box_route = BoxRoute(self)
-        self.clips = ClipTable(self.sim.controller.backend)
+        self.clips = ClipTable(self.sim.controller.backend, self.sim.controller.torso)
         self.db_page = None
         if args.db_port and args.headless is None:
             try:
@@ -1342,8 +1392,9 @@ class Bridge:
 
     def match_state(self, frame):
         """The page's markers and its weights panel: the controller's last searches, their cost and the share of each
-        feature group in it, and where the controller aims, in the map frame. The controller runs the lookahead
-        (ahead_s) ahead of the robot, while `robot` is the frame the robot plays now."""
+        feature group in it, and where the controller aims, in the map frame. `robot` is the frame the robot plays
+        now, `plan` the newest frame sent (ahead_s ahead of it, made again at each re-plan), `controller` the
+        controller's committed frame (at most one re-plan step ahead of the robot), `views` their clips' views."""
         c, w, cfg = self.sim.controller, self.sim.world, self.sim.cfg
         b = c.backend
         xyyaw = lambda p, yaw: [round(float(p[0]), 3), round(float(p[1]), 3), round(float(yaw), 3)]
@@ -1354,7 +1405,7 @@ class Bridge:
             err = np.add.reduceat(e, np.cumsum([0] + sizes[:-1]))                                             # (G,)
             total = float(err.sum())
             g = int(b.db[m['name']].idx[m['frame']])
-            last[kind] = {'cost': round(float(m['cost']), 3), 'g': g, 'clip': self.clips.of(g),
+            last[kind] = {'cost': round(float(m['cost']), 3), 'g': g, 'clip': self.clips.of(g), 'db': m['name'],
                           'share': [round(float(x) / total, 3) if total > 0 else 0.0 for x in err]}
         phase = c.box_phase()
         pre = phase in ('pick-pre', 'place-pre')
@@ -1363,10 +1414,19 @@ class Bridge:
         r = c.commit if phase and not pre else None
         pb, pt = w.pick_box(), w.place_target
         g = frame.tag.get('g')
+        cg = None if b.active is None else int(b.db[b.active].idx[b.frame])
+        pg = self.runner.frame_at(self.runner.produced - 1).tag.get('g')
+        robot, ctrl, plan = self.clips.of(g), self.clips.of(cg), self.clips.of(pg)
+        p = c.p
         return {
-            'robot': {'g': g, 'clip': self.clips.of(g), 'semantics': frame.tag['semantics'], 'holding': frame.held is not None},
+            'robot': {'g': g, 'clip': robot, 'semantics': frame.tag['semantics'], 'holding': frame.held is not None},
             'controller': {'semantics': c.semantics, 'phase': phase, 'holding': w.holding_id is not None,
-                           'in_use': 'loco' if c.mode == 'loco' else c.boxTag},
+                           'in_use': 'loco' if c.mode == 'loco' else c.boxTag, 'g': cg, 'clip': ctrl, 'db': b.active},
+            'plan': {'g': pg, 'clip': plan},
+            'views': {str(x['i']): self.clips.view(x['i']) for x in (robot, ctrl, plan) if x is not None},
+            'db_of': {k: c.db_of(k) for k in QUERY_DB},
+            'radii': {'search': p['engageRadius'], 'engage': p['forceEngageRadius'], 'place_engage': p['placeEngageRadius'],
+                      'z_upright': p['zUpright'], 'upright_tilt': p['uprightTilt']},
             'ahead_s': round(self.args.lookahead * CONTROL_DT, 2), 'last': last,
             'groups': {k: cfg['controllers'][QUERY_DB[k]]['groups'] for k in QUERY_DB},
             'weights': {k: [float(x) for x in c.p['weights'].get(k, [])] for k in QUERY_DB},
