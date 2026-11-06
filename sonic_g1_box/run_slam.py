@@ -46,11 +46,14 @@ What differs from the page, because the robot is measured, not simulated:
     state's 'fsm'
 
 The page's Play panel settings are flags with the page's defaults (the data variant's config.json where the page takes
-them from it), set live from UI 3's Settings tab: anchoring --yaw-gain, --hold; the grasp heuristic --palm-force,
---palm-target, --shoulder-squeeze, --wrist-squeeze, --shoulder-open; pick up and put down --pick-speed, --pick-slow,
---warp, --leave-moved, --box-entry, --rise, --transition-cost, --upright-tilt, --box-db, --foot-lock; matching
---weights-loco, --weights-pick, --weights-place, --box-enter, --box-leave, --side-margin. Not ported: the tracker
-choice, the other anchoring modes, the pick and place check, the box mass and the number of sides.
+them from it), set live from UI 3's Settings tab:
+  anchoring        --yaw-gain, --hold
+  grasp heuristic  --palm-force, --palm-target, --shoulder-squeeze, --wrist-squeeze, --shoulder-open
+  pick and place   --pick-speed, --pick-slow, --warp, --leave-moved, --box-entry, --rise, --transition-cost,
+                   --upright-tilt, --box-db, --foot-lock
+  matching         --weights-loco, --weights-pick, --weights-place, --box-enter, --box-leave, --side-margin
+Not ported: the tracker choice, the other anchoring modes, the pick and place check, the box mass and the number of
+sides.
 
     python sonic_g1_box/run_slam.py                        # the window (UI 2, sonic_g1_box/box_window.py)
     python sonic_g1_box/run_slam.py --terminal             # terminal keys (letter + Enter)
