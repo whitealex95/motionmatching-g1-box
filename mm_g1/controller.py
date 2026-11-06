@@ -8,6 +8,7 @@ The box controller has four states, set by its tag and by whether the robot hold
   place, empty     rise without the box.
 """
 import copy
+import itertools
 import math
 
 import numpy as np
@@ -34,6 +35,7 @@ DEFAULTS = dict(
     standOff=0.36, approachClearance=0.3, approachFallback=0.6,
 )
 QUERY_DB = {'loco': 'loco', 'pick': 'box', 'place': 'box'}
+ENGAGE_IDS = itertools.count(1)       # each take-over its own id, across the re-plans' saved and restored states
 
 
 def torso_chain(bodies):
@@ -76,7 +78,7 @@ def zero_offsets():
 class Controller:
     STATE = ('mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch',
              'holdSwitchTime', 'commit', 'target', 'boxCost', 'lastCosts', 'calledOff', 'engaged', 'reapproach',
-             'leaveBox', 'missed', 'walkIn', 'semantics', 'events', 'trajectory', 'curr', 'pose', 'off', 'tsrc',
+             'engageCheck', 'engagedBy', 'leaveBox', 'missed', 'walkIn', 'semantics', 'events', 'trajectory', 'curr', 'pose', 'off', 'tsrc',
              'tdst', 'navigating')
 
     def __init__(self, cfg, backend, bodies, **opts):
@@ -130,6 +132,8 @@ class Controller:
         self.calledOff = False
         self.engaged = None
         self.reapproach = None
+        self.engageCheck = None
+        self.engagedBy = None
         self.leaveBox = False
         self.missed = False
         self.walkIn = False
@@ -645,6 +649,11 @@ class Controller:
 
         use_box = False
         engage = p['placeEngageRadius'] if activity == 'place' else p['forceEngageRadius']
+        self.engageCheck = None
+        if activity and sides:
+            self.engageCheck = {'kind': activity, 'mode': self.mode, 'cost': self.boxCost, 'enter': enter,
+                                'dist': hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1]),
+                                'radius': engage, 'search': p['engageRadius'], 'reapproach': self.reapproach}
         if self.leaveBox or self.missed:
             self.reapproach = 0.0
             self.engaged = None
@@ -659,10 +668,12 @@ class Controller:
                 use_box = bool(box_match) and not (self.is_upright() and self.boxCost > leave and dist > engage + 0.3)
         elif box_match and not (inp.get('stick') or inp.get('face')):
             near = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1]) < engage
-            use_box = self.boxCost < enter or (near and self.reapproach is None)
+            by_cost, by_dist = self.boxCost < enter, near and self.reapproach is None
+            use_box = by_cost or by_dist
             if use_box:
                 self.boxTag = activity
                 self.reapproach = None
+                self.engagedBy = dict(self.engageCheck, by_cost=by_cost, by_dist=bool(by_dist), id=next(ENGAGE_IDS))
 
         if use_box:
             m = box_match

@@ -81,6 +81,7 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the bridge runs, and a restar
 | Foot locking | `--foot-lock` | `on` |
 | Matching weights | `--weights-loco`, `--weights-pick`, `--weights-place` | the variant's |
 | Thresholds | `--box-enter`, `--box-leave`, `--side-margin` | 2.5, 4.0, 0.25 |
+| Taking the box controller by distance (constants of the page's controller, not on its panel) | `--force-engage-radius`, `--place-engage-radius`, `--engage-radius`, `--reapproach-time` | 1.1 m, the variant's 0.4 m, 3 m, 1 s |
 
 The squeezes turn the shoulder roll and wrist yaw targets inward through the node's `arm_tau` (q_target += tau / kp),
 so `--shoulder-kp` and `--wrist-kp` must be the node's kps: 40 and 20 on the robot (`--debug-arm-pd-gains`). Not

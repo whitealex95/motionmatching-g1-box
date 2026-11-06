@@ -132,7 +132,7 @@ class StreamRunner:
         k.ghost_box = None if hp is None or w.holding_id is None else np.asarray([*hp['pos'], *hp['rot']], float)
         b = c.backend
         g = None if b.active is None else int(b.db[b.active].idx[b.frame])
-        k.tag = dict(s.check_tag(), step=c.box_phase() or c.mode, semantics=c.semantics, g=g)
+        k.tag = dict(s.check_tag(), step=c.box_phase() or c.mode, semantics=c.semantics, g=g, engaged=c.engagedBy)
         k.corr = list(self.corr)
         return k
 

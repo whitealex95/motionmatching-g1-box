@@ -44,6 +44,8 @@ What differs from the page, because the robot is measured, not simulated:
     reference went on carrying with its hands together, which the next POSE went back to
   - the task's state machine (FSM_STATES at the played frame, its signals and transitions) goes to UI 3 in the
     state's 'fsm', and the page's clip view of the clips the robot plays and the stream reaches in 'match' 'views'
+  - each take-over of the box controller says whether the cost (below Enter) or the distance (within the engage
+    radius) took it, in the transition, in 'match' 'engaged' and on the terminal ('engage' is the last check)
 
 The page's Play panel settings are flags with the page's defaults (the data variant's config.json where the page takes
 them from it), set live from UI 3's Settings tab:
@@ -52,6 +54,8 @@ them from it), set live from UI 3's Settings tab:
   pick and place   --pick-speed, --pick-slow, --warp, --leave-moved, --box-entry, --rise, --transition-cost,
                    --upright-tilt, --box-db, --foot-lock
   matching         --weights-loco, --weights-pick, --weights-place, --box-enter, --box-leave, --side-margin
+  by distance      --engage-radius, --force-engage-radius, --place-engage-radius, --reapproach-time (constants of the
+                   page's controller, not on its panel)
 Not ported: the tracker choice, the other anchoring modes, the pick and place check, the box mass and the number of
 sides.
 
@@ -135,7 +139,9 @@ REF_HZ = 30.0
 CONTROLLER_FLAGS = {'pick_speed': 'pickPlaceSpeed', 'pick_slow': 'pickPlaceSlow', 'warp': 'warp',
                     'leave_moved': 'leaveMoved', 'box_entry': 'boxEntry', 'rise': 'rise',
                     'transition_cost': 'transitionCost', 'upright_tilt': 'uprightTilt', 'box_db': 'boxDb',
-                    'box_enter': 'boxEnter', 'box_leave': 'boxLeave', 'side_margin': 'sideMargin'}
+                    'box_enter': 'boxEnter', 'box_leave': 'boxLeave', 'side_margin': 'sideMargin',
+                    'engage_radius': 'engageRadius', 'force_engage_radius': 'forceEngageRadius',
+                    'place_engage_radius': 'placeEngageRadius', 'reapproach_time': 'reapproachTime'}
 WEIGHT_FLAGS = {'weights_loco': 'loco', 'weights_pick': 'pick', 'weights_place': 'place'}
 GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze': 'squeeze_rad',
                'wrist_squeeze': 'wrist_rad', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp', 'wrist_kp': 'wrist_kp'}
@@ -615,7 +621,8 @@ class Bridge:
         self.syncs = 0
         self.hands_empty_s = 0.0
         self.release = None        # {'F': first re-plan's frame after the drop, 'regrasp'}: frames up to F still hold it
-        self.fsm = {'state': None, 'since': time.time(), 'history': collections.deque(maxlen=FSM_HISTORY), 'why': None}
+        self.fsm = {'state': None, 'since': time.time(), 'history': collections.deque(maxlen=FSM_HISTORY), 'why': None,
+                    'engaged': None}
         self.phase = 'idle'
         self.trace = open(args.trace, 'w') if args.trace else None
         self.ui = None                  # 'window' | 'terminal' | 'web' | 'headless'
@@ -1363,8 +1370,14 @@ class Bridge:
         why = f['why'][1] if f['why'] is not None and now - f['why'][0] < 3.0 else None
         if why is None and f['state'] == 'lost' and (self.sim.world.pick_id is not None or self.sim.world.holding_id is not None):
             why = 'the frames made after the drop play: the controller picks the box up again where the camera saw it'
+        e, by = frame.tag.get('engaged'), None
+        if s in ('pick-pre', 'place-pre') and e is not None and e['id'] != f['engaged']:
+            f['engaged'], by = e['id'], engage_by(e)
+            words = engage_words(e, self.sim.controller.p['reapproachTime'])
+            self.say(f'the box controller takes over the {"pick" if e["kind"] == "pick" else "put-down"} {words}')
+            why = words + (f' (after {why})' if why else '')
         if f['state'] is not None:
-            f['history'].append((round(now, 2), f['state'], s, why))
+            f['history'].append((round(now, 2), f['state'], s, why, by))
         f['state'], f['since'], f['why'] = s, now, None
 
     def fsm_signals(self, frame):
@@ -1426,7 +1439,9 @@ class Bridge:
             'views': {str(x['i']): self.clips.view(x['i']) for x in (robot, ctrl, plan) if x is not None},
             'db_of': {k: c.db_of(k) for k in QUERY_DB},
             'radii': {'search': p['engageRadius'], 'engage': p['forceEngageRadius'], 'place_engage': p['placeEngageRadius'],
-                      'z_upright': p['zUpright'], 'upright_tilt': p['uprightTilt']},
+                      'reapproach': p['reapproachTime'], 'z_upright': p['zUpright'], 'upright_tilt': p['uprightTilt']},
+            'engage': engage_view(c.engageCheck, p['reapproachTime']),
+            'engaged': engage_view(c.engagedBy, p['reapproachTime']),
             'ahead_s': round(self.args.lookahead * CONTROL_DT, 2), 'last': last,
             'groups': {k: cfg['controllers'][QUERY_DB[k]]['groups'] for k in QUERY_DB},
             'weights': {k: [float(x) for x in c.p['weights'].get(k, [])] for k in QUERY_DB},
@@ -1670,6 +1685,37 @@ def page_value(name, v):
     return v
 
 
+def engage_by(e):
+    return 'both' if e['by_cost'] and e['by_dist'] else 'cost' if e['by_cost'] else 'distance'
+
+
+def engage_words(e, reapproach_time):
+    """Why the box controller took over (the controller's engagedBy): its cost against Enter, its distance against
+    the engage radius."""
+    what = 'the box' if e['kind'] == 'pick' else 'the put-down marker'
+    cost = f"cost {e['cost']:.2f} {'below' if e['by_cost'] else 'not below'} Enter {e['enter']:g}"
+    dist = f"{e['dist']:.2f} m from {what}"
+    if e['by_dist']:
+        dist += f", within {e['radius']:g} m"
+    elif e['dist'] < e['radius'] and e['reapproach'] is not None:
+        dist += f", within {e['radius']:g} m but not by distance for {reapproach_time:g} s after going back to Locomotion"
+    else:
+        dist += f", not within {e['radius']:g} m"
+    return f'by {"cost and distance" if engage_by(e) == "both" else engage_by(e)}: {cost}, {dist}'
+
+
+def engage_view(e, reapproach_time):
+    """UI 3's view of the controller's engageCheck (its last search near a target) or engagedBy (its last take-over)."""
+    if e is None:
+        return None
+    v = {'kind': e['kind'], 'mode': e['mode'], 'enter': e['enter'], 'radius': e['radius'], 'search': e['search'],
+         'cost': round(float(e['cost']), 3) if math.isfinite(e['cost']) else None, 'dist': round(float(e['dist']), 3),
+         'wait_s': None if e['reapproach'] is None else round(max(0.0, reapproach_time - e['reapproach']), 2)}
+    if 'by_cost' in e:
+        v.update(id=e['id'], by=engage_by(e), text=engage_words(e, reapproach_time))
+    return v
+
+
 def page_choice(name, pv):
     if name in ('leave_moved', 'upright_tilt'):
         return 'off' if pv is None else f'{pv:g}'
@@ -1754,6 +1800,17 @@ def main():
     g.add_argument('--box-leave', type=float, default=None, help='back to Locomotion above this cost')
     g.add_argument('--side-margin', type=float, default=None,
                    help='another side must cost less than the current side minus this')
+    g.add_argument('--engage-radius', type=float, default=None,
+                   help='m: the box database is searched for each side of the box or the put-down marker within this '
+                        "of it (the page's 3)")
+    g.add_argument('--force-engage-radius', type=float, default=None,
+                   help="m: the box controller takes over a pick within this of the box, whatever the cost, and leaves "
+                        "only beyond this + 0.3 m (the page's 1.1, 0: by the cost only)")
+    g.add_argument('--place-engage-radius', type=float, default=None,
+                   help="m: the same for a put-down, within this of the marker (default: the variant's)")
+    g.add_argument('--reapproach-time', type=float, default=None,
+                   help="s: after the box controller goes back to Locomotion before the bend, the distance does not take "
+                        "over again for this long (the page's 1)")
     ap.add_argument('--run-scale', type=float, default=1.5,
                     help="stick scale with Shift held (run), as the loco driver's: 0.8 m/s x this")
     ap.add_argument('--frame', choices=('heading', 'camera'), default='heading',
