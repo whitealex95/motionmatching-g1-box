@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Box Bridge Databases</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='5' width='12' height='10' rx='1' fill='%23c99a62'/%3E%3Crect x='7' y='5' width='2' height='10' fill='%23a87a45'/%3E%3C/svg%3E">
+  <meta name="description" content="The box bridge's controller states, the clip the robot plays now and the last matches, and every motion of its databases played on the G1.">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/pick.css">
+  <link rel="stylesheet" href="css/motions.css">
+  <link rel="stylesheet" href="css/db.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/" } }
+  </script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <p class="back small" id="back-row" hidden><a id="back" href="./">UI 3</a></p>
+      <h1>The box bridge's databases</h1>
+      <p class="lede">The databases of the box bridge (<code>sonic_g1_box/run_slam.py</code>), the data of lmm-g1-box's default variant. The first part shows the controller now: its state, the clip the robot plays and how the last searches matched. Below it is lmm-g1-box's database page. Each data variant has an Animation Database, the frames of its clips, and two Matching Databases that Motion Matching searches: Locomotion (walking empty-handed or carrying) and Box (picks and places). A Matching Database is made of ranges, runs of consecutive frames of one clip, and the search can start playing at any frame of a range. This page plays one range, or one whole clip, at a time, exactly as stored, with the root moved by the clip's own root motion from the origin.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="now">
+      <h2>Now on the robot <span class="muted small" id="now-status"></span></h2>
+      <div class="now-grid">
+        <div id="live" class="states">
+          <div class="db-keys" aria-label="Colors">
+            <span class="k-loco"><i></i>Locomotion database, empty-handed</span>
+            <span class="k-carry"><i></i>Locomotion database, carrying</span>
+            <span class="k-pick"><i></i>Box database, pick tag</span>
+            <span class="k-place"><i></i>Box database, place tag</span>
+          </div>
+          <div>
+            <h3>Controller states</h3>
+            <div class="flow">
+              <div class="st k-loco" style="grid-area: a"><span data-state="locomotion:loco">Locomotion</span><span data-state="navigate:loco">Walking to the box</span></div>
+              <div class="to" style="grid-area: ab">→</div>
+              <div class="st k-pick" style="grid-area: b"><span data-state="pick-pre:pick">Picking up</span></div>
+              <div class="to" style="grid-area: bc"><small>grasp</small>→</div>
+              <div class="st k-pick" style="grid-area: c"><span data-state="pick-post:pick">Lifting the box</span></div>
+              <div class="to" style="grid-area: cf">↓</div>
+              <div class="st k-carry" style="grid-area: f"><span data-state="locomotion:carry">Carrying</span><span data-state="navigate:carry">Carrying the box to the marker</span></div>
+              <div class="to" style="grid-area: fe">←</div>
+              <div class="st k-place" style="grid-area: e"><span data-state="place-pre:place">Putting down</span></div>
+              <div class="to" style="grid-area: ed"><small>release</small>←</div>
+              <div class="st k-place" style="grid-area: d"><span data-state="place-post:place">Standing up</span></div>
+              <div class="to" style="grid-area: da">↑</div>
+            </div>
+            <p class="muted small" id="now-ahead"></p>
+          </div>
+          <div class="clipview">
+            <div class="clip-head">
+              <h3>The clip the robot plays</h3>
+              <button type="button" id="play-now" class="small">Play it below</button>
+              <label>Clip <select aria-label="Clip"><option value="follow">the one playing now</option></select></label>
+            </div>
+            <p class="small clip-title"><span class="clip-name"></span><span class="clip-at muted"></span></p>
+            <div class="clip-svg">
+              <svg role="img" aria-label="Pelvis height and torso lean over the clip, and which of its frames are in the Locomotion and Box databases"></svg>
+              <div class="clip-tip" hidden></div>
+            </div>
+            <p class="muted small">The playhead is the frame the robot plays now. The graph follows the clip playing, at most twice a second. Gaps are frames in no database, a paler part of the Box lane is a part the search does not jump into, and the last step lane runs from the last step before a grasp or a release to the first step after it.</p>
+            <div class="db-totals"></div>
+          </div>
+        </div>
+        <aside class="panel now-panel">
+          <h3>Matching</h3>
+          <p class="small" id="mt-use"></p>
+          <div class="seg mmw-kinds" role="group" aria-label="Query">
+            <button data-kind="loco" class="active">Locomotion</button>
+            <button data-kind="pick">Pick up</button>
+            <button data-kind="place">Put down</button>
+          </div>
+          <table class="mmw-table">
+            <thead><tr><th>Feature</th><th>Weight</th><th>Cost share</th></tr></thead>
+            <tbody id="mt-weights"></tbody>
+          </table>
+          <p class="small" id="mt-last"></p>
+          <p class="small" id="mt-sides"></p>
+          <p class="muted small">Each search finds the frame whose features are nearest the query. The cost share is the part of the squared cost of the last match that comes from each feature group. The dot marks the query in use. The controller takes the box controller when the cheapest side costs less than "enter", and goes back to Locomotion above "leave".</p>
+        </aside>
+      </div>
+    </section>
+
+    <section>
+      <h2>Every motion of the databases</h2>
+      <div class="pick-grid motions-grid">
+        <div class="viewer-col">
+          <div class="stage">
+            <canvas id="c" tabindex="0" aria-label="The G1 playing the selected motion"></canvas>
+            <div class="loading" id="loading">Loading…</div>
+            <div class="hud"><div class="hud-state" id="hud-state"></div><div class="hud-sub" id="hud-sub"></div></div>
+          </div>
+          <div class="timeline">
+            <button id="prev" type="button" title="Previous motion (↑)" aria-label="Previous motion">◀</button>
+            <button id="play" type="button" title="Play or pause (space)">Pause</button>
+            <button id="next" type="button" title="Next motion (↓)" aria-label="Next motion">▶</button>
+            <input type="range" id="time" min="0" max="1" step="1" value="0" aria-label="Frame">
+            <output id="time-out"></output>
+            <select id="speed" aria-label="Playback speed">
+              <option value="0.25">0.25×</option>
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+            </select>
+          </div>
+          <div class="clipview" id="clipview">
+            <div class="clip-head">
+              <h3>The clip of this motion</h3>
+              <select hidden aria-hidden="true"><option value="follow">follow</option></select>
+            </div>
+            <p class="small clip-title"><span class="clip-name"></span><span class="clip-at muted"></span></p>
+            <div class="clip-svg">
+              <svg role="img" aria-label="Pelvis height and torso lean over the clip, and which of its frames are in the Locomotion and Box databases"></svg>
+              <div class="clip-tip" hidden></div>
+            </div>
+            <p class="muted small">The outlined span is the motion that plays. Click the graph to jump there: outside the motion this plays the whole clip. Gaps in the Locomotion and Box lanes are frames in no Matching Database. A paler part of the Box lane is the end of a walk, from 0.5 s before its last step, or the middle of a SceneBot pick or place, before its grasp or release, which the search of the demo does not jump into, though a clip already playing goes on through it.</p>
+            <div class="db-totals"></div>
+          </div>
+        </div>
+
+        <aside class="panel motions-panel">
+          <p class="small muted" id="variant"></p>
+          <label>Locomotion database
+            <select id="loco">
+              <option value="nsm">the variant's own</option>
+              <option value="emmboth">EMM locomotion takes and EMM carry spans</option>
+            </select>
+          </label>
+          <div class="seg db-tabs" role="tablist" aria-label="Database">
+            <button type="button" role="tab" data-db="loco">Locomotion</button>
+            <button type="button" role="tab" data-db="pick">Box, picks</button>
+            <button type="button" role="tab" data-db="place">Box, places</button>
+            <button type="button" role="tab" data-db="clips">Clips</button>
+          </div>
+          <input type="search" id="filter" placeholder="Filter by clip name" aria-label="Filter by clip name">
+          <p class="muted small" id="list-note"></p>
+          <div class="table-wrap tall list-wrap">
+            <table class="results picks motions" id="list"></table>
+          </div>
+          <fieldset>
+            <legend>Show</legend>
+            <label class="check"><input type="checkbox" id="show-box" checked> The box</label>
+            <label class="check"><input type="checkbox" id="follow" checked> Follow the robot</label>
+            <label class="check"><input type="checkbox" id="loop" checked> Loop the motion</label>
+            <label class="check"><input type="checkbox" id="autonext"> Go on to the next motion at the end</label>
+          </fieldset>
+          <p class="muted small">Keys: space plays or pauses, ← and → step one frame, ↑ and ↓ pick the previous or next motion.</p>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <div class="tip" id="tip" hidden></div>
+  <script type="module" src="js/db.js"></script>
+</body>
+</html>

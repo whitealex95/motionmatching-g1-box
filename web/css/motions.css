@@ -1,0 +1,28 @@
+.motions-grid { grid-template-columns: minmax(0, 1fr) 400px; }
+@media (max-width: 1100px) { .motions-grid { grid-template-columns: minmax(0, 1fr); } }
+.viewer-col { min-width: 0; }
+.motions-panel { display: grid; gap: 10px; font-size: 0.9rem; align-content: start; }
+.motions-panel input[type="search"] {
+  font: inherit; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg); color: var(--text); width: 100%;
+}
+.db-tabs { display: flex; flex-wrap: wrap; }
+.db-tabs button { flex: 1 1 auto; padding: 6px 10px; font-size: 0.86rem; }
+.motions-panel p { margin: 0; }
+.list-wrap { max-height: 46vh; }
+table.results.motions { width: 100%; min-width: 0; table-layout: fixed; }
+table.results.motions thead th { min-width: 0; }
+table.results.motions th:nth-child(1) { width: 3.2em; } table.results.motions th:nth-child(3) { width: 3.4em; }
+table.results.motions th:nth-child(4), table.results.motions th:nth-child(5) { width: 4.6em; }
+table.results.motions td.name { overflow: hidden; text-overflow: ellipsis; }
+table.results.motions td.name .muted { font-size: 0.78rem; }
+table.results.motions td.num, table.results.motions th:nth-child(4), table.results.motions th:nth-child(5) { text-align: right; font-variant-numeric: tabular-nums; }
+table.results.motions th:nth-child(2), table.results.motions td:nth-child(2) { text-align: left; }
+table.results.motions th:nth-child(3), table.results.motions td:nth-child(3) { text-align: center; }
+.key.k-loco, .key.k-carry, .key.k-pick, .key.k-place, .key.k-clip { width: 11px; height: 11px; border-radius: 3px; margin: 0; }
+table.results.motions tbody tr.is-a { background: color-mix(in srgb, var(--accent-2) 12%, transparent); }
+.key.k-loco { background: var(--k-loco); } .key.k-carry { background: var(--k-carry); }
+.key.k-pick { background: var(--k-pick); } .key.k-place { background: var(--k-place); }
+.key.k-clip { background: var(--muted); }
+.clipview { margin-top: 12px; }
+.clip-svg rect.span { fill: color-mix(in srgb, var(--accent-2) 10%, transparent); stroke: var(--accent-2); stroke-width: 1.5; }
+.clip-svg svg { cursor: pointer; }

@@ -3,9 +3,10 @@
 The G1 walks to a box, picks it up, carries it and puts it down, the way of lmm-g1-box's page
 ([jhkim.me/lmm-g1-box](https://jhkim.me/lmm-g1-box/?physics=1&tracker=sonic_release&variant=holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60&tab=play):
 the variant `holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60`, the Play tab, physics on, the tracker
-`sonic_release`). The page's controller is ported here from its JavaScript (lmm-g1-box `web/js/`, commit `1721681`)
-to Python in `mm_g1/`, and the page's motion data is copied into `data/` (`data/README.md` lists each file, its
-SHA-256 and its terms). Nothing here reads lmm-g1-box.
+`sonic_release`, the page's defaults since its tag `v3.0`). The page's controller is ported here from its JavaScript
+(lmm-g1-box `web/js/`, commit `1721681`) to Python in `mm_g1/`, and the page's motion data is copied into `data/`
+(`data/README.md` lists each file, its SHA-256 and its terms). `v3.0` (`6cfb32d`) changes only the page's defaults
+and docs after `1721681`: the controller and the data are the same. Nothing here reads lmm-g1-box.
 
 `sonic_g1_box/run_slam.py` streams the reference to the SONIC node of
 [motionmatching-g1-deploy](https://github.com/whitealex95/motionmatching-g1-deploy), on the real G1 or in that repo's
@@ -23,7 +24,8 @@ MuJoCo sim. The robot's pose comes from the map server (the Mid-360 with FAST-LI
 | `mm_g1/mathq.py` | `math.js` | vectors, quaternions, springs |
 | `mm_g1/runner.py` | `phys/runner.js` | the stream for a tracked robot: 60 Hz poses resampled to 50 Hz frames, a re-plan every 10 frames with snap-xyyaw, no seed while bent down, the grip check, the box sync |
 | `sonic_g1_box/run_slam.py` | `phys/engine.js` (`graspStep`), `app.js` | the bridge: the SLAM pose, the box reports, the palm force, the keys, the headless sequence |
-| `sonic_g1_box/box_window.py` | | the bridge's window (UI 2): the loco driver's window and keys, plus the box task |
+| `sonic_g1_box/box_window.py` | `app.js` (`bindUI`, the clicks) | the bridge's window (UI 2): the loco driver's window and keys, plus the box task |
+| `sonic_g1_box/db_page.py`, `web/` | `motions.html`, `motions.js`, `states.js` | the database page (http 8790): the controller's state, the clip the robot plays and the last matches, live, above the page's database page. `web/` holds byte copies of the page's modules and three.js, and `db.js`, `index.html`, `db.css` and `variants.js` made from the page's |
 | `sonic_g1_box/route_follow.py` | | UI 1's trajectory, walked with `T`: a copy of the loco driver's `RouteFollow` |
 | `sonic_g1_box/operator_link.py` | | UI 3's link through the map server: its keys and commands, the bridge's flags, the restart. The same file as the loco driver's |
 | `sonic_g1_box/deploy_link.py` | | the node's ZMQ topics and the desktop's JSON bus, mirrored from motionmatching-g1-deploy |
@@ -43,7 +45,13 @@ In motionmatching-g1-deploy, the box sessions of `README_BOX_SIM.md` and `README
 Enter keys, `--web` for no window (UI 3, the map server's `/ui3` page, drives it, and takes part in the other modes
 too). UI 1's *Box task* card (the map server's `box_task` op) sets a pick, a carry and a put-down that `BoxRoute` in
 `run_slam.py` walks in POSE. The window has the keys of motionmatching-g1-loco's MM driver window (`]`, `P`, `O`, `Enter`, `W A S D`,
-the arrows, `Shift`, `F`, `T`, `Esc`), and the box task adds `X`, a click on a reported box, `B`, `C`, `V` and `L`.
+the arrows, `Shift`, `F`, `T`, `Esc`), and the box task adds `X`, `B`, `C`, `V`, `L` and the page's clicks: a click on
+a reported box picks it up, a click on the floor puts the held box down there, and with empty hands the robot walks
+there (full stick down to 1 m, done within 0.25 m, a key takes over). UI 3's 3-D view takes the same clicks, and its
+put-down marker can be dragged. The bridge also serves the database page, `http://localhost:8790/` (`--db-port`, 0
+for none, not headless): the controller's state on the page's state chart, the clip the robot plays on its graph
+(*Play it below* plays it), each query's feature weights and the cost share of its last match, and below them the
+page's list of every motion of the databases.
 The arrows are not the page's: they turn the character (the controller's optional `face` input), and like the page's
 keys they take over from a pick or a place while held. Headless, that repo's launcher:
 
@@ -106,7 +114,8 @@ The forced check loads the page's whole state before each frame of the page's sc
 compares the state after it. A free run follows the page until rounding decides a near tie in the search, and from
 there it takes another path of the same controller. In one test the costs were 4.1112789 and 4.1112797 at frame 484.
 
-The scripted sequence gives the same trace with lmm-g1-box `a41bd3f` and `1721681`: there the search never jumps
+The scripted sequence gives the same trace with lmm-g1-box `a41bd3f`, `1721681` and `v3.0` (both checks pass
+against `v3.0`, 2026-11-06): there the search never jumps
 while a SceneBot pick or place plays before its grasp or release, so the rules for these frames are not checked by
 it. `--cases` checks `Controller.match` alone on 3,424 searches made around the SceneBot pick and place. The playing
 frame is every 5th frame of each SceneBot range plus 60 random frames, and each query is a database frame's features

@@ -605,7 +605,7 @@ class Controller:
         if kind != 'loco' and self.p['boxEntry'] == 'walk':
             mask = b.before_event_mask(name) if sb_pre else b.walk_in_mask(name) if self.walkIn else b.no_entry(name)
         m = b.match(name, qn, gain, entry=entry, mask=mask, transition_cost=self.p['transitionCost'])
-        m.update(kind=kind)
+        m.update(kind=kind, qn=qn, gain=gain)
         return m
 
     def search(self, inp, sides, activity, goal, forced, obstacles):

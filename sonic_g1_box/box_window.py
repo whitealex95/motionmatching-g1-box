@@ -20,6 +20,8 @@ POSE_POLL_S = 1.0 / 30          # s between the window's pose requests, for a sm
 BOX_RGBA = np.array([0.82, 0.52, 0.22, 1.0], np.float32)    # the box's brown, UI 1's too
 HELD_RGBA = np.array([0.25, 0.9, 0.35, 1.0], np.float32)
 PLACE_RGBA = np.array([1.0, 0.85, 0.2, 0.45], np.float32)
+WALK_RGBA = np.array([0.88, 0.19, 0.19, 0.6], np.float32)
+FOCUS_GRACE_S = 0.3             # s after the window gains focus: a click then only focuses it, it is no floor click
 CLICK_PX = 5                    # px the cursor may move between press and release for a click, not a camera drag
 CLICK_NEAR_M = 0.4              # m: a click that misses every box takes the one this near where its ray meets its height
 OUTLINE_R, OUTLINE_R_PICK = 0.006, 0.013   # m: edge radius of a reported box's outline, the controller's or x's one
@@ -40,7 +42,7 @@ KEYS_R = ('start control (planner mode)\ntoggle planner <-> POSE\nstop -> dampin
           're-send mode\nmove\nface\nhold to run\nWASD frame heading/camera\n'
           'drive the UI 1 trajectory on/off\nquit\n'
           '\npick up the box reported nearest the robot (again: the next one)\n'
-          'pick up the clicked box (in locomotion only)\nput the held box down ahead\n'
+          'a box: pick it up, the floor: put the box down there (empty hands: walk)\nput the held box down ahead\n'
           'cancel the pick or the place\ntoggle the path ahead\ntoggle the legend (what each shape is)\n'
           'drag orbits, right-drag pans, scroll zooms')
 COMMAND_RGBA = (0.89, 0.34, 0.29, 1.0)
@@ -139,6 +141,7 @@ def run_window(br, args):
             self.drag = {'last': None, 'left': False, 'right': False}
             glfw.set_key_callback(self.window, self._on_key)
             glfw.set_mouse_button_callback(self.window, self._on_mouse_button)
+            glfw.set_window_focus_callback(self.window, self._on_focus)
             glfw.set_cursor_pos_callback(self.window, self._on_cursor)
             glfw.set_scroll_callback(self.window, self._on_scroll)
             self.gdata = mujoco.MjData(model)    # the stick figure: FK only
@@ -151,6 +154,7 @@ def run_window(br, args):
             self.robot_why = 'starting'
             self.follow = {'xy': None, 't': 0.0}
             self.click = None
+            self.focused_t = 0.0
             self.show_legend = True
             self.show_path = True
             self.op = OP.Operator(br.map, 'box')
@@ -169,10 +173,15 @@ def run_window(br, args):
             if action == glfw.PRESS and key in self.actions:
                 self.actions[key]()
 
+        def _on_focus(self, window, focused):
+            if focused:
+                self.focused_t = time.monotonic()
+
         def _on_mouse_button(self, window, button, action, mods):
             if button == glfw.MOUSE_BUTTON_LEFT:
                 if action == glfw.PRESS:
-                    self.click = glfw.get_cursor_pos(window)
+                    focusing = time.monotonic() - self.focused_t < FOCUS_GRACE_S
+                    self.click = None if focusing else glfw.get_cursor_pos(window)
                 elif action == glfw.RELEASE and self.click is not None:
                     x, y = glfw.get_cursor_pos(window)
                     if math.hypot(x - self.click[0], y - self.click[1]) <= CLICK_PX:
@@ -232,11 +241,9 @@ def run_window(br, args):
             self.auto = br.drive_sticks(now, self.op, (left, right))
 
         def _click_select(self, x, y):
-            """The reported box under the cursor: the first one its ray enters, else the one
-            nearest where the ray comes down to its centre's height."""
-            objs = [o for o in br.reports.objects if o.get('bbox_center_world')]
-            if not objs:
-                return                                   # a click on empty space (or to focus the window)
+            """lmm-g1-box's click: a reported box under the cursor is picked up (the first one its ray enters, else the
+            one nearest where the ray comes down to its centre's height). Elsewhere the click is on the floor: the held
+            box is put down there, with empty hands the robot walks there."""
             w, h = glfw.get_window_size(self.window)
             selpnt = np.zeros(3)
             gid, fid, sid = (np.zeros((1, 1), np.int32) for _ in range(3))
@@ -246,23 +253,28 @@ def run_window(br, args):
             orig = 0.5 * (np.asarray(self.scene.camera[0].pos, float) + np.asarray(self.scene.camera[1].pos, float))
             dirn = selpnt - orig
             dirn /= np.linalg.norm(dirn) + 1e-12
+            o = self._box_on_ray(orig, dirn)
+            if o is not None:
+                br.select_report(o)
+            elif dirn[2] < -1e-6:
+                p = orig - dirn * orig[2] / dirn[2]
+                br.floor_click(float(p[0]), float(p[1]))
+
+        def _box_on_ray(self, orig, dirn):
+            objs = [o for o in br.reports.objects if o.get('bbox_center_world')]
             hits = [(t, o) for o in objs if (t := ray_hits_box(orig, dirn, o)) is not None]
             if hits:
-                o = min(hits, key=lambda x: x[0])[1]
-            else:
-                best = None
-                for o in objs:
-                    c = np.asarray(o['bbox_center_world'], float)
-                    if abs(dirn[2]) < 1e-6:
-                        continue
-                    p = orig + dirn * (c[2] - orig[2]) / dirn[2]
-                    d = float(np.hypot(*(p[:2] - c[:2])))
-                    if d < CLICK_NEAR_M and (best is None or d < best[0]):
-                        best = (d, o)
-                if best is None:
-                    return
-                o = best[1]
-            br.select_report(o)
+                return min(hits, key=lambda x: x[0])[1]
+            best = None
+            for o in objs:
+                c = np.asarray(o['bbox_center_world'], float)
+                if abs(dirn[2]) < 1e-6:
+                    continue
+                p = orig + dirn * (c[2] - orig[2]) / dirn[2]
+                d = float(np.hypot(*(p[:2] - c[:2])))
+                if d < CLICK_NEAR_M and (best is None or d < best[0]):
+                    best = (d, o)
+            return None if best is None else best[1]
 
         def _geom(self, kind, size, pos, rgba, mat=None):
             if self.scene.ngeom >= self.scene.maxgeom:
@@ -461,7 +473,11 @@ def run_window(br, args):
             if t is not None:
                 self._geom(mujoco.mjtGeom.mjGEOM_BOX, [half[0], half[1], 0.004], (t['pos'][0], t['pos'][1], 0.004),
                            PLACE_RGBA, quat_mat(qfrom_yaw(t['yaw'])))
-                self._label((t['pos'][0], t['pos'][1], 0.25), 'place target (b)')
+                self._label((t['pos'][0], t['pos'][1], 0.25), 'place target (b, a click on the floor)')
+            if br.sim.world.walk_to is not None:
+                x, y = br.sim.world.walk_to[:2]
+                self._geom(mujoco.mjtGeom.mjGEOM_CYLINDER, (0.08, 0.004, 0.0), (x, y, 0.004), WALK_RGBA)
+                self._label((x, y, 0.25), 'walk to (the clicked point)')
 
         def _draw_reference(self, frame):
             g = self.gdata
@@ -510,7 +526,9 @@ def run_window(br, args):
             rows += [('brown outlines', "boxes the map server reports (SAM3 or the sim's truth)"),
                      ('', "thick = the controller's box or x's next, dim = unseen for 1 s")]
             if br.sim.world.place_target is not None:
-                rows.append(('yellow patch', 'where the box is put down (b)'))
+                rows.append(('yellow patch', 'where the box is put down (b, a click on the floor)'))
+            if br.sim.world.walk_to is not None:
+                rows.append(('red disc', 'the clicked point the robot walks to (empty hands)'))
             rows.append(('small balls', 'reference pelvis path ahead, 0.1 s apart (V hides)') if self.show_path else
                         ('path off', 'V shows the reference pelvis path ahead'))
             rows.append(('red balls, arrows', 'the command (keys, route): 0.33 to 1 s ahead'))

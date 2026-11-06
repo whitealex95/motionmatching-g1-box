@@ -1,0 +1,12 @@
+/* The "now on the robot" part of the box bridge's database page, above lmm-g1-box's database page. */
+section h2 { margin: 18px 0 8px; font-size: 1.1rem; }
+.now-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .now-grid { grid-template-columns: minmax(0, 1fr); } }
+.now-grid > .states { margin-top: 0; }
+.now-panel { display: grid; gap: 8px; font-size: 0.9rem; align-content: start; }
+.now-panel h3 { margin: 0; font-size: 0.95rem; }
+.now-panel p { margin: 0; }
+.now-panel .mmw-kinds { justify-self: start; }
+.clip-head button { font: inherit; font-size: 0.82rem; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+.clip-head button:disabled { opacity: 0.5; cursor: default; }
+#now-status.bad { color: var(--accent); }

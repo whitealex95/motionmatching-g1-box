@@ -4,7 +4,8 @@ The databases that `mm_g1` (the box task's controller, `sonic_g1_box/run_slam.py
 lmm-g1-box's page loads for the variant `holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60` (`sbplace`) with
 the Locomotion Matching Database `emmboth`, the page's default. Nothing here is regenerated: the files are copied
 byte for byte from lmm-g1-box commit `a41bd3f` (2026-11-04), so this repository runs without lmm-g1-box. They are
-the same in `1721681`, the commit `mm_g1` is ported from.
+the same in `1721681`, the commit `mm_g1` is ported from, and in the tag `v3.0` (`6cfb32d`), which made this variant
+and `emmboth` the page's defaults. `robot.bin` is from `v3.0`.
 
 | here | lmm-g1-box `web/data/` | what it holds |
 |---|---|---|
@@ -15,6 +16,7 @@ the same in `1721681`, the commit `mm_g1` is ported from.
 | `emm_loco/` | `emm_loco/holosoma-v3/` | the EMM locomotion takes retargeted with holosoma v3: Locomotion Matching Database and its poses |
 | `emm_carry/` | `emm_carry/` | the EMM carry spans, the same way |
 | `robot.json` | `robot.json` | the G1's bodies and joints for forward kinematics and the foot locking |
+| `robot.bin` | `robot.bin` | the G1's meshes, which the database page (`web/`) draws |
 | `HOLOSOMA-LICENSE.txt`, `G1-LICENSE.txt` | the same names | the licenses below |
 
 `emmboth` is built at load time from `emm_carry/` (taken while the robot holds the box) and `emm_loco/` (with empty
@@ -34,6 +36,7 @@ b03a2e96064be7320a1315052907279c3cee6c098b8869951dcaa5a3df909ea2  sbplace/mm_loc
 480b0af91ffc75d9a6e33115f2e443cceb094d83a2c805729172b4b8ee95fcb0  emm_carry/mm_loco.bin
 4667537e84f730e8f0b2356835f6724175a8ad05b1018f9bbf7dcadde35984a1  emm_carry/mm_pose.bin
 a80dc63a59a859e92a3a288420bdeada19fb52fbf18277d99e7db6978ef2bec9  robot.json
+6fc851dd97ec61b3cb4c6f10cb44ee4b5a822be868caba039103abdda7fba2ed  robot.bin
 09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b  HOLOSOMA-LICENSE.txt
 84aac59fd3246e3ddc49d1387644e8fcf43b0def4f0b9fe687f372e90446df2d  G1-LICENSE.txt
 ```
@@ -54,6 +57,6 @@ a80dc63a59a859e92a3a288420bdeada19fb52fbf18277d99e7db6978ef2bec9  robot.json
 * `sbplace/mm_pose.bin` and `sbplace/mm_loco.bin` also hold the Neural State Machine episodes of the variant
   (Starke et al. 2019, CC BY-NC 4.0, non-commercial use only).
 * Retargeting: holosoma (Apache 2.0, `HOLOSOMA-LICENSE.txt`).
-* Robot model (`robot.json`): the Unitree G1 description, BSD 3-Clause (`G1-LICENSE.txt`).
+* Robot model (`robot.json`, `robot.bin`): the Unitree G1 description, BSD 3-Clause (`G1-LICENSE.txt`).
 * Method: [orangeduck/Motion-Matching](https://github.com/orangeduck/Motion-Matching) (MIT), as ported in
   lmm-g1-box's `web/js/` and from there to `mm_g1/`.

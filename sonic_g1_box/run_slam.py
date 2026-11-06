@@ -2,7 +2,7 @@
 pose) and live.sam3box's boxes (the map server's objects), on the real G1 or the deploy repo's sim.
 
 It runs the way of lmm-g1-box's page (variant holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60, Play tab,
-physical mode with the SONIC release tracker), ported in mm_g1:
+physical mode with the SONIC release tracker: the page's defaults since its tag v3.0), ported in mm_g1:
   controller   exact Motion Matching over data/ (the Locomotion Matching Database 'emmboth', the page's default,
                and the Box Matching Database of sbplace), inertialization, foot locking, root warping and the
                moving-target rules
@@ -55,8 +55,11 @@ POSE, O stop, Enter re-send the mode, W A S D move (along the controller's headi
 face, Shift runs (0.8 m/s, Shift 1.2 m/s), T walks UI 1's trajectory, Esc quits. In planner mode the same keys walk
 the node's own planner, and the reference is put on the robot every 0.2 s until POSE. The box task adds X (the box
 reported nearest the robot, again: the next one), a left click on a reported box (that one, in locomotion only),
-B (put it down ahead), C (cancel), V (the reference's path ahead) and L (the legend). A pick or a place goes before
-the trajectory, and a key held takes over from both, as on lmm-g1-box's page.
+B (put it down ahead), C (cancel), V (the reference's path ahead) and L (the legend). A click on the floor is the
+page's: the held box is put down there, with empty hands the robot walks there. UI 3's 3-D view takes the same clicks
+and drags the put-down marker. A pick or a place goes before the trajectory, and a key held takes over from both, as
+on lmm-g1-box's page. The database page (db_page.py, web/, --db-port) shows the controller's state, the clip the
+robot plays and the last matches, above the page's own database page.
 
 Terminal keys (type the letter, then Enter):
   ]  start (planner mode, the robot stands)     p  planner <-> POSE
@@ -87,6 +90,7 @@ for _k in ('OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'OMP_NUM_THREADS'):
     os.environ.setdefault(_k, '1')     # one thread searches these sizes faster than many, and leaves the CPU free
 
 import argparse
+import bisect
 import collections
 import json
 import math
@@ -104,7 +108,9 @@ import numpy as np
 import zmq
 
 import operator_link as OP
+from db_page import DbPage
 from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED, BusPublisher, DeployLink, RobotState
+from mm_g1.controller import QUERY_DB
 from mm_g1.mathq import hypot, qyaw
 from mm_g1.runner import CONTROL_DT, GRIP_REF_DZ, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box, to_present
 from mm_g1.sim import Sim
@@ -129,6 +135,8 @@ HANDS_EMPTY_GAP = 0.08     # m: palms this much closer together than the box is 
 HANDS_EMPTY_S = 0.3        # s they must stay that close
 FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
 FSM_HISTORY = 16
+CLIP_FPS = 60
+WALK_DONE_M = 0.25         # app.js playStick: a walk to a clicked point ends this near it, slows down within 1 m
 SHOULDER_ROLL_KP = 14.251                              # the node's default shoulder roll kp (the page's SONIC kp too)
 G1_XML = os.path.join(ROOT, 'assets', 'unitree_g1', 'g1.xml')
 MODEL_VERSION = 'lmm-g1-box sbplace, Locomotion emmboth'
@@ -311,6 +319,24 @@ def to_heading_frame(p, xy, yaw):
     c, s = math.cos(yaw), math.sin(yaw)
     dx, dy = p[0] - xy[0], p[1] - xy[1]
     return np.array([c * dx + s * dy, -s * dx + c * dy, p[2]])
+
+
+class ClipTable:
+    """The clip of a row of the controller's Animation Database: the variant's clips, then the EMM takes' and the carry
+    spans' in use, in the order of the page's StatePanel (states.js clipRows)."""
+
+    def __init__(self, backend):
+        parts = [(backend.cfg['clips'], 0)] + [(e.cfg['clips'], e.first) for e in (backend.emm, backend.emm_carry) if e]
+        self.clips = [(c['names'][n], bool(mirror), first + start, first + stop)
+                      for c, first in parts for n, mirror, start, stop, _, _ in c['rows']]
+        self.starts = [c[2] for c in self.clips]
+
+    def of(self, g):
+        if g is None:
+            return None
+        name, mirror, start, stop = self.clips[max(0, bisect.bisect_right(self.starts, g) - 1)]
+        return {'name': name, 'mirror': mirror, 'at_s': round((g - start) / CLIP_FPS, 2),
+                'len_s': round((stop - start) / CLIP_FPS, 2)}
 
 
 class BoxRoute:
@@ -511,6 +537,14 @@ class Bridge:
         self.flags = None               # OP.Flags: UI 3's list of the bridge's flags
         self.keys_from = None
         self.box_route = BoxRoute(self)
+        self.clips = ClipTable(self.sim.controller.backend)
+        self.db_page = None
+        if args.db_port and args.headless is None:
+            try:
+                self.db_page = DbPage(args.db_port)
+                self.say(f'the database page: http://localhost:{args.db_port}/')
+            except OSError as e:
+                self.say(f'no database page: port {args.db_port}: {e}')
 
     # -- the map server -----------------------------------------------------------------------------------------
     def poll_pose(self):
@@ -616,19 +650,57 @@ class Bridge:
         self.say(f'place at ({pos[0]:.2f}, {pos[1]:.2f}) m, {self.args.place_ahead:.2f} m ahead of the controller')
         return True
 
-    def place_at(self, x, y, yaw):
-        """UI 1's put-down marker."""
+    def place_at(self, x, y, yaw=None, what='the put-down marker', quiet=False):
+        """UI 1's put-down marker, a click on the floor or the marker dragged. No yaw: the box faces away from the
+        controller, as the page's click puts it."""
         w = self.sim.world
         if w.holding_id is None:
             return False
+        if yaw is None:
+            P = self.sim.controller.pose.rootPos
+            yaw = math.atan2(y - P[1], x - P[0])
         self.walking = False
         w.set_place([x, y], yaw)
         self.sim.force_search = True
-        self.say(f'place at ({x:.2f}, {y:.2f}) m, the put-down marker')
+        if not quiet:
+            self.say(f'place at ({x:.2f}, {y:.2f}) m, {what}')
         return True
+
+    def floor_click(self, x, y):
+        """The page's click on the floor (app.js): with the box held, put it down there. With empty hands, clear the
+        targets and walk there. It ends UI 1's box task."""
+        w = self.sim.world
+        if self.box_route is not None and self.box_route.active():
+            self.box_route.finish('stopped', 'a click on the floor took over')
+        if w.holding_id is not None:
+            self.fsm_cause('a click on the floor: put the box down there')
+            return self.place_at(x, y, None, 'the clicked point')
+        if w.pick_id is not None or w.regrasp is not None:
+            self.fsm_cause('a click on the floor: the pick is cancelled')
+        w.clear_targets()
+        self.walking = False
+        w.walk_to = [x, y]
+        self.sim.force_search = True
+        self.say(f'walk to ({x:.2f}, {y:.2f}) m, the clicked point')
+        return True
+
+    def walk_stick(self):
+        """(3,) app.js playStick toward the clicked point: full stick down to 1 m, then slower (0.3 at least). From the
+        controller in POSE (the robot follows it), from the robot in planner mode."""
+        w = self.sim.world
+        P = self.sim.controller.pose.rootPos if self.mode == MODE_POSE else self.robot_xy()
+        d = np.array([w.walk_to[0] - P[0], w.walk_to[1] - P[1]])
+        dist = float(np.linalg.norm(d))
+        if dist < WALK_DONE_M:
+            w.walk_to = None
+            self.say('walk: the clicked point is reached')
+            return np.zeros(3)
+        mag = min(1.0, max(0.3, dist))
+        return np.array([mag * d[0] / dist, mag * d[1] / dist, 0.0])
 
     def cancel(self, from_task=False):
         self.sim.world.clear_targets()
+        self.sim.world.walk_to = None
         self.walking = False
         self.sim.force_search = True
         self.say('targets cleared')
@@ -659,6 +731,13 @@ class Bridge:
         else:
             left, right = np.zeros(3), np.zeros(3)
             self.keys_from = None
+        w = self.sim.world
+        if self.keys_from is not None:
+            w.walk_to = None
+        elif w.walk_to is not None and self.mode in (MODE_PLANNER, MODE_POSE):
+            left = self.walk_stick()
+            if w.walk_to is not None:
+                self.keys_from = 'the clicked point'
         rf.poll(now)
         auto = None
         if self.mode in (MODE_PLANNER, MODE_POSE) and not self.has_target() and self.keys_from is None:
@@ -716,7 +795,15 @@ class Bridge:
             else:
                 self.select_report(o)
         elif k == 'place':
-            self.place_ahead()
+            at = c.get('at')
+            if at is None:
+                self.place_ahead()
+            elif not self.place_at(float(at[0]), float(at[1]), None if c.get('yaw') is None else float(c['yaw']),
+                                   'the dragged marker', quiet=bool(c.get('drag'))) and not c.get('drag'):
+                self.say('UI 3: no box in the hands to put down')
+        elif k == 'floor':
+            at = c.get('at')
+            self.floor_click(float(at[0]), float(at[1]))
         elif k == 'cancel':
             self.cancel()
         elif k == 'set':
@@ -1184,6 +1271,47 @@ class Bridge:
             'box_xy': None if b is None else [round(b['pos'][0], 2), round(b['pos'][1], 2)],
             'drops': self.drops}
 
+    def match_state(self, frame):
+        """The page's markers and its weights panel: the controller's last searches, their cost and the share of each
+        feature group in it, and where the controller aims, in the map frame. The controller runs the lookahead
+        (ahead_s) ahead of the robot, while `robot` is the frame the robot plays now."""
+        c, w, cfg = self.sim.controller, self.sim.world, self.sim.cfg
+        b = c.backend
+        xyyaw = lambda p, yaw: [round(float(p[0]), 3), round(float(p[1]), 3), round(float(yaw), 3)]
+        last = {}
+        for kind, m in c.lastMatch.items():
+            sizes = cfg['controllers'][QUERY_DB[kind]]['group_sizes']
+            e = np.asarray(m['gain'], float) * (np.asarray(m['qn'], float) - np.asarray(m['features'], float)) ** 2   # (F,)
+            err = np.add.reduceat(e, np.cumsum([0] + sizes[:-1]))                                             # (G,)
+            total = float(err.sum())
+            g = int(b.db[m['name']].idx[m['frame']])
+            last[kind] = {'cost': round(float(m['cost']), 3), 'g': g, 'clip': self.clips.of(g),
+                          'share': [round(float(x) / total, 3) if total > 0 else 0.0 for x in err]}
+        phase = c.box_phase()
+        pre = phase in ('pick-pre', 'place-pre')
+        t = c.target if c.target and (pre or c.mode == 'loco') else None
+        a = c.anim_target() if pre else None
+        r = c.commit if phase and not pre else None
+        pb, pt = w.pick_box(), w.place_target
+        g = frame.tag.get('g')
+        return {
+            'robot': {'g': g, 'clip': self.clips.of(g), 'semantics': frame.tag['semantics'], 'holding': frame.held is not None},
+            'controller': {'semantics': c.semantics, 'phase': phase, 'holding': w.holding_id is not None,
+                           'in_use': 'loco' if c.mode == 'loco' else c.boxTag},
+            'ahead_s': round(self.args.lookahead * CONTROL_DT, 2), 'last': last,
+            'groups': {k: cfg['controllers'][QUERY_DB[k]]['groups'] for k in QUERY_DB},
+            'weights': {k: [float(x) for x in c.p['weights'].get(k, [])] for k in QUERY_DB},
+            'side_costs': [round(float(x), 3) for x in c.lastCosts],
+            'enter': c.p['boxEnter'], 'leave': c.p['boxLeave'], 'side_margin': c.p['sideMargin'],
+            'traj': [xyyaw(p, qyaw(q)) for p, q in zip(c.trajectory['pos'], c.trajectory['rot'])] if c.mode == 'loco' else None,
+            'target': None if t is None else xyyaw(t['pos'], t['yaw']),
+            'anim': None if a is None else xyyaw(a['pos'], math.atan2(a['dir'][1], a['dir'][0])),
+            'rise': None if r is None else xyyaw(r['pos'], r['yaw']),
+            'place': None if pt is None else xyyaw(pt['pos'], pt['yaw']),
+            'walk_to': None if w.walk_to is None else [round(float(v), 3) for v in w.walk_to[:2]],
+            'pick_box': None if pb is None else xyyaw(pb['pos'], pb['yaw']),
+            'track': self.reports.track}
+
     # -- the state for UI 1, UI 2, the recorder and box_eval ------------------------------------------------------
     def task_words(self, frame):
         """(task state, the page's HUD text, semantics) at the frame the robot plays, or the controller's without one."""
@@ -1209,6 +1337,11 @@ class Bridge:
                     'place_xy': None if t is None else [round(t['pos'][0], 3), round(t['pos'][1], 3)],
                     'grasp': {'on': self.grasp.on, 'ramp': round(self.grasp.ramp, 2)}}
         last = None if r is None else r.last_seed
+        match = None if cur is None else self.match_state(cur)
+        if self.db_page is not None:
+            self.db_page.live = {'ok': True, 'wall': round(time.time(), 2), 'mode': self.mode, 'loco': self.args.loco,
+                                 'fsm': self.fsm['state'], 'phase': self.phase,
+                                 'match': match}
         self.bus.publish(STATE_TOPIC, {
             'mode': self.mode, 'variant': 'box', 'model_version': MODEL_VERSION,
             'root_xy': None if cur is None else cur.qpos[0:2].tolist(),
@@ -1221,7 +1354,8 @@ class Bridge:
             'stick': self.move_stick()[:2].tolist(), 'max_speed': self.max_speed, 'route': self.route_follow.state(),
             'seeds': None if r is None else r.seeds, 'held_back': None if r is None else r.held_back,
             'kept_out': None if r is None else r.kept_out,
-            'phase': self.phase, 'task': task,
+            'phase': self.phase, 'task': task, 'match': match,
+            'db_port': None if self.db_page is None else self.db_page.port,
             'box_route': None if self.box_route is None else self.box_route.state(),
             'fsm': None if cur is None or self.fsm['state'] is None else {
                 'state': self.fsm['state'], 'since_s': round(time.time() - self.fsm['since'], 1),
@@ -1240,6 +1374,9 @@ class Bridge:
             pass
         self.link.close()
         self.robot.close()
+        if self.db_page is not None:
+            self.db_page.close()
+            self.db_page = None
 
 
 # ---------------------------------------------------------------------- modes
@@ -1464,6 +1601,8 @@ def main():
     ap.add_argument('--grip-need', type=int, default=2, help='new reports in a row for the grip check')
     ap.add_argument('--fix-range-bias', type=float, default=0.0,
                     help="accepted and not used (the deploy launcher passes it with Boxer's objects)")
+    ap.add_argument('--db-port', type=int, default=8790,
+                    help="HTTP port of the database page (sonic_g1_box/db_page.py), 0: none. Not in headless runs")
     ap.add_argument('--trace', default=None, metavar='JSONL', help='write one line per replan and seed here')
     ap.add_argument('--headless', type=float, default=None, metavar='SECONDS')
     ap.add_argument('--auto-start', action='store_true', help='headless: ] once the node is up (moves the robot!)')
