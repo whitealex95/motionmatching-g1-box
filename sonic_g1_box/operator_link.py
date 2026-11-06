@@ -100,13 +100,13 @@ class Flags:
                     raise ValueError
             elif a.type is not None:
                 v = a.type(str(v))
+            else:
+                v = str(v)
+                if v == '' and a.default is None:
+                    v = None
         except (ValueError, TypeError, argparse.ArgumentTypeError) as e:
             raise ValueError(f'{self.flag(name)}: {v!r} is not a valid value'
                              + (f' ({e})' if isinstance(e, argparse.ArgumentTypeError) else '')) from None
-        else:
-            v = str(v)
-            if v == '' and a.default is None:
-                v = None
         if a.choices is not None and v not in a.choices:
             raise ValueError(f'{self.flag(name)}: one of {", ".join(map(str, a.choices))}')
         return v
@@ -117,8 +117,9 @@ class Flags:
             a = self.actions[n]
             v = getattr(self.args, n)
             kind = 'float' if a.type is float else 'int' if a.type is int else 'str'
+            shown = lambda x: x if x is None or isinstance(x, (int, float, str)) else ','.join(map(str, x))
             out.append({'name': n, 'flag': self.flag(n), 'kind': kind, 'live': n in self.live,
-                        'value': v if v is None or isinstance(v, (int, float, str)) else ','.join(map(str, v)),
+                        'value': shown(v), 'default': shown(a.default),
                         'choices': None if a.choices is None else [str(c) for c in a.choices],
                         'help': (a.help or '').replace('%%', '%')})
         return out

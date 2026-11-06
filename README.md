@@ -64,15 +64,38 @@ The box must be the variant's, 0.338 x 0.335 x 0.36 m. `README_BOX_SIM.md` (*The
 `README_BOX_REAL.md` (*Keys in the box bridge window*, *Bridge options*) have the keys, the results and what
 each default below is for.
 
+## The page's settings
+
+The settings of the page's Play panel are flags of `run_slam.py`, each with the page's default. Where the page takes
+the default from the data variant's `config.json`, the bridge takes the same value. UI 3's *Settings* tab (the deploy
+repo, `README_BOX_SIM.md`, *UI 3*) sets them while the bridge runs, and a restart from UI 3 keeps them.
+
+| page setting | flag | default |
+|---|---|---|
+| Anchoring | `--yaw-gain` (snap-xyyaw: 1, snap-xy: 0), `--hold` | 1, `low` |
+| Grasp heuristic (and its nine presets) | `--palm-force`, `--palm-target`, `--shoulder-squeeze`, `--wrist-squeeze`, `--shoulder-open` | 40 N, `box`, 0, 0, 0.4 rad |
+| Pick and place speed, slowed down | `--pick-speed`, `--pick-slow` | 1, `clip` |
+| Root warping, leave when moved | `--warp`, `--leave-moved` | `pickstep`, 0.5 m |
+| Box search, rising, transition cost | `--box-entry`, `--rise`, `--transition-cost` | `walk`, `finish`, 0 |
+| Upright tilt, box database | `--upright-tilt`, `--box-db` | 30 deg, `same` |
+| Foot locking | `--foot-lock` | `on` |
+| Matching weights | `--weights-loco`, `--weights-pick`, `--weights-place` | the variant's |
+| Thresholds | `--box-enter`, `--box-leave`, `--side-margin` | 2.5, 4.0, 0.25 |
+
+The squeezes turn the shoulder roll and wrist yaw targets inward through the node's `arm_tau` (q_target += tau / kp),
+so `--shoulder-kp` and `--wrist-kp` must be the node's kps: 40 and 20 on the robot (`--debug-arm-pd-gains`). Not
+ported: the tracker choice (the node runs SONIC), the other anchoring modes, the pick and place check, the box mass
+and the number of sides.
+
 ## What differs from the page
 
 The page simulates the robot. Here the robot is measured, a little late and with some error, and these differ
 (each a default of `run_slam.py`):
 
 - `--lookahead 60` (the page: 25). The node plays a streamed frame only once 46 frames follow it.
-- The seed compares the SLAM pelvis with the reference frame of the pose's own time plus `--track-delay 0.1` s, and
-  turns `--yaw-gain 0.3` of the yaw gap (the page: the frame tracked now, all of the gap). Before POSE it moves the
-  controller onto the robot with all of the yaw, as the loco driver does.
+- The seed compares the SLAM pelvis with the reference frame of the pose's own time plus `--track-delay 0.1` s (the
+  page: the frame tracked now). It turns all of the yaw gap, as the page does, since 2026-11-06 (`--yaw-gain 1`, 0.3
+  before). Before POSE it moves the controller onto the robot with all of the yaw, as the loco driver does.
 - In POSE each frame's heading is sent without the seeds' turns since POSE started. The deploy node takes the stream's
   heading at the start of POSE as the robot's and turns the robot with every change of it, so a seed sent with its
   turn turned the robot as much as the reference, and a yaw gap at the start of POSE never closed: both turned on

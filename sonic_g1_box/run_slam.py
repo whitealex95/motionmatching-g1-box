@@ -20,8 +20,8 @@ What differs from the page, because the robot is measured, not simulated:
     frames follow it, and with 25 it played 0.3 to 0.7 s behind the bridge
   - the robot is the SLAM pelvis, compared with the reference frame of the pose's age plus --track-delay 0.1 s
     (SONIC's tracking delay). The page knows the frame the robot tracked
-  - a seed turns --yaw-gain 0.3 of the yaw gap (the page: all of it). SONIC tracks the reference's heading, and the
-    SLAM pelvis yaw sways with the gait at another phase: full turns swung the approach by up to 23 deg
+  - a seed turns --yaw-gain of the yaw gap: 1, all of it, as the page, since 2026-11-06. The 0.3 before was set while
+    the stream's heading still carried each seed's turn
   - the box is live.sam3box's report, a few times a second and some 0.2 to 0.6 s late: a move is taken after
     --sync-need reports that agree, the grip check after --grip-need reports
   - the palm force aims at a fresh report of the box on the floor (the page: the physical box) until the
@@ -44,6 +44,13 @@ What differs from the page, because the robot is measured, not simulated:
     reference went on carrying with its hands together, which the next POSE went back to
   - the task's state machine (FSM_STATES at the played frame, its signals and transitions) goes to UI 3 in the
     state's 'fsm'
+
+The page's Play panel settings are flags with the page's defaults (the data variant's config.json where the page takes
+them from it), set live from UI 3's Settings tab: anchoring --yaw-gain, --hold; the grasp heuristic --palm-force,
+--palm-target, --shoulder-squeeze, --wrist-squeeze, --shoulder-open; pick up and put down --pick-speed, --pick-slow,
+--warp, --leave-moved, --box-entry, --rise, --transition-cost, --upright-tilt, --box-db, --foot-lock; matching
+--weights-loco, --weights-pick, --weights-place, --box-enter, --box-leave, --side-margin. Not ported: the tracker
+choice, the other anchoring modes, the pick and place check, the box mass and the number of sides.
 
     python sonic_g1_box/run_slam.py                        # the window (UI 2, sonic_g1_box/box_window.py)
     python sonic_g1_box/run_slam.py --terminal             # terminal keys (letter + Enter)
@@ -112,21 +119,32 @@ from db_page import DbPage
 from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED, BusPublisher, DeployLink, RobotState
 from mm_g1.controller import QUERY_DB
 from mm_g1.mathq import hypot, qyaw
-from mm_g1.runner import CONTROL_DT, GRIP_REF_DZ, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box, to_present
+from mm_g1.runner import (CONTROL_DT, GRIP_REF_DZ, HOLDS, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box,
+                          to_present)
 from mm_g1.sim import Sim
 from route_follow import ROUTE_NAMES, RouteFollow
 
 STATE_TOPIC = '/mm_driver/state'
 REF_TOPIC = '/mm_driver/ref'      # the reference's whole body (and the box it holds) at the frame the robot plays: UI 3
 REF_HZ = 30.0
-LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', 'palm_force', 'shoulder_open',
-              'shoulder_kp', 'max_seed_jump', 'track_delay', 'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn',
-              'sync_search', 'sync_need', 'sync_agree', 'follow_s', 'obstacle_radius')
-RESTART_FLAGS = ('loco', 'lookahead', 'box_size', 'yaw_gain', 'assoc_radius', 'fresh_s', 'grip_phys_dz', 'grip_need',
+# The settings of lmm-g1-box's Play panel (app.js), each with the page's default: the controller's (its `p`), the grasp
+# heuristic's (PalmGrasp) and the anchoring's (StreamRunner).
+CONTROLLER_FLAGS = {'pick_speed': 'pickPlaceSpeed', 'pick_slow': 'pickPlaceSlow', 'warp': 'warp',
+                    'leave_moved': 'leaveMoved', 'box_entry': 'boxEntry', 'rise': 'rise',
+                    'transition_cost': 'transitionCost', 'upright_tilt': 'uprightTilt', 'box_db': 'boxDb',
+                    'box_enter': 'boxEnter', 'box_leave': 'boxLeave', 'side_margin': 'sideMargin'}
+WEIGHT_FLAGS = {'weights_loco': 'loco', 'weights_pick': 'pick', 'weights_place': 'place'}
+GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze': 'squeeze_rad',
+               'wrist_squeeze': 'wrist_rad', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp', 'wrist_kp': 'wrist_kp'}
+PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', *GRASP_FLAGS, *CONTROLLER_FLAGS, *WEIGHT_FLAGS)
+LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'max_seed_jump',
+              'track_delay', 'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn', 'sync_search', 'sync_need',
+              'sync_agree', 'follow_s', 'obstacle_radius')
+RESTART_FLAGS = ('loco', 'lookahead', 'box_size', 'assoc_radius', 'fresh_s', 'grip_phys_dz', 'grip_need',
                  'fix_range_bias')
-GRASP_FLAGS = {'palm_force': 'force', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp'}   # PalmGrasp reads these
 GRID_DIM = 17 * 11
 L_SHOULDER_ROLL, R_SHOULDER_ROLL = 16, 23              # in the MuJoCo order of the 29 joints
+L_WRIST_YAW, R_WRIST_YAW = 21, 28
 MUJOCO_TO_ISAACLAB = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20,
                                27, 21, 28])           # isaac[i] = mujoco[MUJOCO_TO_ISAACLAB[i]]
 GRASP_REACH = 0.45
@@ -138,6 +156,7 @@ FSM_HISTORY = 16
 CLIP_FPS = 60
 WALK_DONE_M = 0.25         # app.js playStick: a walk to a clicked point ends this near it, slows down within 1 m
 SHOULDER_ROLL_KP = 14.251                              # the node's default shoulder roll kp (the page's SONIC kp too)
+WRIST_YAW_KP = 16.778                                  # the node's default wrist yaw kp (policy_parameters.hpp STIFFNESS_4010)
 G1_XML = os.path.join(ROOT, 'assets', 'unitree_g1', 'g1.xml')
 MODEL_VERSION = 'lmm-g1-box sbplace, Locomotion emmboth'
 LOCO_NAMES = {0: 'IDLE', 1: 'SLOW_WALK', 2: 'WALK', 3: 'RUN'}
@@ -238,10 +257,12 @@ class PalmGrasp:
 
     PALM = np.array([0.10, 0.007, 0.0])        # the page's palm sites on the wrist yaw links, y mirrored on the right
 
-    def __init__(self, force, shoulder_open, shoulder_kp, box_half_z):
+    def __init__(self, box_half_z, force=40.0, target='box', squeeze_rad=0.0, wrist_rad=0.0, open_rad=0.4,
+                 kp=SHOULDER_ROLL_KP, wrist_kp=WRIST_YAW_KP):
         import mujoco
         self.mj = mujoco
-        self.force, self.open_rad, self.kp = float(force), float(shoulder_open), float(shoulder_kp)
+        self.force, self.target, self.open_rad, self.kp = float(force), target, float(open_rad), float(kp)
+        self.squeeze_rad, self.wrist_rad, self.wrist_kp = float(squeeze_rad), float(wrist_rad), float(wrist_kp)
         self.unlifted_z = box_half_z + 0.05
         m = self.model = mujoco.MjModel.from_xml_path(G1_XML)
         self.data = mujoco.MjData(m)
@@ -291,7 +312,12 @@ class PalmGrasp:
         k = dt / GRASP_RAMP
         self.ramp = min(1.0, self.ramp + k) if on else max(0.0, self.ramp - k)
         self.on = on
-        if not on and frame.open:
+        if on:
+            tau[L_SHOULDER_ROLL - 15] -= self.squeeze_rad * self.kp
+            tau[R_SHOULDER_ROLL - 15] += self.squeeze_rad * self.kp
+            tau[L_WRIST_YAW - 15] -= self.wrist_rad * self.wrist_kp
+            tau[R_WRIST_YAW - 15] += self.wrist_rad * self.wrist_kp
+        elif frame.open:
             tau[L_SHOULDER_ROLL - 15] += self.open_rad * self.kp
             tau[R_SHOULDER_ROLL - 15] -= self.open_rad * self.kp
         if self.force <= 0 or self.ramp <= 0:
@@ -299,7 +325,9 @@ class PalmGrasp:
         # The page pulls each palm toward the physical box. A report of the box on the floor is late but still right,
         # as the box rests until the hands lift it, so it is the target until the reference's box rises. Then the
         # box moves and its reports lag, and the target is the box where the reference holds it.
-        if floor_box is not None and (held_box is None or held_box[2] < self.unlifted_z):
+        if self.target == 'mid':
+            target = mid
+        elif floor_box is not None and (held_box is None or held_box[2] < self.unlifted_z):
             target = floor_box
         else:
             target = mid if held_box is None else held_box
@@ -501,7 +529,11 @@ class Bridge:
         self.bus = BusPublisher(args.bus_pub)
         self.reports = BoxReports(args.assoc_radius, args.fresh_s)
         self.grip = GripCheck(args.box_size[2] / 2, args.grip_phys_dz, args.grip_need)
-        self.grasp = PalmGrasp(args.palm_force, args.shoulder_open, args.shoulder_kp, args.box_size[2] / 2)
+        self.grasp = PalmGrasp(args.box_size[2] / 2, **{k: getattr(args, n) for n, k in GRASP_FLAGS.items()})
+        c = self.sim.controller
+        self.variant_defaults = {**{n: page_choice(n, c.p[k]) for n, k in CONTROLLER_FLAGS.items()},
+                                 **{n: list(c.p['weights'][k]) for n, k in WEIGHT_FLAGS.items()}}
+        self.apply_page_settings()
         self.box_turn = 2 * math.pi / self.sim.cfg['box_sides']
         self.mode = MODE_IDLE
         self.t0 = None
@@ -755,13 +787,47 @@ class Bridge:
             v = fl.value(name, value)
         except ValueError as e:
             return self.say(f'UI 3: {e}')
+        if name in WEIGHT_FLAGS:
+            n = len(self.sim.controller.p['weights'][WEIGHT_FLAGS[name]])
+            if len(v) != n:
+                return self.say(f'UI 3: {fl.flag(name)} takes {n} weights, not {len(v)}')
         setattr(self.args, name, v)
         if name == 'tour_speed':
             self.route_follow.speed = v
-        elif name in GRASP_FLAGS:
-            setattr(self.grasp, GRASP_FLAGS[name], float(v))
+        elif name in PAGE_FLAGS:
+            self.apply_page_settings(name)
         fl.note_live(name, v)
-        self.say(f'UI 3: {fl.flag(name)} {v}')
+        self.say(f'UI 3: {fl.flag(name)} {fl.text(v)}')
+
+    def apply_page_settings(self, only=None):
+        """The page's settings from args onto the controller, the grasp heuristic, the anchoring and the foot locking.
+        A setting left at None takes the controller's value (the variant's, config.json), and args shows it then."""
+        a, c = self.args, self.sim.controller
+        for name, key in CONTROLLER_FLAGS.items():
+            if only not in (None, name):
+                continue
+            v = getattr(a, name)
+            if v is None:
+                setattr(a, name, page_choice(name, c.p[key]))
+            else:
+                c.p[key] = page_value(name, v)
+        for name, kind in WEIGHT_FLAGS.items():
+            if only not in (None, name):
+                continue
+            if getattr(a, name) is None:
+                setattr(a, name, list(c.p['weights'][kind]))
+            else:
+                c.set_weights(kind, getattr(a, name))
+        for name, key in GRASP_FLAGS.items():
+            if only in (None, name):
+                setattr(self.grasp, key, getattr(a, name) if name == 'palm_target' else float(getattr(a, name)))
+        if only in (None, 'foot_lock'):
+            self.sim.foot_lock.enabled = a.foot_lock == 'on'
+        if self.runner is not None and only in (None, 'hold', 'yaw_gain'):
+            self.runner.hold = HOLDS[a.hold]
+            self.runner.yaw_gain = a.yaw_gain
+        if only is not None:
+            self.sim.force_search = True
 
     def restart(self, changes, close):
         if self.mode == MODE_POSE:
@@ -894,7 +960,7 @@ class Bridge:
         xy = [0.0, 0.0] if p is None else list(p['root_xy'][:2])
         yaw = 0.0 if p is None else float(p['root_yaw'])
         self.sim.reset_robot([xy[0], xy[1], 0.0], yaw)
-        self.runner = StreamRunner(self.sim, lookahead=self.args.lookahead, yaw_gain=self.args.yaw_gain)
+        self.runner = StreamRunner(self.sim, lookahead=self.args.lookahead, hold=self.args.hold, yaw_gain=self.args.yaw_gain)
         self.say(f'the controller starts at ({xy[0]:.2f}, {xy[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg')
 
     def replan(self, F):
@@ -1362,6 +1428,7 @@ class Bridge:
                 'history': list(self.fsm['history']), 'signals': self.fsm_signals(cur)},
             'driver': 'box', 'ui': self.ui, 'frame': self.args.frame, 'keys_from': self.keys_from,
             'params': None if self.flags is None else self.flags.spec(),
+            'variant_defaults': self.variant_defaults,
             'argv': None if self.flags is None else self.flags.argv(),
             'notices': [] if self.flags is None else list(self.flags.notices)})
 
@@ -1533,6 +1600,26 @@ def run_terminal(args, flags):
         br.close()
 
 
+def page_value(name, v):
+    """A page setting's flag value as the controller keeps it: 'off' is None, the menus' numbers are numbers."""
+    if name in ('leave_moved', 'upright_tilt'):
+        return None if v == 'off' else float(v)
+    return v
+
+
+def page_choice(name, pv):
+    if name in ('leave_moved', 'upright_tilt'):
+        return 'off' if pv is None else f'{pv:g}'
+    return pv
+
+
+def weights(s):
+    v = [float(x) for x in s.split(',')]
+    if not all(math.isfinite(x) and x >= 0 for x in v):
+        raise argparse.ArgumentTypeError('weights are numbers of 0 or more, comma separated')
+    return v
+
+
 def size3(s):
     v = [float(x) for x in s.split(',')]
     if len(v) != 3 or not all(0.05 < x < 1.0 for x in v):
@@ -1562,6 +1649,48 @@ def main():
     ap.add_argument('--shoulder-kp', type=float, default=SHOULDER_ROLL_KP,
                     help="the node's shoulder roll kp, which turns --shoulder-open into an arm_tau torque (the node's "
                          "default gains; 40 with the lab's --debug-arm-pd-gains)")
+    ap.add_argument('--wrist-kp', type=float, default=WRIST_YAW_KP,
+                    help="the node's wrist yaw kp, which turns --wrist-squeeze into an arm_tau torque (20 with the lab's "
+                         "--debug-arm-pd-gains)")
+    g = ap.add_argument_group("lmm-g1-box's settings", "the page's Play panel (UI 3's Settings tab), each with its default")
+    g.add_argument('--palm-target', choices=('box', 'mid'), default='box',
+                   help='the palm force pulls toward the box centre or toward each other (the midpoint of the palms)')
+    g.add_argument('--shoulder-squeeze', type=float, default=0.0,
+                   help='rad the shoulder rolls turn inward while the reference holds the box')
+    g.add_argument('--wrist-squeeze', type=float, default=0.0,
+                   help='rad the wrist yaws turn inward while the reference holds the box')
+    g.add_argument('--hold', choices=tuple(HOLDS), default='low',
+                   help='pause the anchoring: low (while the reference is low), box (while the box controller runs), '
+                        'step (from the last step of the box clip), none (never)')
+    g.add_argument('--foot-lock', choices=('on', 'off'), default='on', help='foot locking (IK) of the reference')
+    g.add_argument('--pick-speed', type=float, default=1.0,
+                   help='the box clips (walk in, bend, grasp or release, rise) play at this share of their speed')
+    g.add_argument('--pick-slow', choices=('clip', 'step'), default='clip',
+                   help='slowed down: all of the box clips, or from the last step to the first step after')
+    g.add_argument('--warp', choices=('always', 'step', 'pickstep'), default=None,
+                   help="root warping: through the walk in and the bend, only before the last step, or only before "
+                        "the last step of a pick (default: the variant's)")
+    g.add_argument('--leave-moved', choices=('off', '0.25', '0.5', '0.75', '1'), default=None,
+                   help="m: back to Locomotion when the target moves this far before the bend (default: the variant's)")
+    g.add_argument('--box-entry', choices=('walk', 'any'), default='walk',
+                   help='box search: not into the end of a walk or the middle of a SceneBot clip, or every frame')
+    g.add_argument('--rise', choices=('finish', 'search'), default=None,
+                   help="rising after a grasp or a release: with the same clip, or searching every 0.1 s "
+                        "(default: the variant's)")
+    g.add_argument('--transition-cost', type=float, default=None,
+                   help="added to the cost of every frame but the playing one (default: the variant's)")
+    g.add_argument('--upright-tilt', choices=('off', '45', '30', '20'), default=None,
+                   help="deg: back to Locomotion after a pick or a place once the pelvis is above 0.72 m and the torso "
+                        "is within this of vertical (default: the variant's)")
+    g.add_argument('--box-db', choices=('same', 'different'), default='same',
+                   help='one Box Matching Database for pick up and put down (with the tag), or one for each')
+    for kind, what in (('loco', 'Locomotion'), ('pick', 'pick up'), ('place', 'put down')):
+        g.add_argument(f'--weights-{kind}', type=weights, default=None,
+                       help=f"the {what} query's feature group weights, comma separated (default: the variant's)")
+    g.add_argument('--box-enter', type=float, default=None, help='the box controller takes over below this cost')
+    g.add_argument('--box-leave', type=float, default=None, help='back to Locomotion above this cost')
+    g.add_argument('--side-margin', type=float, default=None,
+                   help='another side must cost less than the current side minus this')
     ap.add_argument('--run-scale', type=float, default=1.5,
                     help="stick scale with Shift held (run), as the loco driver's: 0.8 m/s x this")
     ap.add_argument('--frame', choices=('heading', 'camera'), default='heading',
@@ -1576,10 +1705,9 @@ def main():
                     help='s: the window camera eases toward the robot with this time constant (0 = locked on it)')
     ap.add_argument('--place-ahead', type=float, default=0.8, help='m in front of the controller b puts the box down')
     ap.add_argument('--place-left', type=float, default=0.0, help='m to the left, the same way')
-    ap.add_argument('--yaw-gain', type=float, default=0.3,
-                    help='POSE: share of the yaw gap between the SLAM pelvis and the reference a seed turns the '
-                         'controller (the page: 1). The SLAM pelvis yaw sways with the gait at another phase. The robot '
-                         'does not turn with a seed (see send)')
+    g.add_argument('--yaw-gain', type=float, default=1.0,
+                   help="POSE: share of the yaw gap between the SLAM pelvis and the reference a seed turns the "
+                        "controller (the page's snap-xyyaw: 1, snap-xy: 0). The robot does not turn with a seed (see send)")
     ap.add_argument('--track-delay', type=float, default=0.1,
                     help='s the robot plays behind the frame sent, added to the pose age when the seed looks back for the '
                          'frame to compare (SONIC\'s tracking delay: the leg joints match the frames 4-6 back in the sim)')
