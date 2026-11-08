@@ -12,8 +12,8 @@ While the box controller bends down (HOLDS 'low'), root warping owns the root an
 Four changes for a measured robot, all in seed: the robot's pose is compared with the reference frame of the pose's
 own time (its age), not with the frame playing now, frames made before the last moves are first carried into the
 controller's present coordinates with their corr (the page keeps corr for the same purpose), the seed turns yaw_gain
-of the yaw gap (the page: all of it), and in locomotion no seed puts the simulation object inside a box's
-collision zone (kept_out). The controller pushes the simulation object out of the zone at its next step and the
+of the yaw gap (the page: all of it), and with keep_out (on by default) in locomotion no seed puts the simulation
+object inside a box's collision zone (kept_out counts them). The controller pushes the simulation object out of the zone at its next step and the
 character follows within 0.1 s, so such a seed is undone at once, and seeding that every 0.2 s made the reference
 shuffle in place next to the box."""
 import math
@@ -94,11 +94,12 @@ class Capture:
 class StreamRunner:
     """sim: mm_g1.sim.Sim. Frames are indexed from 0 on the 50 Hz stream clock; frames before `base` are dropped."""
 
-    def __init__(self, sim, lookahead=25, hold='low', kin_dt=1 / 60, keep_s=3.0, yaw_gain=1.0):
+    def __init__(self, sim, lookahead=25, hold='low', kin_dt=1 / 60, keep_s=3.0, yaw_gain=1.0, keep_out=True):
         self.sim = sim
         self.lookahead = lookahead
         self.yaw_gain = yaw_gain
         self.hold = HOLDS[hold]
+        self.keep_out = keep_out
         self.kin_dt = kin_dt
         self.keep = int(round(keep_s / CONTROL_DT))
         self.frames = []
@@ -202,7 +203,7 @@ class StreamRunner:
         d = [xy[0] - ref[0], xy[1] - ref[1]]
         dyaw = (self.yaw_gain if yaw_gain is None else yaw_gain) * wrap_angle(yaw - ref_yaw)
         c, fl = self.sim.controller, self.sim.foot_lock
-        if c.mode == 'loco' and self.in_collision_zone(c, dyaw, ref, d):
+        if self.keep_out and c.mode == 'loco' and self.in_collision_zone(c, dyaw, ref, d):
             self.kept_out += 1
             return False
         if dyaw:

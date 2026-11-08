@@ -591,7 +591,7 @@ def run_window(br, args):
             ls = r.last_seed
             sync = ('-' if ls is None else f"{ls['d']:.2f} m {math.degrees(ls['dyaw']):+.1f} deg at the last seed")
             sync += (f', {r.seeds} seeds, {r.held_back} held back, {r.kept_out} kept out'
-                     + (f', {br.seed_skips} jumps' if br.seed_skips else ''))
+                     + (f", {br.skips['jump']} jumps" if br.skips['jump'] else ''))
             robot = 'LIVE' if live else ('no g1_debug' if br.robot.get() is None else 'NOT LOCALIZED')
             rows = [('mode', mode), ('task', task), ('box', boxl), ('reports', objl), ('target', targ),
                     ('grip check', grip), ('box moves', f'{br.syncs} taken from the reports'), ('palm force', palm),

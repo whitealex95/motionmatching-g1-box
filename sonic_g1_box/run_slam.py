@@ -29,10 +29,10 @@ What differs from the page, because the robot is measured, not simulated:
     reports of a moving box lag. It turns off when a fresh report puts the box on the floor more than 0.45 m
     (horizontally) from the palms. A late report of the box on the floor is not taken as the box left behind
     while the hands lift it.
-  - in locomotion no seed puts the controller's simulation object inside a box's collision zone (the runner's
-    kept_out). The controller pushes it out again at once, and after a place, with the robot standing 0.2 to 0.3 m
-    closer to the box than the reference, the seeds every 0.2 s made the reference shuffle and the robot kicked
-    the box
+  - in locomotion no seed puts the controller's simulation object inside a box's collision zone (--keep-out, the
+    runner's kept_out). The controller pushes it out again at once, and after a place, with the robot standing 0.2
+    to 0.3 m closer to the box than the reference, the seeds every 0.2 s made the reference shuffle and the robot
+    kicked the box. While the robot stands that close, the reference stays where it is
   - a grip-check drop clears the place target: the drop comes some 2 s after the grasp, often after the place was
     asked for, and the controller then put down the box it had just failed to lift again
   - the page presses the palms only while the physical box is within 0.45 m of their midpoint and checks the grip
@@ -67,6 +67,9 @@ them from it), set live from UI 3's Settings tab:
   matching         --weights-loco, --weights-pick, --weights-place, --box-enter, --box-leave, --side-margin
   by distance      --engage-radius, --force-engage-radius, --place-engage-radius, --reapproach-time (constants of the
                    page's controller, not on its panel)
+The seed's own rules, none of them the page's, are live flags on the same card (SEED_FLAGS): --skip-stopped,
+--skip-stale, --max-seed-jump (0: off), --keep-out, --pre-pose-full, --track-delay (0: off), --strip-seed-turns. Each
+re-plan's outcome (seeded, or the rule that skipped the seed) and the counts are in the state's 'seed_rules'.
 Not ported: the tracker choice, the other anchoring modes, the pick and place check, the box mass and the number of
 sides.
 
@@ -157,8 +160,10 @@ WEIGHT_FLAGS = {'weights_loco': 'loco', 'weights_pick': 'pick', 'weights_place':
 GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze': 'squeeze_rad',
                'wrist_squeeze': 'wrist_rad', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp', 'wrist_kp': 'wrist_kp'}
 PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', *GRASP_FLAGS, *CONTROLLER_FLAGS, *WEIGHT_FLAGS)
-LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'empty_gap', 'max_seed_jump',
-              'track_delay', 'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn', 'sync_search', 'sync_need',
+# The seed's rules that are not the page's, in the order a re-plan checks them (UI 3's Anchoring card).
+SEED_FLAGS = ('skip_stopped', 'skip_stale', 'max_seed_jump', 'keep_out', 'pre_pose_full', 'track_delay', 'strip_seed_turns')
+LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'empty_gap', *SEED_FLAGS,
+              'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn', 'sync_search', 'sync_need',
               'sync_agree', 'follow_s', 'obstacle_radius')
 RESTART_FLAGS = ('loco', 'lookahead', 'box_size', 'assoc_radius', 'fresh_s', 'grip_phys_dz', 'grip_need',
                  'fix_range_bias')
@@ -636,8 +641,10 @@ class Bridge:
         self.slam = None
         self.slam_wall = 0.0
         self.slam_at = None             # monotonic time the SLAM pose was measured at
+        self.raw_pose = None            # the map server's newest pose, however old
         self.last_seed_xy = None
-        self.seed_skips = 0
+        self.skips = {'stopped': 0, 'stale': 0, 'jump': 0}
+        self.seed_outcome = None        # the last re-plan: 'seeded' or the rule that skipped its seed
         self.pose_corr_yaw = 0.0        # the runner's seed yaw when POSE started
         self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0, 'objects': -1.0, 'pose': -1.0, 'tau': None,
                      'ref': -1.0, 'column': -1.0}
@@ -688,6 +695,8 @@ class Bridge:
     def poll_pose(self):
         r = self.map.request({'op': 'pose'})
         p = None if r is None else r.get('pose')
+        if r is not None:
+            self.raw_pose = None if p is None else (p, time.monotonic())
         if p is not None and p.get('age_s', 9.0) < 0.5:
             self.slam, self.slam_wall = p, time.time()
             self.slam_at = time.monotonic() - float(p.get('age_s', 0.0))
@@ -901,6 +910,8 @@ class Bridge:
         setattr(self.args, name, v)
         if name == 'tour_speed':
             self.route_follow.speed = v
+        elif name == 'keep_out' and self.runner is not None:
+            self.runner.keep_out = v == 'on'
         elif name in PAGE_FLAGS:
             self.apply_page_settings(name)
         fl.note_live(name, v)
@@ -933,6 +944,7 @@ class Bridge:
         if self.runner is not None and only in (None, 'hold', 'yaw_gain'):
             self.runner.hold = HOLDS[a.hold]
             self.runner.yaw_gain = a.yaw_gain
+            self.runner.keep_out = a.keep_out == 'on'
         if only is not None:
             self.sim.force_search = True
 
@@ -1067,41 +1079,57 @@ class Bridge:
         xy = [0.0, 0.0] if p is None else list(p['root_xy'][:2])
         yaw = 0.0 if p is None else float(p['root_yaw'])
         self.sim.reset_robot([xy[0], xy[1], 0.0], yaw)
-        self.runner = StreamRunner(self.sim, lookahead=self.args.lookahead, hold=self.args.hold, yaw_gain=self.args.yaw_gain)
+        self.runner = StreamRunner(self.sim, lookahead=self.args.lookahead, hold=self.args.hold, yaw_gain=self.args.yaw_gain,
+                                   keep_out=self.args.keep_out == 'on')
         self.say(f'the controller starts at ({xy[0]:.2f}, {xy[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg')
+
+    def seed_pose(self):
+        """The pose a seed starts from, or (None, the rule that gave none): --skip-stopped, --skip-stale."""
+        a = self.args
+        if self.mode == MODE_STOPPED and a.skip_stopped == 'on':
+            return None, 'stopped'
+        p = self.poll_pose()
+        if p is None and a.skip_stale == 'off' and self.raw_pose is not None:
+            raw, t = self.raw_pose
+            p = {**raw, 'age_s': float(raw.get('age_s', 0.0)) + time.monotonic() - t}
+        return p, None if p is not None else 'stale'
 
     def replan(self, F):
         """POSE: the page's snap-xyyaw, --yaw-gain of the yaw gap, against the frame the robot played when the pose
-        was measured. IDLE and PLANNER: all of the yaw, against the frame of the pose's time, as the loco driver
-        snaps its controller onto the robot before POSE. The robot does not play the stream then, and so POSE starts
-        where the node's planner walked it."""
-        robot, p, gain = None, None, None
-        if self.mode != MODE_STOPPED:
-            p = self.poll_pose()
+        was measured. IDLE and PLANNER (--pre-pose-full): all of the yaw, against the frame of the pose's time, as the
+        loco driver snaps its controller onto the robot before POSE. The robot does not play the stream then, and so
+        POSE starts where the node's planner walked it. The rules that skip a seed are flags (SEED_FLAGS)."""
+        a = self.args
+        robot, gain = None, None
+        p, outcome = self.seed_pose()
         if p is not None:
             xy = np.asarray(p['root_xy'][:2], float)
             jump = 0.0 if self.last_seed_xy is None else float(np.linalg.norm(xy - self.last_seed_xy))
             self.last_seed_xy = xy
             age = float(p.get('age_s', 0.0))
-            if self.mode != MODE_POSE:
+            if self.mode != MODE_POSE and a.pre_pose_full == 'on':
                 robot, gain = ((xy[0], xy[1]), float(p['root_yaw']), age), 1.0
-            elif jump > self.args.max_seed_jump:
-                self.seed_skips += 1
+            elif self.mode == MODE_POSE and 0 < a.max_seed_jump < jump:
+                outcome = 'jump'
                 self.say(f'the SLAM pose jumped {jump:.2f} m in 0.2 s: no seed this time '
-                      f'({self.seed_skips} so far)')
+                         f"({self.skips['jump'] + 1} so far)")
             else:
-                robot = ((xy[0], xy[1]), float(p['root_yaw']), age + self.args.track_delay)
+                robot = ((xy[0], xy[1]), float(p['root_yaw']), age + a.track_delay)
+        if outcome is not None:
+            self.skips[outcome] += 1
         if self.trace is not None:
             self.trace_replan(F, p, robot)
         r = self.runner
         if self.release is not None and self.release['F'] is None:
             self.release['F'] = F
-        seeds, kept_out = r.seeds, r.kept_out
+        seeds, kept_out, held_back = r.seeds, r.kept_out, r.held_back
         first, _ = r.replan(F, robot, yaw_gain=gain)
         if self.trace is not None and r.seeds > seeds:
             self.trace.write(json.dumps({'seed': r.last_seed, 'F': F}) + '\n')
         if self.trace is not None and r.kept_out > kept_out:
             self.trace.write(json.dumps({'kept_out': r.kept_out, 'F': F}) + '\n')
+        self.seed_outcome = outcome or ('seeded' if r.seeds > seeds else 'hold' if r.held_back > held_back
+                                        else 'keep_out' if r.kept_out > kept_out else None)
         self.pending_from = first if self.pending_from is None else min(self.pending_from, first)
 
     def trace_replan(self, F, p, robot):
@@ -1142,7 +1170,7 @@ class Bridge:
         jv = np.zeros_like(jp)
         jv[1:] = (jp[1:] - jp[:-1]) / CONTROL_DT
         bq = q[:, 3:7]                                                             # (M, 4) w, x, y, z
-        if self.mode == MODE_POSE:
+        if self.mode == MODE_POSE and self.args.strip_seed_turns == 'on':
             half = -0.5 * (np.array([f.corr[0] for f in frames]) - self.pose_corr_yaw)   # (M,)
             c, s = np.cos(half), np.sin(half)
             bq = np.stack([c * bq[:, 0] - s * bq[:, 3], c * bq[:, 1] - s * bq[:, 2],
@@ -1693,6 +1721,9 @@ class Bridge:
             'stick': self.move_stick()[:2].tolist(), 'max_speed': self.max_speed, 'route': self.route_follow.state(),
             'seeds': None if r is None else r.seeds, 'held_back': None if r is None else r.held_back,
             'kept_out': None if r is None else r.kept_out,
+            'seed_rules': None if r is None else {
+                'outcome': self.seed_outcome, 'seeds': r.seeds,
+                'skipped': {**self.skips, 'hold': r.held_back, 'keep_out': r.kept_out}},
             'phase': self.phase, 'task': task, 'match': match, 'grasp_trace': self.grasp_trace_state(),
             'db_port': None if self.db_page is None else self.db_page.port,
             'box_route': None if self.box_route is None else self.box_route.state(),
@@ -2030,9 +2061,26 @@ def main():
                         "controller (the page's snap-xyyaw: 1, snap-xy: 0). The robot does not turn with a seed (see send)")
     ap.add_argument('--track-delay', type=float, default=0.1,
                     help='s the robot plays behind the frame sent, added to the pose age when the seed looks back for the '
-                         'frame to compare (SONIC\'s tracking delay: the leg joints match the frames 4-6 back in the sim)')
+                         'frame to compare (SONIC\'s tracking delay: the leg joints match the frames 4-6 back in the sim). '
+                         '0: none')
     ap.add_argument('--max-seed-jump', type=float, default=0.5,
-                    help='m: a SLAM pose this far from the one 0.2 s before is not seeded from')
+                    help='m: in POSE a SLAM pose this far from the one 0.2 s before is not seeded from. 0: no check')
+    ap.add_argument('--skip-stopped', choices=('on', 'off'), default='on',
+                    help='on: no seed while the robot is stopped (O, damping). off: seeds then too, as before POSE')
+    ap.add_argument('--skip-stale', choices=('on', 'off'), default='on',
+                    help='on: no seed without a SLAM pose from the last 0.5 s. off: the newest pose, however old')
+    ap.add_argument('--keep-out', choices=('on', 'off'), default='on',
+                    help="on: in Locomotion no seed puts the controller's simulation object inside a box's collision "
+                         "zone (half the box + the controller's collisionRadius, 0.36 m). The controller pushes it out "
+                         "again within 0.1 s, and next to a placed box such seeds made the reference shuffle. Not the page's")
+    ap.add_argument('--pre-pose-full', choices=('on', 'off'), default='on',
+                    help="on: before POSE (IDLE, PLANNER) a seed turns all of the yaw gap, against the frame of the "
+                         "pose's time. off: as in POSE, --yaw-gain of it, against that frame + --track-delay")
+    ap.add_argument('--strip-seed-turns', choices=('on', 'off'), default='on',
+                    help="on: in POSE the heading sent leaves out the seeds' turns since POSE started, so the robot does "
+                         "not turn with a seed. off: sent with them, the robot turns with each seed (before 2026-11-05, "
+                         "with a yaw gap at the start of POSE the robot and the reference turned on and on). Switched in "
+                         "POSE, the robot turns by the seeds' turns so far")
     ap.add_argument('--objects-s', type=float, default=0.1, help='s between the map server object polls')
     ap.add_argument('--fresh-s', type=float, default=1.0, help='s a box report stays fresh')
     ap.add_argument('--reach-fresh-s', type=float, default=0.5,

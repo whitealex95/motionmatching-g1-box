@@ -83,6 +83,21 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the bridge runs, and a restar
 | Thresholds | `--box-enter`, `--box-leave`, `--side-margin` | 2.5, 4.0, 0.25 |
 | Taking the box controller by distance (constants of the page's controller, not on its panel) | `--force-engage-radius`, `--place-engage-radius`, `--engage-radius`, `--reapproach-time` | 1.1 m, the variant's 0.4 m, 3 m, 1 s |
 
+The seed's own rules, none of them the page's, are switches on the same *Anchoring* card of UI 3, in the order a
+re-plan checks them, each on by default. UI 3 highlights the page's two (`--hold`, `--yaw-gain`), has a button that
+puts all of them back to their defaults, and shows each re-plan's outcome (snapped, or the rule that skipped the
+snap) and how often each rule skipped one (`seed_rules` in the bridge's state).
+
+| rule | flag (off) | default |
+|---|---|---|
+| no seed while stopped (O) | `--skip-stopped off` | on |
+| no seed without a SLAM pose from the last 0.5 s | `--skip-stale off`: the newest pose, however old | on |
+| in POSE, no seed from a pose that jumped in 0.2 s | `--max-seed-jump 0` | 0.5 m |
+| in Locomotion, no seed into a box's collision zone | `--keep-out off` | on |
+| before POSE, all of the yaw against the frame of the pose's time | `--pre-pose-full off`: as in POSE | on |
+| in POSE, compare with the frame this much before the pose's time | `--track-delay 0` | 0.1 s |
+| in POSE, the heading sent leaves out the seeds' turns | `--strip-seed-turns off`: the robot turns with each seed | on |
+
 The squeezes turn the shoulder roll and wrist yaw targets inward through the node's `arm_tau` (q_target += tau / kp),
 so `--shoulder-kp` and `--wrist-kp` must be the node's kps: 40 and 20 on the robot (`--debug-arm-pd-gains`). Not
 ported: the tracker choice (the node runs SONIC), the other anchoring modes, the pick and place check, the box mass
@@ -110,7 +125,9 @@ The page simulates the robot. Here the robot is measured, a little late and with
 - In locomotion no seed puts the controller's simulation object inside a box's collision zone (the box's half size
   plus `collisionRadius` 0.36 m). The controller pushes the simulation object out of the zone at its next step, so
   such a seed is undone within 0.1 s. After a place the robot often stands 0.2 to 0.3 m closer to the box than the
-  reference, and seeding it every 0.2 s made the reference shuffle in place until the robot kicked the box.
+  reference, and seeding it every 0.2 s made the reference shuffle in place until the robot kicked the box. While
+  the robot stands that close, the reference stays where it is, up to 0.44 m behind the robot (`--keep-out off`
+  turns the rule off).
 - A grip-check drop clears the place target. On the page the drop comes during the rise, before any place is asked
   for. Here the D435i sees the box left on the floor some 2 s after the grasp, and a place asked for meanwhile made
   the controller put down the box right after its next lift, held or not.
