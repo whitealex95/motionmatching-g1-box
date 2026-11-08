@@ -43,6 +43,10 @@ What differs from the page, because the robot is measured, not simulated:
     hands, so the gap was 0.15 m between the hands' surfaces when it crossed. After a drop the force stays off until the frames of the next re-plan play. UI 1 and
     UI 3 draw the last 12 s of the gap, the reference's gap, the threshold and the force ('grasp_trace'), and each
     drop says what dropped it (grip: the grip check, palms: the palm gap, pose: leaving POSE)
+  - after a drop the task goes through Locomotion before the pick again (2026-11-07). The page's controller, still
+    in the pick's clip, grasps again on its next frame with the hands up in the air (graspReach is horizontal only,
+    the clip's held output high mid-lift). Here the clip rises with empty hands (Stand up, as a pick cancelled while
+    bent down), and the pick is set again only once the robot plays Locomotion and the camera has seen the box
   - leaving POSE (P, O) drops the hold and clears the targets: the node's planner has the arms then, and the
     reference went on carrying with its hands together, which the next POSE went back to
   - the task's state machine (FSM_STATES at the played frame, its signals and transitions) goes to UI 3 in the
@@ -561,7 +565,8 @@ class BoxRoute:
                 self.after_pick()
             elif w.pick_id is None and w.holding_id is None and w.regrasp is None:
                 self.finish('failed', 'failed: the pick was given up')
-            elif w.pick_id is None and w.regrasp is not None and now - self.t_phase > self.FIND_S:
+            elif (w.pick_id is None and w.regrasp is not None and b.regrasp_wait == 'seen' and b.last_drop is not None
+                  and time.time() - b.last_drop['wall'] > self.FIND_S):
                 self.finish('failed', f'failed: the box left the hands and is not seen on the floor '
                                       f'(for {self.FIND_S:.0f} s)')
         elif self.phase == 'carry':
@@ -644,6 +649,7 @@ class Bridge:
         self.grasp_trace = collections.deque(maxlen=int(GRASP_TRACE_S / CONTROL_DT))
         self.grasp_events = collections.deque(maxlen=16)   # (monotonic s, 'cut' | 'grip' | 'palms' | 'pose', text)
         self.last_drop = None           # {'wall', 'by', 'why'}
+        self.regrasp_wait = None        # after a drop: 'seen' (until the camera sees the box on the floor), 'loco'
         self.release = None        # {'F': first re-plan's frame after the drop, 'regrasp'}: frames up to F still hold it
         self.fsm = {'state': None, 'since': time.time(), 'history': collections.deque(maxlen=FSM_HISTORY), 'why': None,
                     'engaged': None}
@@ -816,6 +822,7 @@ class Bridge:
 
     def cancel(self, from_task=False):
         self.sim.world.clear_targets()
+        self.regrasp_wait = None
         self.sim.world.walk_to = None
         self.walking = False
         self.sim.force_search = True
@@ -1150,6 +1157,7 @@ class Bridge:
             self.replan(self.cur)
         self.flush()
         self.update_fsm(self.frame_now())
+        self.rearm_pick()
         if self.mode in (MODE_PLANNER, MODE_POSE) and now - self.last['heartbeat'] >= 1.0:
             self.link.command(planner=self.mode == MODE_PLANNER)
             self.last['heartbeat'] = now
@@ -1244,11 +1252,11 @@ class Bridge:
         if w.regrasp == b['id'] and w.pick_id is None and meas['pos'][2] - self.args.box_size[2] / 2 < self.args.grip_phys_dz:
             b['pos'] = [float(meas['pos'][0]), float(meas['pos'][1])]
             b['yaw'] = box_yaw_near(meas['yaw'], b['yaw'], self.box_turn)
-            w.pick_id = b['id']
-            self.sim.force_search = True
-            self.fsm_cause('the box is seen on the floor: picking it up again')
-            self.say(f"the box is seen on the floor at ({b['pos'][0]:.2f}, {b['pos'][1]:.2f}) m: the controller "
-                     'picks it up again')
+            if self.regrasp_wait == 'seen':
+                self.regrasp_wait = 'loco'
+                self.fsm_cause('the box is seen on the floor: it is picked up again from Locomotion')
+                self.say(f"the box is seen on the floor at ({b['pos'][0]:.2f}, {b['pos'][1]:.2f}) m: the controller "
+                         'picks it up again once the robot plays Locomotion')
             return
         if self.runner.pending(self.cur, b['id']) or self.grasp.ramp > 0:
             return
@@ -1384,16 +1392,41 @@ class Bridge:
         self.grasp.ramp = 0.0
         self.grasp.cut, self.hands_empty_s = False, 0.0
         self.release = {'F': None, 'regrasp': bool(regrasp)}
-        if meas is None or not regrasp:
-            w.pick_id = None
-            if not regrasp:
-                w.regrasp = None
+        # The task goes through Locomotion before the pick again. The controller still in the pick's clip would grasp
+        # again on its next frame (graspReach is horizontal only, and mid-lift the clip's held output is high), with
+        # the hands up in the air: as a pick cancelled while bent down, the clip rises with empty hands (Stand up).
+        w.pick_id = None
+        c = self.sim.controller
+        if regrasp and c.mode == 'box' and c.boxTag == 'pick':
+            c.boxTag = 'place'
+        self.regrasp_wait = None if not regrasp else 'loco' if meas is not None else 'seen'
+        if not regrasp:
+            w.regrasp = None
         where = f'({pos[0]:.2f}, {pos[1]:.2f}) m' + ('' if meas is not None else ', under the palms (not seen)')
-        then = ('the controller picks it up again' if regrasp and meas is not None
-                else 'the pick waits until the camera sees it on the floor' if regrasp else 'X picks it up again')
+        then = ('the robot stands up, and from Locomotion the controller picks it up again' if regrasp and meas is not None
+                else 'the robot stands up, and the pick waits until the camera sees it on the floor' if regrasp
+                else 'X picks it up again')
         self.fsm_cause(why, by)
         self.say(f'{why}: the hold is dropped, the box is at {where}, {then} ({self.drops} so far)')
         return True
+
+    def rearm_pick(self):
+        """After a drop: the pick again once the robot plays Locomotion (the frames made after the drop played) and
+        the box's place is known from the camera."""
+        w, c = self.sim.world, self.sim.controller
+        if self.regrasp_wait != 'loco' or w.regrasp is None or w.pick_id is not None or w.holding_id is not None:
+            return
+        if self.release is not None or c.mode != 'loco' or self.fsm['state'] != 'locomotion':
+            return
+        b = w.find(w.regrasp)
+        if b is None:
+            self.regrasp_wait = None
+            return
+        w.pick_id = b['id']
+        self.regrasp_wait = None
+        self.sim.force_search = True
+        self.fsm_cause('back in Locomotion after the drop: picking the box up again')
+        self.say(f"back in Locomotion: the controller picks the box up again at ({b['pos'][0]:.2f}, {b['pos'][1]:.2f}) m")
 
     def palms_on_floor(self):
         """The floor under the palms' midpoint in the map frame (the controller's root without a SLAM pose)."""
@@ -1423,7 +1456,7 @@ class Bridge:
         until the frames made after it play, and while the box that left the hands is not seen on the floor."""
         w = self.sim.world
         if (self.release is not None and self.release['regrasp']) or (
-                w.holding_id is None and w.regrasp is not None and w.pick_id is None):
+                w.holding_id is None and w.regrasp is not None and self.regrasp_wait == 'seen'):
             return 'lost'
         sem = frame.tag['semantics']
         if sem in ('pick-pre', 'pick-post', 'place-pre', 'place-post'):
@@ -1440,8 +1473,9 @@ class Bridge:
             return
         cause = f['why'] if f['why'] is not None and now - f['why'][0] < 3.0 else None
         why = None if cause is None else cause[1]
-        if why is None and f['state'] == 'lost' and (self.sim.world.pick_id is not None or self.sim.world.holding_id is not None):
-            why = 'the frames made after the drop play: the controller picks the box up again where the camera saw it'
+        if why is None and f['state'] == 'lost':
+            why = ('the frames made after the drop play: the pick clip rises with empty hands' if s == 'place-post'
+                   else 'the frames made after the drop play')
         e, by = frame.tag.get('engaged'), None if cause is None else cause[2]
         if s in ('pick-pre', 'place-pre') and e is not None and e['id'] != f['engaged']:
             f['engaged'], by = e['id'], engage_by(e)
@@ -1460,6 +1494,7 @@ class Bridge:
         xy = self.robot_xy()
         return {
             'mode': self.mode, 'holding': w.holding_id, 'pick': w.pick_id, 'regrasp': w.regrasp,
+            'regrasp_wait': self.regrasp_wait,
             'place': None if w.place_target is None else [round(v, 2) for v in w.place_target['pos']],
             'ref_held': frame.held is not None,
             'ref_box_dz': None if frame.ghost_box is None else round(float(frame.ghost_box[2]) - rest, 3),
@@ -1665,7 +1700,7 @@ def run_headless(args):
                 br.place_ahead()
                 go('place', 'putting the box down in front')
             elif step == 'place':
-                if w.holding_id is None and w.pick_id is not None:
+                if w.holding_id is None and (w.pick_id is not None or w.regrasp is not None):
                     go('pick', 'the box left the hands: picking it up again')
                 elif (w.holding_id is None and w.place_target is None and c.mode == 'loco'
                       and s.stats['uprightTime'] > 1.5 and br.frame_now().held is None):
