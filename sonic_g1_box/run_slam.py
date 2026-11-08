@@ -37,10 +37,10 @@ What differs from the page, because the robot is measured, not simulated:
     asked for, and the controller then put down the box it had just failed to lift again
   - the page presses the palms only while the physical box is within 0.45 m of their midpoint and checks the grip
     on it at every step (engine.js graspStep, runner.js checkGrip). With no such box, measured palm sites closer
-    together than --empty-gap (the box's width minus 0.08 m) stop the palm force and the squeezes at once, before
-    the hands meet, and drop the hold HANDS_EMPTY_S later. Before 2026-11-07 the force stayed on for those 0.3 s and
-    the hands hit each other: the palm sites sit 5.3 cm inside the hands, so the gap was 0.15 m between the hands'
-    surfaces when it crossed. After a drop the force stays off until the frames of the next re-plan play. UI 1 and
+    together than --empty-gap (0.3 m) stop the palm force and the squeezes at once, before the hands meet, and drop
+    the hold HANDS_EMPTY_S (0.2 s) later. Before 2026-11-07 the threshold was the box's width minus 0.08 m (0.255 m),
+    the force stayed on for 0.3 s past it and the hands hit each other: the palm sites sit 5.3 cm inside the
+    hands, so the gap was 0.15 m between the hands' surfaces when it crossed. After a drop the force stays off until the frames of the next re-plan play. UI 1 and
     UI 3 draw the last 12 s of the gap, the reference's gap, the threshold and the force ('grasp_trace'), and each
     drop says what dropped it (grip: the grip check, palms: the palm gap, pose: leaving POSE)
   - leaving POSE (P, O) drops the hold and clears the targets: the node's planner has the arms then, and the
@@ -161,8 +161,8 @@ MUJOCO_TO_ISAACLAB = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10
                                27, 21, 28])           # isaac[i] = mujoco[MUJOCO_TO_ISAACLAB[i]]
 GRASP_REACH = 0.45
 GRASP_RAMP = 0.15
-HANDS_EMPTY_GAP = 0.08     # m: --empty-gap's default is the box's width minus this
-HANDS_EMPTY_S = 0.3        # s from the force cut to the drop of the hold
+EMPTY_GAP = 0.3            # m between the palm sites: the box held is ~0.44, the hands touch at ~0.11
+HANDS_EMPTY_S = 0.2        # s from the force cut to the drop of the hold
 GRASP_TRACE_S = 12.0       # s of palm gaps kept for UI 1 and UI 3
 FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
 FSM_HISTORY = 16
@@ -641,8 +641,6 @@ class Bridge:
         self.drops = 0
         self.syncs = 0
         self.hands_empty_s = 0.0        # s since the palm gap cut the force in this hold
-        if args.empty_gap is None:
-            args.empty_gap = self.default_empty_gap()
         self.grasp_trace = collections.deque(maxlen=int(GRASP_TRACE_S / CONTROL_DT))
         self.grasp_events = collections.deque(maxlen=16)   # (monotonic s, 'cut' | 'grip' | 'palms' | 'pose', text)
         self.last_drop = None           # {'wall', 'by', 'why'}
@@ -1280,7 +1278,7 @@ class Bridge:
 
     # -- the grasp ----------------------------------------------------------------------------------------------
     def default_empty_gap(self):
-        return round(min(self.args.box_size[:2]) - HANDS_EMPTY_GAP, 3)
+        return EMPTY_GAP
 
     def empty_gap(self):
         return self.default_empty_gap() if self.args.empty_gap is None else float(self.args.empty_gap)
@@ -1837,11 +1835,11 @@ def main():
     ap.add_argument('--wrist-kp', type=float, default=WRIST_YAW_KP,
                     help="the node's wrist yaw kp, which turns --wrist-squeeze into an arm_tau torque (20 with the lab's "
                          "--debug-arm-pd-gains)")
-    ap.add_argument('--empty-gap', type=float, default=None,
+    ap.add_argument('--empty-gap', type=float, default=EMPTY_GAP,
                     help='m between the measured palm sites (the palm centres, 5.3 cm inside each hand): closer than '
                          'this while the palm force holds the box, the force and the squeezes stop at once, and the hold '
-                         f'is dropped {HANDS_EMPTY_S:g} s later (default: the box\'s width minus {HANDS_EMPTY_GAP:g} m, '
-                         '0.255). Set live from the Palm gap card of UI 1 and UI 3')
+                         f'is dropped {HANDS_EMPTY_S:g} s later (default {EMPTY_GAP:g}: the box held is about 0.44 m, '
+                         'the hands touch at about 0.11 m). Set live from the Palm gap card of UI 1 and UI 3')
     g = ap.add_argument_group("lmm-g1-box's settings", "the page's Play panel (UI 3's Settings tab), each with its default")
     g.add_argument('--palm-target', choices=('box', 'mid'), default='box',
                    help='the palm force pulls toward the box centre or toward each other (the midpoint of the palms)')

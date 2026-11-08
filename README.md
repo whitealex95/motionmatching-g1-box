@@ -116,9 +116,9 @@ The page simulates the robot. Here the robot is measured, a little late and with
   the controller put down the box right after its next lift, held or not.
 - The page presses the palms only while the physical box is within 0.45 m of their midpoint (`graspStep`) and checks
   the grip on the physics' box at every step (`checkGrip`). The bridge has no such box, so the measured palms take
-  its place: palm sites closer together than `--empty-gap` (the box's width minus 0.08 m, 0.255 m; they sit 5.3 cm
-  inside each hand) with the palm force on hold no box. The force and the squeezes stop at once, before the hands
-  meet, and 0.3 s later the hold is dropped as by the grip check. UI 1 and UI 3 draw the last 12 s of the gap
+  its place: palm sites closer together than `--empty-gap` (0.3 m, they sit 5.3 cm
+  inside each hand, so the box held is about 0.44 m) with the palm force on hold no box. The force and the squeezes stop at once, before the hands
+  meet, and 0.2 s later the hold is dropped as by the grip check. UI 1 and UI 3 draw the last 12 s of the gap
   (`grasp_trace`) and say what dropped each hold (`last_drop`: grip, palms, pose). The force stays off until the frames of the re-plan after the drop play: in the middle of a
   lift the controller grasps again on its first frame (the clip's held output is high and `graspReach` is horizontal
   only), as the page's controller does.
