@@ -43,6 +43,10 @@ What differs from the page, because the robot is measured, not simulated:
     hands, so the gap was 0.15 m between the hands' surfaces when it crossed. After a drop the force stays off until the frames of the next re-plan play. UI 1 and
     UI 3 draw the last 12 s of the gap, the reference's gap, the threshold and the force ('grasp_trace'), and each
     drop says what dropped it (grip: the grip check, palms: the palm gap, pose: leaving POSE)
+  - display only (2026-11-07): the map server's newest LiDAR scan in a vertical column at the measured palms'
+    midpoint (its `column` op), 10 Hz, beside the palms' mean height. A hold disagrees when the column tops more
+    than COLUMN_MARGIN below the palms, or holds no point where the LiDAR sees it at the palms' height. Its runs
+    are 'between' events, and grasp_trace's 'column' and each drop's 'between_s' carry it. Nothing is dropped for it
   - after a drop the task goes through Locomotion before the pick again (2026-11-07). The page's controller, still
     in the pick's clip, grasps again on its next frame with the hands up in the air (graspReach is horizontal only,
     the clip's held output high mid-lift). Here the clip rises with empty hands (Stand up, as a pick cancelled while
@@ -168,6 +172,10 @@ GRASP_RAMP = 0.15
 EMPTY_GAP = 0.3            # m between the palm sites: the box held is ~0.44, the hands touch at ~0.11
 HANDS_EMPTY_S = 0.2        # s from the force cut to the drop of the hold
 GRASP_TRACE_S = 12.0       # s of palm gaps kept for UI 1 and UI 3
+COLUMN_S = 0.1             # s between the map server's `column` requests (the LiDAR's 10 Hz)
+COLUMN_R = 0.06            # m around the palm midpoint
+COLUMN_MARGIN = 0.05       # m: the scan's top between the palms this far below the palms disagrees with a hold
+COLUMN_AGREE_S = 0.3       # s of agreement that end a disagreement
 FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
 FSM_HISTORY = 16
 CLIP_FPS = 60
@@ -632,7 +640,7 @@ class Bridge:
         self.seed_skips = 0
         self.pose_corr_yaw = 0.0        # the runner's seed yaw when POSE started
         self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0, 'objects': -1.0, 'pose': -1.0, 'tau': None,
-                     'ref': -1.0}
+                     'ref': -1.0, 'column': -1.0}
         self.box_id = None
         self.move_seen = None
         self.stick = (np.zeros(3), np.zeros(3))     # (move, face): the loco driver's left and right sticks
@@ -648,7 +656,15 @@ class Bridge:
         self.hands_empty_s = 0.0        # s since the palm gap cut the force in this hold
         self.grasp_trace = collections.deque(maxlen=int(GRASP_TRACE_S / CONTROL_DT))
         self.grasp_events = collections.deque(maxlen=16)   # (monotonic s, 'cut' | 'grip' | 'palms' | 'pose', text)
-        self.last_drop = None           # {'wall', 'by', 'why'}
+        self.last_drop = None           # {'wall', 'by', 'why', 'between_s'}
+        # the scan between the palms, display only: (monotonic s of the scan, top, points, palm z, hold on, disagrees,
+        # the lowest height of the column the LiDAR sees)
+        self.column_trace = collections.deque(maxlen=int(GRASP_TRACE_S / COLUMN_S) + 10)
+        self.column_stamp = None
+        self.column_why = None
+        self.between_since = None       # monotonic s of the scan that first disagreed in this run of disagreements
+        self.between_ok_since = None
+        self.between_runs = 0
         self.regrasp_wait = None        # after a drop: 'seen' (until the camera sees the box on the floor), 'loco'
         self.release = None        # {'F': first re-plan's frame after the drop, 'regrasp'}: frames up to F still hold it
         self.fsm = {'state': None, 'since': time.time(), 'history': collections.deque(maxlen=FSM_HISTORY), 'why': None,
@@ -1173,6 +1189,9 @@ class Bridge:
                 self.box_from_report()
         if self.last['tau'] is None or now - self.last['tau'] >= CONTROL_DT:
             self.send_arm_tau(now)
+        if now - self.last['column'] >= COLUMN_S:
+            self.last['column'] = now
+            self.poll_column(now)
         if self.box_route is not None:
             self.box_route.step(now)
         if now - self.last['bus'] >= 0.1:
@@ -1327,6 +1346,9 @@ class Bridge:
         if not g.cut and g.ramp > 0 and g.gap is not None and g.gap < thr:
             g.cut, g.ramp, self.hands_empty_s = True, 0.0, 0.0
             text = f'the palms are {g.gap:.3f} m apart, below {thr:.3f} m: no box between them, the palm force is off'
+            lead = self.between_lead()
+            if lead is not None:
+                text += f' (the scan between the palms disagreed {lead:.2f} s before)'
             self.grasp_events.append((now, 'cut', text))
             self.say(text)
             return
@@ -1340,25 +1362,88 @@ class Bridge:
 
     def record_grasp(self, now, frame):
         g = self.grasp
+        held = frame is not None and frame.held is not None
+        pz = None if g.palms is None else 0.5 * float(g.palms[0][2] + g.palms[1][2])
         self.grasp_trace.append((now, g.gap, g.ref_gap, self.empty_gap(), g.ramp if self.mode == MODE_POSE else 0.0,
-                                 g.cut, frame is not None and frame.held is not None))
+                                 g.cut, held, pz, held and self.mode == MODE_POSE and not g.released))
+
+    def poll_column(self, now):
+        """The map server's newest LiDAR scan in a vertical column at the measured palms' midpoint: the top of what is
+        between the palms, the box's top while the hands hold it. The maps cut every point near the robot, and the
+        camera's reports miss a box in the hands or at the feet, the scan does not. Display only, nothing is dropped
+        for it: a hold disagrees when the column tops more than COLUMN_MARGIN below the palms, or holds no point where
+        the LiDAR sees it at the palms' height (a held box's top is not below the palms). The Mid-360 sees down to 52
+        deg below its horizon only: standing, the column in front of the chest is seen from about 0.7 m up."""
+        g = self.grasp
+        if g.palms is None:
+            return
+        mid = 0.5 * (g.palms[0] + g.palms[1])
+        r = self.map.request({'op': 'column', 'points': [[float(mid[0]), float(mid[1])]], 'r': COLUMN_R})
+        if r is None:
+            self.column_why = 'the map server does not answer'
+            return
+        if not r.get('localized'):
+            self.column_why = r.get('why') or 'not localized'
+            return
+        self.column_why = None
+        if r['stamp_ns'] == self.column_stamp:
+            return
+        self.column_stamp = r['stamp_ns']
+        t = now - float(r['age_s'])
+        row = next((x for x in reversed(self.grasp_trace) if x[0] <= t), None)
+        pz, hold = (None, False) if row is None else (row[7], row[8])
+        top, n = r['tops'][0], int(r['counts'][0])
+        seen = (r.get('seen') or [None])[0]
+        low = top is not None and pz is not None and top < pz - COLUMN_MARGIN
+        empty = n == 0 and seen is not None and pz is not None and seen[0] <= pz <= seen[1]
+        bad = bool(hold and (low or empty))
+        self.column_trace.append((t, top, n, pz, hold, bad, None if seen is None else seen[0]))
+        if bad:
+            self.between_ok_since = None
+            if self.between_since is None:
+                self.between_since = t
+                self.between_runs += 1
+                what = (f'tops at {top:.2f} m, {pz - top:.2f} m below the palms ({pz:.2f} m)' if low else
+                        f'holds no point, seen from {seen[0]:.2f} m up, the palms at {pz:.2f} m')
+                self.grasp_events.append((t, 'between', f'the scan between the palms {what}: no box between them '
+                                                        '(display only, nothing is dropped for it)'))
+        elif self.between_since is not None:
+            if not hold:
+                self.between_since = self.between_ok_since = None
+            elif top is not None:
+                self.between_ok_since = t if self.between_ok_since is None else self.between_ok_since
+                if t - self.between_ok_since >= COLUMN_AGREE_S:
+                    self.between_since = self.between_ok_since = None
+
+    def between_lead(self):
+        """s since the scan between the palms began to disagree with this hold, or None."""
+        return None if self.between_since is None else time.monotonic() - self.between_since
 
     def grasp_trace_state(self):
         """The last GRASP_TRACE_S of palm gaps for UI 1 and UI 3, every other control step, t in s before now."""
         now = time.monotonic()
         rows = list(self.grasp_trace)[::-2][::-1]
         r3 = lambda v: None if v is None else round(float(v), 3)
+        cols = [c for c in self.column_trace if now - c[0] <= GRASP_TRACE_S]
         return {'t': [round(r[0] - now, 2) for r in rows], 'gap': [r3(r[1]) for r in rows],
                 'ref': [r3(r[2]) for r in rows], 'thr': [r3(r[3]) for r in rows],
                 'force': [round(float(r[4]), 2) for r in rows], 'cut': [bool(r[5]) for r in rows],
-                'held': [bool(r[6]) for r in rows],
+                'held': [bool(r[6]) for r in rows], 'pz': [r3(r[7]) for r in rows], 'hold': [bool(r[8]) for r in rows],
+                'column': {'t': [round(c[0] - now, 2) for c in cols], 'top': [r3(c[1]) for c in cols],
+                           'n': [c[2] for c in cols], 'pz': [r3(c[3]) for c in cols],
+                           'hold': [bool(c[4]) for c in cols], 'bad': [bool(c[5]) for c in cols],
+                           'seen_lo': [c[6] for c in cols],
+                           'margin': COLUMN_MARGIN, 'r': COLUMN_R, 'why': self.column_why, 'runs': self.between_runs,
+                           'since_s': None if self.between_lead() is None else round(self.between_lead(), 2)},
                 'events': [[round(t - now, 2), k, text] for t, k, text in self.grasp_events if now - t <= GRASP_TRACE_S],
+                'wall': round(time.time(), 3),
                 'empty_gap': self.empty_gap(), 'default': self.default_empty_gap(), 'empty_s': HANDS_EMPTY_S,
                 'width': min(self.args.box_size[:2]), 'span_s': GRASP_TRACE_S, 'last_drop': self.last_drop_state()}
 
     def last_drop_state(self):
         d = self.last_drop
-        return None if d is None else {'by': d['by'], 'why': d['why'], 'ago_s': round(time.time() - d['wall'], 1)}
+        return None if d is None else {'by': d['by'], 'why': d['why'], 'ago_s': round(time.time() - d['wall'], 1),
+                                       'between_s': d.get('between_s')}
 
     def release_hold(self, why, regrasp, meas=None, by='pose'):
         """The box left the hands: the world drops its hold and the palm force stops at once. A report of the box on
@@ -1379,7 +1464,8 @@ class Bridge:
         if not self.sim.drop(b['id'], pos, yaw):
             return False
         self.drops += 1
-        self.last_drop = {'wall': time.time(), 'by': by, 'why': why}
+        lead = self.between_lead()
+        self.last_drop = {'wall': time.time(), 'by': by, 'why': why, 'between_s': None if lead is None else round(lead, 2)}
         self.grasp_events.append((time.monotonic(), by, why))
         # A place target is for a held box (set_place needs one). The page's grip check comes during the rise, before
         # any place is asked for. Here the camera sees the box left on the floor some 2 s after the grasp, often after

@@ -119,7 +119,11 @@ The page simulates the robot. Here the robot is measured, a little late and with
   its place: palm sites closer together than `--empty-gap` (0.3 m, they sit 5.3 cm
   inside each hand, so the box held is about 0.44 m) with the palm force on hold no box. The force and the squeezes stop at once, before the hands
   meet, and 0.2 s later the hold is dropped as by the grip check. UI 1 and UI 3 draw the last 12 s of the gap
-  (`grasp_trace`) and say what dropped each hold (`last_drop`: grip, palms, pose). The force stays off until the frames of the re-plan after the drop play: in the middle of a
+  (`grasp_trace`) and say what dropped each hold (`last_drop`: grip, palms, pose). Beside it, for display only, the
+  bridge asks the map server for its newest LiDAR scan in a vertical column at the palms' midpoint (the `column`
+  op, 10 Hz): the box's top while the hands hold it. A hold disagrees when the column tops more than 0.05 m below
+  the palms, or is empty where the LiDAR sees it at the palms' height (`grasp_trace.column`, `between` events, and
+  each drop's `between_s`: how long before it the column disagreed). Nothing is dropped for it. The force stays off until the frames of the re-plan after the drop play: in the middle of a
   lift the controller grasps again on its first frame (the clip's held output is high and `graspReach` is horizontal
   only), as the page's controller does.
 - Leaving POSE (`P`, `O`) drops the hold and clears the targets. Out of POSE the node's planner has the arms and the
