@@ -36,10 +36,13 @@ What differs from the page, because the robot is measured, not simulated:
   - a grip-check drop clears the place target: the drop comes some 2 s after the grasp, often after the place was
     asked for, and the controller then put down the box it had just failed to lift again
   - the page presses the palms only while the physical box is within 0.45 m of their midpoint and checks the grip
-    on it at every step (engine.js graspStep, runner.js checkGrip). With no such box, the measured palms closer
-    together than the box is wide minus HANDS_EMPTY_GAP for HANDS_EMPTY_S drop the hold too: before, a box that
-    slipped out kept the palms pressed together until SAM3 saw it on the floor. The force stays off until the
-    frames of the next re-plan play
+    on it at every step (engine.js graspStep, runner.js checkGrip). With no such box, measured palm sites closer
+    together than --empty-gap (the box's width minus 0.08 m) stop the palm force and the squeezes at once, before
+    the hands meet, and drop the hold HANDS_EMPTY_S later. Before 2026-11-07 the force stayed on for those 0.3 s and
+    the hands hit each other: the palm sites sit 5.3 cm inside the hands, so the gap was 0.15 m between the hands'
+    surfaces when it crossed. After a drop the force stays off until the frames of the next re-plan play. UI 1 and
+    UI 3 draw the last 12 s of the gap, the reference's gap, the threshold and the force ('grasp_trace'), and each
+    drop says what dropped it (grip: the grip check, palms: the palm gap, pose: leaving POSE)
   - leaving POSE (P, O) drops the hold and clears the targets: the node's planner has the arms then, and the
     reference went on carrying with its hands together, which the next POSE went back to
   - the task's state machine (FSM_STATES at the played frame, its signals and transitions) goes to UI 3 in the
@@ -146,7 +149,7 @@ WEIGHT_FLAGS = {'weights_loco': 'loco', 'weights_pick': 'pick', 'weights_place':
 GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze': 'squeeze_rad',
                'wrist_squeeze': 'wrist_rad', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp', 'wrist_kp': 'wrist_kp'}
 PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', *GRASP_FLAGS, *CONTROLLER_FLAGS, *WEIGHT_FLAGS)
-LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'max_seed_jump',
+LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'empty_gap', 'max_seed_jump',
               'track_delay', 'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn', 'sync_search', 'sync_need',
               'sync_agree', 'follow_s', 'obstacle_radius')
 RESTART_FLAGS = ('loco', 'lookahead', 'box_size', 'assoc_radius', 'fresh_s', 'grip_phys_dz', 'grip_need',
@@ -158,8 +161,9 @@ MUJOCO_TO_ISAACLAB = np.array([0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10
                                27, 21, 28])           # isaac[i] = mujoco[MUJOCO_TO_ISAACLAB[i]]
 GRASP_REACH = 0.45
 GRASP_RAMP = 0.15
-HANDS_EMPTY_GAP = 0.08     # m: palms this much closer together than the box is wide hold no box between them
-HANDS_EMPTY_S = 0.3        # s they must stay that close
+HANDS_EMPTY_GAP = 0.08     # m: --empty-gap's default is the box's width minus this
+HANDS_EMPTY_S = 0.3        # s from the force cut to the drop of the hold
+GRASP_TRACE_S = 12.0       # s of palm gaps kept for UI 1 and UI 3
 FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
 FSM_HISTORY = 16
 CLIP_FPS = 60
@@ -281,16 +285,20 @@ class PalmGrasp:
         self.dof = [d for _, d in arm]                                  # the 14 arm dofs, joints 15..28
         feet = {m.body(f'{s}_ankle_roll_link').id for s in ('left', 'right')}
         self.sole = [g for g in range(m.ngeom) if m.geom_bodyid[g] in feet and m.geom_type[g] == mujoco.mjtGeom.mjGEOM_SPHERE]
+        self.ref_data = mujoco.MjData(m)
         self.jacp = np.zeros((3, m.nv))
         self.ramp = 0.0
         self.on = False
         self.palms = None
-        self.gap = None            # m between the palms
+        self.gap = None            # m between the palm sites
+        self.ref_gap = None        # m between the reference's palm sites at the frame the robot plays
         self.released = False      # the hold was dropped: no force while the frames made before it play
+        self.cut = False           # the palm gap fell below --empty-gap during this hold: no force until it ends
 
-    def pose_robot(self, base_quat, body_q):
+    def pose_robot(self, base_quat, body_q, d=None):
         """The palms (2, 3) in the pelvis heading frame."""
-        mj, m, d = self.mj, self.model, self.data
+        mj, m = self.mj, self.model
+        d = self.data if d is None else d
         yaw = quat_yaw(base_quat)
         c, s = math.cos(yaw / 2), math.sin(yaw / 2)
         w, x, y, z = base_quat
@@ -305,18 +313,31 @@ class PalmGrasp:
         mj.mj_comPos(m, d)
         return [d.xpos[b] + d.xmat[b].reshape(3, 3) @ (self.PALM * [1.0, sg, 1.0]) for b, sg in zip(self.wrist, (1.0, -1.0))]
 
-    def step(self, dt, frame, robot, held_box, floor_box):
-        """frame: the reference frame the robot plays. robot: (base_quat, body_q) or None. held_box: the box where the
-        reference holds it, floor_box: a fresh report of the box on the floor, both in the pelvis heading frame or
-        None. Returns tau (14,) for arm_tau."""
-        tau = np.zeros(14)
+    def measure(self, robot, frame):
+        """The measured palms and their gap (robot: (base_quat, body_q) or None), and the reference's gap at frame.
+        self.data keeps the measured robot for step's Jacobians."""
         if robot is None:
-            self.ramp, self.on, self.palms, self.gap = 0.0, False, None, None
+            self.palms, self.gap = None, None
+        else:
+            self.palms = self.pose_robot(*robot)
+            self.gap = float(np.linalg.norm(self.palms[0] - self.palms[1]))
+        if frame is None:
+            self.ref_gap = None
+        else:
+            p = self.pose_robot(frame.qpos[3:7], frame.qpos[7:36], self.ref_data)
+            self.ref_gap = float(np.linalg.norm(p[0] - p[1]))
+
+    def step(self, dt, frame, held_box, floor_box):
+        """After measure(). frame: the reference frame the robot plays. held_box: the box where the reference holds
+        it, floor_box: a fresh report of the box on the floor, both in the pelvis heading frame or None. Returns tau
+        (14,) for arm_tau."""
+        tau = np.zeros(14)
+        if self.palms is None:
+            self.ramp, self.on = 0.0, False
             return tau
-        palms = self.palms = self.pose_robot(*robot)
-        self.gap = float(np.linalg.norm(palms[0] - palms[1]))
+        palms = self.palms
         mid = 0.5 * (palms[0] + palms[1])
-        on = frame.held is not None and not self.released
+        on = frame.held is not None and not self.released and not self.cut
         if on and floor_box is not None:
             on = bool(hypot(floor_box[0] - mid[0], floor_box[1] - mid[1]) < GRASP_REACH)
         k = dt / GRASP_RAMP
@@ -619,7 +640,12 @@ class Bridge:
         self.lost = False
         self.drops = 0
         self.syncs = 0
-        self.hands_empty_s = 0.0
+        self.hands_empty_s = 0.0        # s since the palm gap cut the force in this hold
+        if args.empty_gap is None:
+            args.empty_gap = self.default_empty_gap()
+        self.grasp_trace = collections.deque(maxlen=int(GRASP_TRACE_S / CONTROL_DT))
+        self.grasp_events = collections.deque(maxlen=16)   # (monotonic s, 'cut' | 'grip' | 'palms' | 'pose', text)
+        self.last_drop = None           # {'wall', 'by', 'why'}
         self.release = None        # {'F': first re-plan's frame after the drop, 'regrasp'}: frames up to F still hold it
         self.fsm = {'state': None, 'since': time.time(), 'history': collections.deque(maxlen=FSM_HISTORY), 'why': None,
                     'engaged': None}
@@ -1214,7 +1240,7 @@ class Bridge:
             self.move_seen = None
             if self.mode == MODE_POSE and self.grip.update(frame, w.holding_id, meas):
                 self.release_hold(f"grip check: the reference lifted the box but it is still on the floor at "
-                                  f"({meas['pos'][0]:.2f}, {meas['pos'][1]:.2f}) m", True, meas)
+                                  f"({meas['pos'][0]:.2f}, {meas['pos'][1]:.2f}) m", True, meas, by='grip')
             return
         self.grip.update(frame, w.holding_id, None)
         if w.regrasp == b['id'] and w.pick_id is None and meas['pos'][2] - self.args.box_size[2] / 2 < self.args.grip_phys_dz:
@@ -1253,38 +1279,82 @@ class Bridge:
             self.say(f'the box moved {moved:.2f} m to ({pos[0]:.2f}, {pos[1]:.2f}) m: moved in the world too')
 
     # -- the grasp ----------------------------------------------------------------------------------------------
+    def default_empty_gap(self):
+        return round(min(self.args.box_size[:2]) - HANDS_EMPTY_GAP, 3)
+
+    def empty_gap(self):
+        return self.default_empty_gap() if self.args.empty_gap is None else float(self.args.empty_gap)
+
     def send_arm_tau(self, now):
         dt = CONTROL_DT if self.last['tau'] is None else min(0.1, now - self.last['tau'])
         self.last['tau'] = now
-        if self.runner is None or self.mode != MODE_POSE:
-            self.grasp.ramp = 0.0
+        frame = None if self.runner is None else self.frame_now()
+        self.grasp.measure(self.robot.get(), frame)
+        if frame is None or self.mode != MODE_POSE:
+            self.grasp.ramp, self.grasp.on, self.grasp.cut = 0.0, False, False
+            self.hands_empty_s = 0.0
             self.link.arm_tau(np.zeros(14))
+            self.record_grasp(now, frame)
             return
-        frame = self.frame_now()
         held = floor = None
         if frame.ghost_box is not None:
             held = to_heading_frame(frame.ghost_box[0:3], frame.qpos[0:2], pelvis_yaw(frame.qpos))
         meas = self.reports.fresh(self.args.reach_fresh_s)
         if meas is not None and self.slam is not None and meas['pos'][2] - self.args.box_size[2] / 2 < self.args.grip_phys_dz:
             floor = to_heading_frame(meas['pos'], self.slam['root_xy'], float(self.slam['root_yaw']))
-        self.link.arm_tau(self.grasp.step(dt, frame, self.robot.get(), held, floor))
-        self.check_hands(dt, frame)
+        self.check_hands(dt, frame, now)
+        self.link.arm_tau(self.grasp.step(dt, frame, held, floor))
+        self.record_grasp(now, frame)
 
-    def check_hands(self, dt, frame):
+    def check_hands(self, dt, frame, now):
         """lmm-g1-box presses the palms only while the physical box is within reach of them, which its physics knows
         at every step. Here the camera's reports are late and miss a box at the feet or behind the arms, so the palms
-        are measured instead: closer together than the box is wide for HANDS_EMPTY_S, they hold no box."""
+        are measured instead. With the palm force on, palm sites closer together than --empty-gap hold no box between
+        them: the force and the squeezes stop at once, before the hands meet, and stay off for the rest of this hold.
+        The hold is dropped HANDS_EMPTY_S later. The palms open again without the force, so the drop waits for the
+        time alone, not for the gap to stay small."""
         g, w = self.grasp, self.sim.world
-        width = min(self.args.box_size[:2])
-        empty = (frame.held is not None and w.holding_id == frame.held and g.ramp >= 1.0 and g.gap is not None
-                 and g.gap < width - HANDS_EMPTY_GAP)
-        self.hands_empty_s = self.hands_empty_s + dt if empty else 0.0
+        if frame.held is None or w.holding_id != frame.held or g.released:
+            g.cut, self.hands_empty_s = False, 0.0
+            return
+        thr = self.empty_gap()
+        if not g.cut and g.ramp > 0 and g.gap is not None and g.gap < thr:
+            g.cut, g.ramp, self.hands_empty_s = True, 0.0, 0.0
+            text = f'the palms are {g.gap:.3f} m apart, below {thr:.3f} m: no box between them, the palm force is off'
+            self.grasp_events.append((now, 'cut', text))
+            self.say(text)
+            return
+        if not g.cut:
+            return
+        self.hands_empty_s += dt
         if self.hands_empty_s >= HANDS_EMPTY_S:
             self.hands_empty_s = 0.0
-            self.release_hold(f'the palms are {g.gap:.2f} m apart, the box is {width:.2f} m wide: no box between them',
-                              True)
+            self.release_hold(f'the palm gap fell below {thr:.3f} m {HANDS_EMPTY_S:g} s ago: no box between the hands',
+                              True, by='palms')
 
-    def release_hold(self, why, regrasp, meas=None):
+    def record_grasp(self, now, frame):
+        g = self.grasp
+        self.grasp_trace.append((now, g.gap, g.ref_gap, self.empty_gap(), g.ramp if self.mode == MODE_POSE else 0.0,
+                                 g.cut, frame is not None and frame.held is not None))
+
+    def grasp_trace_state(self):
+        """The last GRASP_TRACE_S of palm gaps for UI 1 and UI 3, every other control step, t in s before now."""
+        now = time.monotonic()
+        rows = list(self.grasp_trace)[::-2][::-1]
+        r3 = lambda v: None if v is None else round(float(v), 3)
+        return {'t': [round(r[0] - now, 2) for r in rows], 'gap': [r3(r[1]) for r in rows],
+                'ref': [r3(r[2]) for r in rows], 'thr': [r3(r[3]) for r in rows],
+                'force': [round(float(r[4]), 2) for r in rows], 'cut': [bool(r[5]) for r in rows],
+                'held': [bool(r[6]) for r in rows],
+                'events': [[round(t - now, 2), k, text] for t, k, text in self.grasp_events if now - t <= GRASP_TRACE_S],
+                'empty_gap': self.empty_gap(), 'default': self.default_empty_gap(), 'empty_s': HANDS_EMPTY_S,
+                'width': min(self.args.box_size[:2]), 'span_s': GRASP_TRACE_S, 'last_drop': self.last_drop_state()}
+
+    def last_drop_state(self):
+        d = self.last_drop
+        return None if d is None else {'by': d['by'], 'why': d['why'], 'ago_s': round(time.time() - d['wall'], 1)}
+
+    def release_hold(self, why, regrasp, meas=None, by='pose'):
         """The box left the hands: the world drops its hold and the palm force stops at once. A report of the box on
         the floor (meas, else a fresh one) puts it there, and with regrasp the controller picks it up again (the grip
         check of the page). Without one it is put on the floor under the palms, and with regrasp the pick waits for a
@@ -1303,6 +1373,8 @@ class Bridge:
         if not self.sim.drop(b['id'], pos, yaw):
             return False
         self.drops += 1
+        self.last_drop = {'wall': time.time(), 'by': by, 'why': why}
+        self.grasp_events.append((time.monotonic(), by, why))
         # A place target is for a held box (set_place needs one). The page's grip check comes during the rise, before
         # any place is asked for. Here the camera sees the box left on the floor some 2 s after the grasp, often after
         # the place was asked for, and the target kept made the controller put down the box it had just failed to lift.
@@ -1312,6 +1384,7 @@ class Bridge:
         # force stays off until the frames of the next re-plan play.
         self.grasp.released = True
         self.grasp.ramp = 0.0
+        self.grasp.cut, self.hands_empty_s = False, 0.0
         self.release = {'F': None, 'regrasp': bool(regrasp)}
         if meas is None or not regrasp:
             w.pick_id = None
@@ -1320,7 +1393,7 @@ class Bridge:
         where = f'({pos[0]:.2f}, {pos[1]:.2f}) m' + ('' if meas is not None else ', under the palms (not seen)')
         then = ('the controller picks it up again' if regrasp and meas is not None
                 else 'the pick waits until the camera sees it on the floor' if regrasp else 'X picks it up again')
-        self.fsm_cause(why)
+        self.fsm_cause(why, by)
         self.say(f'{why}: the hold is dropped, the box is at {where}, {then} ({self.drops} so far)')
         return True
 
@@ -1344,8 +1417,8 @@ class Bridge:
             self.cancel(from_task=True)
 
     # -- the box task's state for UI 3 ----------------------------------------------------------------------------
-    def fsm_cause(self, why):
-        self.fsm['why'] = (time.time(), why)
+    def fsm_cause(self, why, by=None):
+        self.fsm['why'] = (time.time(), why, by)
 
     def fsm_state(self, frame):
         """The task state at the frame the robot plays (FSM_STATES). 'lost': from a drop that picks the box up again
@@ -1367,10 +1440,11 @@ class Bridge:
         s = self.fsm_state(frame)
         if s == f['state']:
             return
-        why = f['why'][1] if f['why'] is not None and now - f['why'][0] < 3.0 else None
+        cause = f['why'] if f['why'] is not None and now - f['why'][0] < 3.0 else None
+        why = None if cause is None else cause[1]
         if why is None and f['state'] == 'lost' and (self.sim.world.pick_id is not None or self.sim.world.holding_id is not None):
             why = 'the frames made after the drop play: the controller picks the box up again where the camera saw it'
-        e, by = frame.tag.get('engaged'), None
+        e, by = frame.tag.get('engaged'), None if cause is None else cause[2]
         if s in ('pick-pre', 'place-pre') and e is not None and e['id'] != f['engaged']:
             f['engaged'], by = e['id'], engage_by(e)
             words = engage_words(e, self.sim.controller.p['reapproachTime'])
@@ -1394,8 +1468,10 @@ class Bridge:
             'grip_ref_dz': GRIP_REF_DZ,
             'force_on': bool(g.on), 'ramp': round(g.ramp, 2), 'released': bool(g.released),
             'gap': None if g.gap is None else round(g.gap, 3), 'width': min(self.args.box_size[:2]),
-            'gap_min': round(min(self.args.box_size[:2]) - HANDS_EMPTY_GAP, 3),
+            'ref_gap': None if g.ref_gap is None else round(g.ref_gap, 3),
+            'gap_min': round(self.empty_gap(), 3), 'cut': bool(g.cut),
             'empty_s': round(self.hands_empty_s, 2), 'empty_need': HANDS_EMPTY_S,
+            'last_drop': self.last_drop_state(),
             'grip_count': self.grip.count, 'grip_need': self.grip.need, 'grip_dz': self.args.grip_phys_dz,
             'report': None if meas is None else {
                 'track': self.reports.track, 'age_s': round(age, 2), 'dz': round(float(meas['pos'][2]) - rest, 3),
@@ -1498,7 +1574,7 @@ class Bridge:
             'stick': self.move_stick()[:2].tolist(), 'max_speed': self.max_speed, 'route': self.route_follow.state(),
             'seeds': None if r is None else r.seeds, 'held_back': None if r is None else r.held_back,
             'kept_out': None if r is None else r.kept_out,
-            'phase': self.phase, 'task': task, 'match': match,
+            'phase': self.phase, 'task': task, 'match': match, 'grasp_trace': self.grasp_trace_state(),
             'db_port': None if self.db_page is None else self.db_page.port,
             'box_route': None if self.box_route is None else self.box_route.state(),
             'fsm': None if cur is None or self.fsm['state'] is None else {
@@ -1761,6 +1837,11 @@ def main():
     ap.add_argument('--wrist-kp', type=float, default=WRIST_YAW_KP,
                     help="the node's wrist yaw kp, which turns --wrist-squeeze into an arm_tau torque (20 with the lab's "
                          "--debug-arm-pd-gains)")
+    ap.add_argument('--empty-gap', type=float, default=None,
+                    help='m between the measured palm sites (the palm centres, 5.3 cm inside each hand): closer than '
+                         'this while the palm force holds the box, the force and the squeezes stop at once, and the hold '
+                         f'is dropped {HANDS_EMPTY_S:g} s later (default: the box\'s width minus {HANDS_EMPTY_GAP:g} m, '
+                         '0.255). Set live from the Palm gap card of UI 1 and UI 3')
     g = ap.add_argument_group("lmm-g1-box's settings", "the page's Play panel (UI 3's Settings tab), each with its default")
     g.add_argument('--palm-target', choices=('box', 'mid'), default='box',
                    help='the palm force pulls toward the box centre or toward each other (the midpoint of the palms)')
