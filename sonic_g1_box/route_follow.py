@@ -1,11 +1,16 @@
 """UI 1's desired trajectory, walked with T. A copy of the loco driver's RouteFollow (motionmatching-g1-loco
-sonic_g1_loco/mm_driver.py, PMM a736477) and of the WaypointFollower it steers with (emm/config.py), kept the same so
-the two windows can be merged."""
+sonic_g1_loco/mm_driver.py, main 9fbd029: no SLAM pose, the robot stands) and of the WaypointFollower it steers with
+(emm/config.py), kept the same so the two windows can be merged."""
 import json
 
 import numpy as np
 
 ROUTE_NAMES = ('halab', 'halab_gap')          # the map server's named routes (its live/route.py)
+
+
+def moving(sticks):
+    """Held keys take over from the trajectory only when they move or face (Shift alone does not)."""
+    return any(np.linalg.norm(v) > 1e-6 for v in sticks)
 
 
 def parse_points(spec):
@@ -52,7 +57,9 @@ class RouteFollow:
     server with a named route, points or a .json and switches its Drive flag on. Without a map server the points are
     followed locally. The robot's map pose is judged, not the reference's. On a one-way route a waypoint also counts
     as passed once the robot is past its plane (the line through it across the segment that leads to it), and at the
-    last one the robot stands and Drive goes off (the disc alone made the robot circle a 0.3 m goal)."""
+    last one the robot stands and Drive goes off (the disc alone made the robot circle a 0.3 m goal). Without a SLAM
+    pose the robot stands until it is back (paused); the bridge's drive_sticks runs the follower also while keys take
+    over, so its waypoint progress follows the robot."""
 
     def __init__(self, br, tour, speed, tag='[box]'):
         self.br, self.speed, self.tag = br, speed, tag
@@ -62,13 +69,15 @@ class RouteFollow:
         self.laps = 0
         self.done = False
         self.t_poll = 0.0
+        self.local = False                # --tour followed without a map server: no SLAM, the reference's own xy
+        self.paused = False               # Drive on but no SLAM pose: the robot stands until the pose is back
         if tour and tour != 'server':
             if br.map.request({'op': 'command', 'cmd': {'op': 'set_route', 'spec': tour, 'drive': True}}) is None:
                 if tour in ROUTE_NAMES:
                     raise SystemExit(f'{tag} no map server: the named route {tour!r} lives there')
                 print(f'{tag} no map server: following the local route', flush=True)
                 self._set(parse_points(tour), True)
-                self.drive = True
+                self.drive = self.local = True
 
     def _set(self, points, loop, reach=0.6):
         f = self.follower
@@ -78,7 +87,16 @@ class RouteFollow:
         self.done = False
 
     def robot_xy(self):
-        return self.br.robot_xy()
+        """The robot's map xy, or None without a SLAM pose (the bridge's slam: none, or older than 0.5 s). Only the
+        local route (no map server, so no SLAM) walks on the reference's xy. Before 2026-11-09 the reference's xy
+        stood in for a lost pose and Drive walked on blind while the reference drifted off the robot."""
+        return self.br.robot_xy() if self.br.slam is not None or self.local else None
+
+    def _pause(self, on):
+        if on != self.paused:
+            self.paused = on
+            self.br.say('trajectory paused: no SLAM pose, the robot stands (the keys still drive it)' if on
+                        else 'trajectory resumed: the SLAM pose is back')
 
     def poll(self, now):
         if now - self.t_poll < 0.5:
@@ -104,10 +122,16 @@ class RouteFollow:
         self.br.map.request({'op': 'command', 'cmd': {'op': 'set_route', 'drive': on}})
 
     def stick(self, pos_xy, max_speed):
-        """(left, right) for the controller, or None: nothing to follow, Drive off, or the end of a one-way route."""
+        """(left, right) for the controller, or None: nothing to follow, Drive off, the end of a one-way route, or
+        pos_xy None (no SLAM pose: paused)."""
         f = self.follower
         if f is None or not self.drive:
+            self.paused = False
             return None
+        if pos_xy is None:
+            self._pause(True)
+            return None
+        self._pause(False)
         p = np.asarray(pos_xy, float)[:2]
         i, n = f.idx, len(f.wp)
         if not f.loop and not f.done and n > 1:
@@ -134,7 +158,7 @@ class RouteFollow:
 
     def state(self):
         return {'idx': self.idx, 'version': self.version, 'laps': self.laps,
-                'driving': self.drive and self.follower is not None, 'done': self.done}
+                'driving': self.drive and self.follower is not None, 'done': self.done, 'paused': self.paused}
 
     def text(self, auto):
         """The window's trajectory line."""
@@ -145,6 +169,9 @@ class RouteFollow:
             return 'done: standing at its end (T, or Drive in UI 1, walks it again from waypoint 1)'
         if not self.drive:
             return f'off: {len(f.wp)} waypoints (T, or Drive in UI 1, walks them)'
-        d = float(np.linalg.norm(f.wp[f.idx] - self.robot_xy()))
+        xy = self.robot_xy()
+        if xy is None:
+            return f'paused at waypoint {f.idx + 1}/{len(f.wp)}: no SLAM pose, standing (the keys still drive)'
+        d = float(np.linalg.norm(f.wp[f.idx] - xy))
         return (f'to waypoint {f.idx + 1}/{len(f.wp)}, {d:.2f} m away, at {self.speed:.2f} m/s'
                 + ('' if auto else '  (the keys override it)'))

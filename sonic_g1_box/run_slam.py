@@ -86,7 +86,9 @@ reported nearest the robot, again: the next one), a left click on a reported box
 B (put it down ahead), C (cancel), V (the reference's path ahead) and L (the legend). A click on the floor is the
 page's: the held box is put down there, with empty hands the robot walks there. UI 3's 3-D view takes the same clicks
 and drags the put-down marker. A pick or a place goes before the trajectory, and a key held takes over from both, as
-on lmm-g1-box's page. The database page (db_page.py, web/, --db-port) shows the controller's state, the clip the
+on lmm-g1-box's page (Shift alone does not). As in the loco driver (2026-11-09), the trajectory keeps its waypoint
+progress while a key or a clicked point takes over, and stands the robot while there is no SLAM pose (UI 1:
+paused). The database page (db_page.py, web/, --db-port) shows the controller's state, the clip the
 robot plays and the last matches, above the page's own database page.
 
 Terminal keys (type the letter, then Enter):
@@ -143,7 +145,7 @@ from mm_g1.mathq import hypot, qyaw
 from mm_g1.runner import (CONTROL_DT, GRIP_REF_DZ, HOLDS, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box,
                           to_present)
 from mm_g1.sim import Sim
-from route_follow import ROUTE_NAMES, RouteFollow
+from route_follow import ROUTE_NAMES, RouteFollow, moving
 
 STATE_TOPIC = '/mm_driver/state'
 REF_TOPIC = '/mm_driver/ref'      # the reference's whole body (and the box it holds) at the frame the robot plays: UI 3
@@ -600,6 +602,8 @@ class BoxRoute:
                 self.after_pick()
             elif not rf.drive:
                 self.text = 'carrying: Drive is off (T, or Drive in UI 1, walks on)'
+            elif rf.paused:
+                self.text = 'carrying: paused, no SLAM pose (the robot stands until it is back)'
         elif self.phase == 'place':
             if self.regrasp():
                 return self.go('to_box', 'the box left the hands: picking it up again')
@@ -865,20 +869,23 @@ class Bridge:
 
     # -- UI 3 -------------------------------------------------------------------------------------------------
     def drive_sticks(self, now, op, local=None):
-        """The sticks of one loop step: the window's held keys (local: (left, right)) go first, then UI 3's, then UI 1's
-        trajectory while Drive is on and no pick or place is asked for. True when the trajectory steers."""
+        """The sticks of one loop step: the window's held keys (local: (left, right)) go first, then UI 3's (Shift alone
+        does not count), then a clicked point, then UI 1's trajectory while Drive is on and no pick or place is asked
+        for. The trajectory's follower runs also while keys or a clicked point take over, so its waypoint progress
+        follows the robot: released, the robot walks on to the next waypoint, not back to one it was taken past (as
+        the loco driver's drive_sticks). Without a SLAM pose the trajectory stands the robot (RouteFollow.robot_xy).
+        True when the trajectory steers."""
         args, rf = self.args, self.route_follow
+        left, right = np.zeros(3), np.zeros(3)
+        self.keys_from = None
         keys = None if op is None else op.keys()
-        if local is not None and (np.linalg.norm(local[0]) > 1e-6 or np.linalg.norm(local[1]) > 1e-6):
-            left, right = local
-            self.keys_from = 'the window'
+        if local is not None and moving(local):
+            (left, right), self.keys_from = local, 'the window'
         elif keys is not None:
             az = math.degrees(self.heading()) if args.frame == 'heading' else op.cam_az_deg
-            left, right = OP.keys_stick(keys, 'left', args.run_scale, az), OP.keys_stick(keys, 'right', 1.0, az)
-            self.keys_from = 'UI 3'
-        else:
-            left, right = np.zeros(3), np.zeros(3)
-            self.keys_from = None
+            ui3 = OP.keys_stick(keys, 'left', args.run_scale, az), OP.keys_stick(keys, 'right', 1.0, az)
+            if moving(ui3):
+                (left, right), self.keys_from = ui3, 'UI 3'
         w = self.sim.world
         if self.keys_from is not None:
             w.walk_to = None
@@ -887,11 +894,11 @@ class Bridge:
             if w.walk_to is not None:
                 self.keys_from = 'the clicked point'
         rf.poll(now)
-        auto = None
-        if self.mode in (MODE_PLANNER, MODE_POSE) and not self.has_target() and self.keys_from is None:
-            auto = rf.stick(rf.robot_xy(), self.max_speed)
-            if auto is not None:
-                self.keys_from = 'the desired trajectory'
+        route = (rf.stick(rf.robot_xy(), self.max_speed)
+                 if self.mode in (MODE_PLANNER, MODE_POSE) and not self.has_target() else None)
+        auto = route if self.keys_from is None else None
+        if auto is not None:
+            self.keys_from = 'the desired trajectory'
         self.stick = (left, right) if auto is None else auto
         return auto is not None
 
