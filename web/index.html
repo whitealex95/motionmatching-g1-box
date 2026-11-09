@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Box Bridge Databases</title>
+  <title>Box Driver Databases</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='5' width='12' height='10' rx='1' fill='%23c99a62'/%3E%3Crect x='7' y='5' width='2' height='10' fill='%23a87a45'/%3E%3C/svg%3E">
-  <meta name="description" content="The box bridge's controller states, the clip the robot plays now and the last matches, and every motion of its databases played on the G1.">
+  <meta name="description" content="The box driver's controller states, the clip the robot plays now and the last matches, and every motion of its databases played on the G1.">
   <link rel="stylesheet" href="css/style.css">
   <link rel="stylesheet" href="css/pick.css">
   <link rel="stylesheet" href="css/motions.css">
@@ -18,8 +18,8 @@
   <header class="top">
     <div class="wrap">
       <p class="back small" id="back-row" hidden><a id="back" href="./">UI 3</a></p>
-      <h1>The box bridge's databases</h1>
-      <p class="lede">The databases of the box bridge (<code>sonic_g1_box/run_slam.py</code>), the data of lmm-g1-box's default variant. The first part shows the controller now: its state, the clip the robot plays and how the last searches matched. Below it is lmm-g1-box's database page. Each data variant has an Animation Database, the frames of its clips, and two Matching Databases that Motion Matching searches: Locomotion (walking empty-handed or carrying) and Box (picks and places). A Matching Database is made of ranges, runs of consecutive frames of one clip, and the search can start playing at any frame of a range. This page plays one range, or one whole clip, at a time, exactly as stored, with the root moved by the clip's own root motion from the origin.</p>
+      <h1>The box driver's databases</h1>
+      <p class="lede">The databases of the box driver (<code>sonic_g1_box/mm_driver.py</code>), the data of lmm-g1-box's default variant. The first part shows the controller now: its state, the clip the robot plays and how the last searches matched. Below it is lmm-g1-box's database page. Each data variant has an Animation Database, the frames of its clips, and two Matching Databases that Motion Matching searches: Locomotion (walking empty-handed or carrying) and Box (picks and places). A Matching Database is made of ranges, runs of consecutive frames of one clip, and the search can start playing at any frame of a range. This page plays one range, or one whole clip, at a time, exactly as stored, with the root moved by the clip's own root motion from the origin.</p>
     </div>
   </header>
 

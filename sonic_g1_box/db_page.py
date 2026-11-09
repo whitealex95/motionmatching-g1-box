@@ -1,5 +1,5 @@
-"""The bridge's database page (web/): lmm-g1-box's motion database page with the bridge's controller states, the clip
-the robot plays now and the last matches above it. GET /api/live is the bridge's `live` dict, which the bridge
+"""The driver's database page (web/): lmm-g1-box's motion database page with the driver's controller states, the clip
+the robot plays now and the last matches above it. GET /api/live is the driver's `live` dict, which the driver
 replaces at every state publish. The page's scripts ask for the data at lmm-g1-box's paths, and ROUTES maps them
 onto data/ (the EMM takes' folder is named in config.json, which is a byte copy)."""
 import http.server

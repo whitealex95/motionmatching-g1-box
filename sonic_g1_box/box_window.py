@@ -1,4 +1,4 @@
-"""UI 2: run_slam.py's window. The loco driver's window (motionmatching-g1-loco sonic_g1_loco/mm_driver.py
+"""UI 2: mm_driver.py's window. The loco driver's window (motionmatching-g1-loco sonic_g1_loco/mm_driver.py
 run_window: its keys, the measured robot at its SLAM pelvis, the reference it plays, the map around the robot, the
 lab's furniture, the command, UI 1's trajectory) with the box task on top: the controller's box, the map server's
 reports, the box keys, the box rows of the status panel and a legend."""
@@ -15,8 +15,8 @@ from deploy_link import MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED
 from mm_g1.mathq import qfrom_yaw, qmul, qyaw
 
 SCENE_XML = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'assets', 'unitree_g1', 'scene.xml')
-DRAW_S = 1.0 / 60               # s between drawn frames: the bridge ticks every few ms in between
-POSE_POLL_S = 1.0 / 30          # s between the window's pose requests, for a smooth robot (the bridge asks at 10 Hz)
+DRAW_S = 1.0 / 60               # s between drawn frames: the driver ticks every few ms in between
+POSE_POLL_S = 1.0 / 30          # s between the window's pose requests, for a smooth robot (the driver asks at 10 Hz)
 BOX_RGBA = np.array([0.82, 0.52, 0.22, 1.0], np.float32)    # the box's brown, UI 1's too
 HELD_RGBA = np.array([0.30, 0.67, 0.97, 1.0], np.float32)     # lmm-g1-box's kinematic box blue, opaque
 PLACE_RGBA = np.array([1.0, 0.85, 0.2, 0.45], np.float32)
@@ -126,13 +126,13 @@ def run_window(br, args):
         def __init__(self):
             if not glfw.init():
                 raise RuntimeError('glfw.init() failed: the window needs a display (--terminal runs without one)')
-            self.window = glfw.create_window(1400, 900, 'G1 box bridge (SLAM) -- ] start, P mode, X pick up, B put down, '
+            self.window = glfw.create_window(1400, 900, 'G1 box driver (SLAM) -- ] start, P mode, X pick up, B put down, '
                                              'O stop', None, None)
             if not self.window:
                 glfw.terminate()
                 raise RuntimeError('no GLFW window (no display?): --terminal runs without one')
             glfw.make_context_current(self.window)
-            glfw.swap_interval(0)               # the loop paces itself: a blocking swap would slow the bridge's ticks
+            glfw.swap_interval(0)               # the loop paces itself: a blocking swap would slow the driver's ticks
             self.cam, self.opt = mujoco.MjvCamera(), mujoco.MjvOption()
             self.scene = mujoco.MjvScene(model, maxgeom=10000)
             self.ctx = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_100)

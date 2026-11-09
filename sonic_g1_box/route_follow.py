@@ -58,7 +58,7 @@ class RouteFollow:
     followed locally. The robot's map pose is judged, not the reference's. On a one-way route a waypoint also counts
     as passed once the robot is past its plane (the line through it across the segment that leads to it), and at the
     last one the robot stands and Drive goes off (the disc alone made the robot circle a 0.3 m goal). Without a SLAM
-    pose the robot stands until it is back (paused); the bridge's drive_sticks runs the follower also while keys take
+    pose the robot stands until it is back (paused); the driver's drive_sticks runs the follower also while keys take
     over, so its waypoint progress follows the robot."""
 
     def __init__(self, br, tour, speed, tag='[box]'):
@@ -70,6 +70,7 @@ class RouteFollow:
         self.done = False
         self.t_poll = 0.0
         self.local = False                # --tour followed without a map server: no SLAM, the reference's own xy
+        self.route_speed = None           # the trajectory's own m/s (the map server's route `speed`), None: self.speed
         self.paused = False               # Drive on but no SLAM pose: the robot stands until the pose is back
         if tour and tour != 'server':
             if br.map.request({'op': 'command', 'cmd': {'op': 'set_route', 'spec': tour, 'drive': True}}) is None:
@@ -87,7 +88,7 @@ class RouteFollow:
         self.done = False
 
     def robot_xy(self):
-        """The robot's map xy, or None without a SLAM pose (the bridge's slam: none, or older than 0.5 s). Only the
+        """The robot's map xy, or None without a SLAM pose (the driver's slam: none, or older than 0.5 s). Only the
         local route (no map server, so no SLAM) walks on the reference's xy. Before 2026-11-09 the reference's xy
         stood in for a lost pose and Drive walked on blind while the reference drifted off the robot."""
         return self.br.robot_xy() if self.br.slam is not None or self.local else None
@@ -105,6 +106,10 @@ class RouteFollow:
         r = self.br.map.request({'op': 'route'})
         if r is None:
             return
+        try:
+            self.route_speed = float(r['speed']) if r.get('speed') else None
+        except (TypeError, ValueError):
+            self.route_speed = None
         drive, f = bool(r['drive']), self.follower
         if drive and not self.drive and f is not None and f.done:    # Drive after the end: again from the first waypoint
             f.idx, f.done, self.done = 0, False, False
@@ -142,7 +147,7 @@ class RouteFollow:
                 else:
                     f.idx += 1
         before = f.idx
-        sl, sr = f.stick(p, self.speed / max_speed)
+        sl, sr = f.stick(p, self.walk_speed / max_speed)
         if f.idx < before:
             self.laps += 1
             print(f'{self.tag} lap {self.laps} done', flush=True)
@@ -153,12 +158,20 @@ class RouteFollow:
         return None if sr is None else (sl, sr)
 
     @property
+    def walk_speed(self):
+        """m/s on the trajectory: its own (UI 1's Desired trajectory card), else --tour-speed. Above the walk
+        (W alone) the stick runs as Shift does: the query's future points lie farther out."""
+        return self.route_speed if self.route_speed else self.speed
+
+    @property
     def idx(self):
         return None if self.follower is None else int(self.follower.idx)
 
     def state(self):
         return {'idx': self.idx, 'version': self.version, 'laps': self.laps,
-                'driving': self.drive and self.follower is not None, 'done': self.done, 'paused': self.paused}
+                'driving': self.drive and self.follower is not None, 'done': self.done, 'paused': self.paused,
+                'speed': self.walk_speed, 'speed_from': 'trajectory' if self.route_speed else 'driver',
+                'default_speed': self.speed, 'walk_speed': round(self.br.max_speed, 3), 'run_speed': round(self.br.max_speed * self.br.args.run_scale, 3)}
 
     def text(self, auto):
         """The window's trajectory line."""
@@ -173,5 +186,5 @@ class RouteFollow:
         if xy is None:
             return f'paused at waypoint {f.idx + 1}/{len(f.wp)}: no SLAM pose, standing (the keys still drive)'
         d = float(np.linalg.norm(f.wp[f.idx] - xy))
-        return (f'to waypoint {f.idx + 1}/{len(f.wp)}, {d:.2f} m away, at {self.speed:.2f} m/s'
+        return (f'to waypoint {f.idx + 1}/{len(f.wp)}, {d:.2f} m away, at {self.walk_speed:.2f} m/s'
                 + ('' if auto else '  (the keys override it)'))

@@ -1,6 +1,6 @@
 # Motion data
 
-The databases that `mm_g1` (the box task's controller, `sonic_g1_box/run_slam.py`) reads. They are copies of the files that
+The databases that `mm_g1` (the box task's controller, `sonic_g1_box/mm_driver.py`) reads. They are copies of the files that
 lmm-g1-box's page loads for the variant `holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60` (`sbplace`) with
 the Locomotion Matching Database `emmboth`, the page's default. Nothing here is regenerated: the files are copied
 byte for byte from lmm-g1-box commit `a41bd3f` (2026-11-04), so this repository runs without lmm-g1-box. They are

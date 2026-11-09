@@ -1,5 +1,5 @@
-// The box bridge's database page (web/index.html): lmm-g1-box's motions.js (v3.0) with one data variant and, above it,
-// the bridge's controller now (GET /api/live of sonic_g1_box/db_page.py): the controller states, the clip the robot
+// The box driver's database page (web/index.html): lmm-g1-box's motions.js (v3.0) with one data variant and, above it,
+// the driver's controller now (GET /api/live of sonic_g1_box/db_page.py): the controller states, the clip the robot
 // plays and the last matches.
 
 import * as THREE from 'three';
@@ -50,7 +50,7 @@ async function getLive() {
   } catch { return null; }
 }
 const live0 = await getLive();
-const bridgeLoco = live0 && live0.loco ? live0.loco : 'emmboth';
+const driverLoco = live0 && live0.loco ? live0.loco : 'emmboth';
 
 const scene = new Scene($('c'));
 const cfg = await (await fetch(`${VARIANTS[VARIANT].data}/config.json`)).json();
@@ -71,11 +71,11 @@ const mm = new MMBackend(cfg, await loadMMData(VARIANTS[VARIANT].data, cfg, VARI
 const L = cfg.pose_layout;
 if (!cfg.emm_loco) $('loco').disabled = true;
 const panel = new StatePanel($('clipview'), { cfg, backend: mm, bodies: scene.meta.bodies });
-await setLoco(bridgeLoco, false);
-// The live panel's clips are those of the bridge's Locomotion database, whatever the browser below shows.
+await setLoco(driverLoco, false);
+// The live panel's clips are those of the driver's Locomotion database, whatever the browser below shows.
 const livePanel = new StatePanel($('live'), { cfg, backend: mm, bodies: scene.meta.bodies });
-const wantLoco = ['nsm', 'emmboth'].includes(params.get('loco')) ? params.get('loco') : bridgeLoco;
-if (wantLoco !== bridgeLoco) await setLoco(wantLoco, false);
+const wantLoco = ['nsm', 'emmboth'].includes(params.get('loco')) ? params.get('loco') : driverLoco;
+if (wantLoco !== driverLoco) await setLoco(wantLoco, false);
 $('loading').hidden = true;
 
 // ---- the motions of a database
@@ -292,7 +292,7 @@ function setDb(name, sel = 0) {
 function syncUrl() {
   const u = new URLSearchParams();
   if (VARIANT !== DEFAULT_VARIANT) u.set('variant', VARIANT);
-  if (state.loco !== bridgeLoco) u.set('loco', state.loco);
+  if (state.loco !== driverLoco) u.set('loco', state.loco);
   u.set('db', state.db);
   if (state.sel >= 0) u.set('m', String(state.sel + 1));
   if (state.filter) u.set('q', state.filter);
@@ -349,7 +349,7 @@ const m0 = Math.max(0, (+params.get('m') || 1) - 1);
 setDb(state.db, m0);
 window.motions = { state, select, setDb };
 
-// ---- the bridge now
+// ---- the driver now
 
 let mtKind = null, mtChosen = false, liveNow = null;
 for (const b of document.querySelectorAll('.mmw-kinds button')) {
@@ -380,8 +380,8 @@ function renderLive(lv) {
   liveNow = lv;
   const m = lv && lv.ok ? lv.match : null;
   $('now-status').classList.toggle('bad', !lv);
-  $('now-status').textContent = !lv ? 'the bridge does not answer' : !m ? `the bridge: ${MODE_NAME[lv.mode] || lv.mode}, no stream yet` :
-    `the bridge: ${MODE_NAME[lv.mode] || lv.mode}${lv.fsm ? `, task state ${lv.fsm}` : ''}`;
+  $('now-status').textContent = !lv ? 'the driver does not answer' : !m ? `the driver: ${MODE_NAME[lv.mode] || lv.mode}, no stream yet` :
+    `the driver: ${MODE_NAME[lv.mode] || lv.mode}${lv.fsm ? `, task state ${lv.fsm}` : ''}`;
   $('play-now').disabled = !m || m.robot.g === null;
   if (!m) { livePanel.update(null, null); $('now-ahead').textContent = ''; renderMatching(); return; }
   const r = m.robot, c = m.controller;
@@ -395,7 +395,7 @@ function renderLive(lv) {
 $('play-now').addEventListener('click', async () => {
   const g = liveNow && liveNow.match && liveNow.match.robot.g;
   if (g === null || g === undefined) return;
-  if (state.loco !== bridgeLoco) await setLoco(bridgeLoco, false);
+  if (state.loco !== driverLoco) await setLoco(driverLoco, false);
   const i = livePanel.clipOf(g);
   $('filter').value = state.filter = '';
   setDb('clips', i);

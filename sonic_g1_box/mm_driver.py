@@ -17,7 +17,7 @@ physical mode with the SONIC release tracker: the page's defaults since its tag 
 
 What differs from the page, because the robot is measured, not simulated:
   - the stream runs --lookahead 60 frames past each commit (the page: 25). The node plays a frame only once 46
-    frames follow it, and with 25 it played 0.3 to 0.7 s behind the bridge
+    frames follow it, and with 25 it played 0.3 to 0.7 s behind the driver
   - the robot is the SLAM pelvis, compared with the reference frame of the pose's age plus --track-delay 0.1 s
     (SONIC's tracking delay). The page knows the frame the robot tracked
   - a seed turns --yaw-gain of the yaw gap: 1, all of it, as the page, since 2026-11-06. The 0.3 before was set while
@@ -73,10 +73,10 @@ re-plan's outcome (seeded, or the rule that skipped the seed) and the counts are
 Not ported: the tracker choice, the other anchoring modes, the pick and place check, the box mass and the number of
 sides.
 
-    python sonic_g1_box/run_slam.py                        # the window (UI 2, sonic_g1_box/box_window.py)
-    python sonic_g1_box/run_slam.py --terminal             # terminal keys (letter + Enter)
-    python sonic_g1_box/run_slam.py --web                  # no window: UI 3 (http://localhost:8780/ui3)
-    python sonic_g1_box/run_slam.py --headless 240 --auto-start --start-after-anchor
+    python -m sonic_g1_box.mm_driver                        # the window (UI 2, sonic_g1_box/box_window.py)
+    python -m sonic_g1_box.mm_driver --terminal             # terminal keys (letter + Enter)
+    python -m sonic_g1_box.mm_driver --no-window            # no window: UI 3 (http://localhost:8780/ui3)
+    python -m sonic_g1_box.mm_driver --headless 240 --auto-start --start-after-anchor
 
 The window has the loco driver's keys (motionmatching-g1-loco sonic_g1_loco/mm_driver.py): ] start, P planner <->
 POSE, O stop, Enter re-send the mode, W A S D move (along the controller's heading, F: camera-relative), the arrows
@@ -100,8 +100,8 @@ Terminal keys (type the letter, then Enter):
 
 UI 3 (the map server's /ui3 page, motionmatching-g1-deploy live/web/ui3.js) sends the window's keys and the box
 keys through the map server (its `operator` op, operator_link.py) in every mode but headless, and lists the flags:
-LIVE_FLAGS apply at once, RESTART_FLAGS restart the bridge with its own command line and the new values (not in
-POSE). The window's held keys go before UI 3's. `--web` runs without the window.
+LIVE_FLAGS apply at once, RESTART_FLAGS restart the driver with its own command line and the new values (not in
+POSE). The window's held keys go before UI 3's. `--no-window` runs without the window.
 
 UI 1's box task (its Box task card, the map server's `box_task` op): the box to pick up (a reported track), the
 put-down marker and how to carry the box there, and Go. BoxRoute walks it in POSE: the box is taken and picked
@@ -615,7 +615,7 @@ class BoxRoute:
                 self.finish('done', f'done: the box is down at ({x:+.2f}, {y:+.2f}) m')
 
 
-class Bridge:
+class BoxDriver:
     def __init__(self, args):
         self.args = args
         self.sim = Sim.build(loco=args.loco)
@@ -656,7 +656,7 @@ class Bridge:
         self.move_seen = None
         self.stick = (np.zeros(3), np.zeros(3))     # (move, face): the loco driver's left and right sticks
         self.last_face = np.array([1.0, 0.0, 0.0])   # map frame, the robot's heading when the planner starts
-        self.planner_start_yaw = 0.0   # the robot's map yaw when this bridge last switched the node into PLANNER
+        self.planner_start_yaw = 0.0   # the robot's map yaw when this driver last switched the node into PLANNER
         self.last_planner_cmd = None
         self.walking = False
         self.walk_dir = None
@@ -682,8 +682,8 @@ class Bridge:
                     'engaged': None}
         self.phase = 'idle'
         self.trace = open(args.trace, 'w') if args.trace else None
-        self.ui = None                  # 'window' | 'terminal' | 'web' | 'headless'
-        self.flags = None               # OP.Flags: UI 3's list of the bridge's flags
+        self.ui = None                  # 'window' | 'terminal' | 'no-window' | 'headless'
+        self.flags = None               # OP.Flags: UI 3's list of the driver's flags
         self.keys_from = None
         self.box_route = BoxRoute(self)
         self.clips = ClipTable(self.sim.controller.backend, self.sim.controller.torso)
@@ -957,7 +957,7 @@ class Bridge:
 
     def restart(self, changes, close):
         if self.mode == MODE_POSE:
-            return self.say('UI 3: no restart in POSE (the robot tracks this bridge): P back to planner mode first')
+            return self.say('UI 3: no restart in POSE (the robot tracks this driver): P back to planner mode first')
         fl = self.flags
         try:
             vals = {n: fl.value(n, v) for n, v in changes.items() if n in fl.actions}
@@ -1042,7 +1042,7 @@ class Bridge:
 
     def planner_started(self):
         """The planner faces where the robot faces now, also when the node was already in planner mode with
-        another +x (a bridge started again)."""
+        another +x (a driver started again)."""
         p = self.poll_pose()
         yaw = float(p['root_yaw']) if p is not None else self.heading()
         self.planner_start_yaw = yaw
@@ -1055,7 +1055,7 @@ class Bridge:
             if self.runner is not None:
                 self.pose_corr_yaw = self.runner.corr[0]
                 # the node plays the newest chunk from its first frame: without this one, the chunk of the last
-                # replan, which starts up to 9 frames before the bridge's frame
+                # replan, which starts up to 9 frames before the driver's frame
                 newest = self.runner.produced - 1
                 self.send(max(self.runner.base, min(self.cur, newest)), newest)
                 self.published = newest
@@ -1253,8 +1253,8 @@ class Bridge:
 
     def planner_yaw(self):
         """The map yaw of the node's planner frame +x: the robot's heading when the planner started (] or P back
-        from POSE), not map +x, found from g1_debug also by a bridge started again. Without the node's heading
-        state: the robot's yaw when this bridge last switched the node into PLANNER."""
+        from POSE), not map +x, found from g1_debug also by a driver started again. Without the node's heading
+        state: the robot's yaw when this driver last switched the node into PLANNER."""
         if self.slam is not None:
             yaw = self.robot.planner_frame(float(self.slam['root_yaw']), self.slam_at)
             if yaw is not None:
@@ -1760,7 +1760,7 @@ class Bridge:
 # ---------------------------------------------------------------------- modes
 
 def run_headless(args):
-    br = Bridge(args)
+    br = BoxDriver(args)
     br.ui, br.box_route = 'headless', None
     time.sleep(1.0)                                       # PUB slow joiner
     t0 = time.monotonic()
@@ -1843,11 +1843,11 @@ def run_headless(args):
         br.close()
 
 
-def run_web(args, flags):
-    br = Bridge(args)
-    br.ui, br.flags = 'web', flags
+def run_no_window(args, flags):
+    br = BoxDriver(args)
+    br.ui, br.flags = 'no-window', flags
     op = OP.Operator(br.map, 'box')
-    br.say("--web: no window, UI 3 drives this bridge (the map server's /ui3 page, http://localhost:8780/ui3)")
+    br.say("--no-window: no window of its own, UI 3 drives this driver (the map server's /ui3 page, http://localhost:8780/ui3)")
     try:
         while True:
             now = time.monotonic()
@@ -1864,7 +1864,7 @@ def run_web(args, flags):
 
 
 def run_terminal(args, flags):
-    br = Bridge(args)
+    br = BoxDriver(args)
     br.ui, br.flags = 'terminal', flags
     op = OP.Operator(br.map, 'box')
     keys, lock = [], threading.Lock()
@@ -1982,7 +1982,7 @@ def main():
     ap.add_argument('--lookahead', type=int, default=60,
                     help='50 Hz frames made past the commit point. The node plays a frame only once 46 frames follow it '
                          '(its encoder looks 45 ahead), so 46 + the 10-frame replan step + a margin. The page uses 25: '
-                         'its tracker does not wait, and here 25 left the robot 0.3-0.7 s behind the bridge')
+                         'its tracker does not wait, and here 25 left the robot 0.3-0.7 s behind the driver')
     ap.add_argument('--box-size', type=size3, default=[0.335, 0.335, 0.36],
                     help="m, the box the controller avoids and puts down (the page's box of the variant)")
     ap.add_argument('--palm-force', type=float, default=40.0, help='N per palm toward the box (the page: 40)')
@@ -2117,20 +2117,20 @@ def main():
     ap.add_argument('--carry-s', type=float, default=0.0, help='headless: s walking forward with the box before the place')
     ap.add_argument('--auto-stop', action='store_true')
     ap.add_argument('--terminal', action='store_true', help='terminal keys (letter + Enter) instead of the window')
-    ap.add_argument('--web', action='store_true',
-                    help="no window: UI 3 (the map server's /ui3 page) sends the keys, the box keys and the mode commands")
+    ap.add_argument('--no-window', action='store_true',
+                    help="no window of its own: UI 3 (the map server's /ui3 page, up with the map server) sends the keys, the box keys and the mode commands")
     ap.add_argument('--smoke-frames', type=int, default=None, help='(testing) close the window after N drawn frames')
     args = ap.parse_args()
     flags = OP.Flags(ap, args, LIVE_FLAGS, RESTART_FLAGS)
     if args.headless is not None:
         run_headless(args)
-    elif args.web:
-        run_web(args, flags)
+    elif args.no_window:
+        run_no_window(args, flags)
     elif args.terminal:
         run_terminal(args, flags)
     else:
         from box_window import run_window
-        br = Bridge(args)
+        br = BoxDriver(args)
         br.ui, br.flags = 'window', flags
         run_window(br, args)
 

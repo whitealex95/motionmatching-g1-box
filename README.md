@@ -8,7 +8,7 @@ the variant `holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60`, the Play
 (`data/README.md` lists each file, its SHA-256 and its terms). `v3.0` (`6cfb32d`) changes only the page's defaults
 and docs after `1721681`: the controller and the data are the same. Nothing here reads lmm-g1-box.
 
-`sonic_g1_box/run_slam.py` streams the reference to the SONIC node of
+`sonic_g1_box/mm_driver.py` streams the reference to the SONIC node of
 [motionmatching-g1-deploy](https://github.com/whitealex95/motionmatching-g1-deploy), on the real G1 or in that repo's
 MuJoCo sim. The robot's pose comes from the map server (the Mid-360 with FAST-LIO2) and the box from `live.sam3box`
 (SAM3 on the G1's D435i). The sessions are in that repo's `README_BOX_SIM.md` and `README_BOX_REAL.md`.
@@ -23,32 +23,32 @@ MuJoCo sim. The robot's pose comes from the map server (the Mid-360 with FAST-LI
 | `mm_g1/sim.py` | `sim.js`, `scenario.js` | the boxes, the pick and place targets, the grasp and the release, the scripted sequence |
 | `mm_g1/mathq.py` | `math.js` | vectors, quaternions, springs |
 | `mm_g1/runner.py` | `phys/runner.js` | the stream for a tracked robot: 60 Hz poses resampled to 50 Hz frames, a re-plan every 10 frames with snap-xyyaw, no seed while bent down, the grip check, the box sync |
-| `sonic_g1_box/run_slam.py` | `phys/engine.js` (`graspStep`), `app.js` | the bridge: the SLAM pose, the box reports, the palm force, the keys, the headless sequence |
-| `sonic_g1_box/box_window.py` | `app.js` (`bindUI`, the clicks) | the bridge's window (UI 2): the loco driver's window and keys, plus the box task |
+| `sonic_g1_box/mm_driver.py` | `phys/engine.js` (`graspStep`), `app.js` | the driver: the SLAM pose, the box reports, the palm force, the keys, the headless sequence |
+| `sonic_g1_box/box_window.py` | `app.js` (`bindUI`, the clicks) | the driver's window (UI 2): the loco driver's window and keys, plus the box task |
 | `sonic_g1_box/db_page.py`, `web/` | `motions.html`, `motions.js`, `states.js` | the database page (http 8790): the controller's state, the clip the robot plays and the last matches, live, above the page's database page. `web/` holds byte copies of the page's modules and three.js, and `db.js`, `index.html`, `db.css` and `variants.js` made from the page's |
 | `sonic_g1_box/route_follow.py` | | UI 1's trajectory, walked with `T`: a copy of the loco driver's `RouteFollow` |
-| `sonic_g1_box/operator_link.py` | | UI 3's link through the map server: its keys and commands, the bridge's flags, the restart. The same file as the loco driver's |
+| `sonic_g1_box/operator_link.py` | | UI 3's link through the map server: its keys and commands, the driver's flags, the restart. The same file as the loco driver's |
 | `sonic_g1_box/deploy_link.py` | | the node's ZMQ topics and the desktop's JSON bus, mirrored from motionmatching-g1-deploy |
 | `tools/page_parity/` | | the parity check against the page's own modules, run in node |
 | `assets/unitree_g1/` | | the G1 model the window draws |
 
 ## Install
 
-The bridge runs in motionmatching-g1-deploy's conda env `mm-g1-deploy` (that repo's `INSTALL.md`). On its own it
+The driver runs in motionmatching-g1-deploy's conda env `mm-g1-deploy` (that repo's `INSTALL.md`). On its own it
 needs Python 3.10 or newer and `pip install -r requirements.txt`. The window needs an OpenGL display (`libglfw3`).
 The parity check needs node and a checkout of lmm-g1-box.
 
 ## Running it
 
 In motionmatching-g1-deploy, the box sessions of `README_BOX_SIM.md` and `README_BOX_REAL.md` (*The session*) run
-`python sonic_g1_box/run_slam.py` from this repo's root: its window (UI 2) by default, `--terminal` for letter +
-Enter keys, `--web` for no window (UI 3, the map server's `/ui3` page, drives it, and takes part in the other modes
+`python -m sonic_g1_box.mm_driver` from this repo's root: its window (UI 2) by default, `--terminal` for letter +
+Enter keys, `--no-window` for none (UI 3, the map server's `/ui3` page, which runs anyway, drives it, and takes part in the other modes
 too). UI 1's *Box task* card (the map server's `box_task` op) sets a pick, a carry and a put-down that `BoxRoute` in
-`run_slam.py` walks in POSE. The window has the keys of motionmatching-g1-loco's MM driver window (`]`, `P`, `O`, `Enter`, `W A S D`,
+`mm_driver.py` walks in POSE. The window has the keys of motionmatching-g1-loco's MM driver window (`]`, `P`, `O`, `Enter`, `W A S D`,
 the arrows, `Shift`, `F`, `T`, `Esc`), and the box task adds `X`, `B`, `C`, `V`, `L` and the page's clicks: a click on
 a reported box picks it up, a click on the floor puts the held box down there, and with empty hands the robot walks
 there (full stick down to 1 m, done within 0.25 m, a key takes over). UI 3's 3-D view takes the same clicks, and its
-put-down marker can be dragged. The bridge also serves the database page, `http://localhost:8790/` (`--db-port`, 0
+put-down marker can be dragged. The driver also serves the database page, `http://localhost:8790/` (`--db-port`, 0
 for none, not headless): the controller's state on the page's state chart, the clip the robot plays on its graph
 (*Play it below* plays it), each query's feature weights and the cost share of its last match, and below them the
 page's list of every motion of the databases.
@@ -60,15 +60,15 @@ tools/headless_box_run.sh $PWD/runs/box_pick --secs 300
 tools/headless_box_run.sh $PWD/runs/box_shift --secs 300 --box-shift 0.5
 ```
 
-The box must be the variant's, 0.338 x 0.335 x 0.36 m. `README_BOX_SIM.md` (*The bridge*, *Results*) and
-`README_BOX_REAL.md` (*Keys in the box bridge window*, *Bridge options*) have the keys, the results and what
+The box must be the variant's, 0.338 x 0.335 x 0.36 m. `README_BOX_SIM.md` (*The driver*, *Results*) and
+`README_BOX_REAL.md` (*Keys in the box driver window*, *Driver options*) have the keys, the results and what
 each default below is for.
 
 ## The page's settings
 
-The settings of the page's Play panel are flags of `run_slam.py`, each with the page's default. Where the page takes
-the default from the data variant's `config.json`, the bridge takes the same value. UI 3's *Settings* tab (the deploy
-repo, `README_BOX_SIM.md`, *UI 3*) sets them while the bridge runs, and a restart from UI 3 keeps them.
+The settings of the page's Play panel are flags of `mm_driver.py`, each with the page's default. Where the page takes
+the default from the data variant's `config.json`, the driver takes the same value. UI 3's *Settings* tab (the deploy
+repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restart from UI 3 keeps them.
 
 | page setting | flag | default |
 |---|---|---|
@@ -86,7 +86,7 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the bridge runs, and a restar
 The seed's own rules, none of them the page's, are switches on the same *Anchoring* card of UI 3, in the order a
 re-plan checks them, each on by default. UI 3 highlights the page's two (`--hold`, `--yaw-gain`), has a button that
 puts all of them back to their defaults, and shows each re-plan's outcome (snapped, or the rule that skipped the
-snap) and how often each rule skipped one (`seed_rules` in the bridge's state).
+snap) and how often each rule skipped one (`seed_rules` in the driver's state).
 
 | rule | flag (off) | default |
 |---|---|---|
@@ -106,7 +106,7 @@ and the number of sides.
 ## What differs from the page
 
 The page simulates the robot. Here the robot is measured, a little late and with some error, and these differ
-(each a default of `run_slam.py`):
+(each a default of `mm_driver.py`):
 
 - `--lookahead 60` (the page: 25). The node plays a streamed frame only once 46 frames follow it.
 - The seed compares the SLAM pelvis with the reference frame of the pose's own time plus `--track-delay 0.1` s (the
@@ -132,12 +132,12 @@ The page simulates the robot. Here the robot is measured, a little late and with
   for. Here the D435i sees the box left on the floor some 2 s after the grasp, and a place asked for meanwhile made
   the controller put down the box right after its next lift, held or not.
 - The page presses the palms only while the physical box is within 0.45 m of their midpoint (`graspStep`) and checks
-  the grip on the physics' box at every step (`checkGrip`). The bridge has no such box, so the measured palms take
+  the grip on the physics' box at every step (`checkGrip`). The driver has no such box, so the measured palms take
   its place: palm sites closer together than `--empty-gap` (0.3 m, they sit 5.3 cm
   inside each hand, so the box held is about 0.44 m) with the palm force on hold no box. The force and the squeezes stop at once, before the hands
   meet, and 0.2 s later the hold is dropped as by the grip check. UI 1 and UI 3 draw the last 12 s of the gap
   (`grasp_trace`) and say what dropped each hold (`last_drop`: grip, palms, pose). Beside it, for display only, the
-  bridge asks the map server for its newest LiDAR scan in a vertical column at the palms' midpoint (the `column`
+  driver asks the map server for its newest LiDAR scan in a vertical column at the palms' midpoint (the `column`
   op, 10 Hz): the box's top while the hands hold it. A hold disagrees when the column tops more than 0.05 m below
   the palms, or is empty where the LiDAR sees it at the palms' height (`grasp_trace.column`, `between` events, and
   each drop's `between_s`: how long before it the column disagreed). Nothing is dropped for it. The force stays off until the frames of the re-plan after the drop play: in the middle of a
@@ -146,7 +146,7 @@ The page simulates the robot. Here the robot is measured, a little late and with
 - Leaving POSE (`P`, `O`) drops the hold and clears the targets. Out of POSE the node's planner has the arms and the
   palm force is off, and the reference went on carrying with its hands together, which the next POSE went back to.
 - UI 3's *Box task state* card draws the task as a state machine: the state at the played frame, the signals its
-  transitions read, and the last 16 transitions with their causes (the bridge's state, `fsm`).
+  transitions read, and the last 16 transitions with their causes (the driver's state, `fsm`).
 
 ## Parity with the page
 
