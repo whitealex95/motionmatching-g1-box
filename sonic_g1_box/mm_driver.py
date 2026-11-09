@@ -103,6 +103,12 @@ keys through the map server (its `operator` op, operator_link.py) in every mode 
 LIVE_FLAGS apply at once, RESTART_FLAGS restart the driver with its own command line and the new values (not in
 POSE). The window's held keys go before UI 3's. `--no-window` runs without the window.
 
+UI 3's Box tab: when a report of the box moves the controller's box (box_gate, BoxLock). With --box-lock the median of
+--box-lock-need reports seen while the robot stands still in Locomotion locks it; then no report moves it until the
+task leaves Locomotion (--box-lock-moving), none during Pick up, Lift and the rest of the task, and back in Locomotion
+the next stand measures it again. A pick asked for before the lock waits for it (--box-lock-wait). --box-freeze stops
+every update; the box stays.
+
 UI 1's box task (its Box task card, the map server's `box_task` op): the box to pick up (a reported track), the
 put-down marker and how to carry the box there, and Go. BoxRoute walks it in POSE: the box is taken and picked
 up, then put down at the marker (the controller walks there itself), or first carried along the desired trajectory
@@ -164,9 +170,11 @@ GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze
 PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', *GRASP_FLAGS, *CONTROLLER_FLAGS, *WEIGHT_FLAGS)
 # The seed's rules that are not the page's, in the order a re-plan checks them (UI 3's Anchoring card).
 SEED_FLAGS = ('skip_stopped', 'skip_stale', 'max_seed_jump', 'keep_out', 'pre_pose_full', 'track_delay', 'strip_seed_turns')
+# When a report of the box may move the controller's box (UI 3's Box tab, BoxDriver.box_gate).
+BOX_LOCK_FLAGS = ('box_lock', 'box_lock_moving', 'box_freeze', 'box_lock_need', 'box_still_s', 'box_lock_wait')
 LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'empty_gap', *SEED_FLAGS,
               'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn', 'sync_search', 'sync_need',
-              'sync_agree', 'follow_s', 'obstacle_radius')
+              'sync_agree', *BOX_LOCK_FLAGS, 'follow_s', 'obstacle_radius')
 RESTART_FLAGS = ('loco', 'lookahead', 'box_size', 'assoc_radius', 'fresh_s', 'grip_phys_dz', 'grip_need',
                  'fix_range_bias')
 GRID_DIM = 17 * 11
@@ -185,6 +193,10 @@ COLUMN_MARGIN = 0.05       # m: the scan's top between the palms this far below 
 COLUMN_AGREE_S = 0.3       # s of agreement that end a disagreement
 FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
 FSM_HISTORY = 16
+LOCO_STATES = ('locomotion', 'to_box')                 # UI 3's Locomotion node: the Locomotion database plays
+STILL_M = 0.05             # m the measured pelvis stays within while the robot stands still (--box-still-s)
+STILL_RAD = 0.06           # rad, the same for its yaw (3.4 deg)
+LOCK_EVENTS = 8            # the Box tab's list of locks and releases
 CLIP_FPS = 60
 CLIP_VIEW_POINTS = 160                                 # samples of a clip's pelvis and torso curves sent to UI 3
 WALK_DONE_M = 0.25         # app.js playStick: a walk to a clicked point ends this near it, slows down within 1 m
@@ -281,6 +293,27 @@ class BoxReports:
     def fresh(self, within=None):
         w = self.fresh_s if within is None else within
         return self.last if self.last is not None and time.time() - self.last['wall'] < w else None
+
+
+class BoxLock:
+    """--box-lock: the box's place measured while the robot stood still in Locomotion, then held (BoxDriver.box_gate
+    says when a report may move the box). UI 3's Box tab shows it."""
+
+    def __init__(self):
+        self.locked = None       # {'pos': (2,), 'yaw', 'wall', 'n'}: the place measured standing still
+        self.still = []          # [(pos (2,), yaw)]: this stand's reports, until the lock
+        self.skipped = collections.Counter()    # reports held, by the rule that held them
+        self.last = None         # (wall, None or the rule that held the newest report)
+        self.events = collections.deque(maxlen=LOCK_EVENTS)    # (wall, text)
+
+    def note(self, text):
+        self.events.append((round(time.time(), 2), text))
+
+    def release(self, why):
+        """No lock: the next stand in Locomotion measures the box again."""
+        had = self.locked is not None
+        self.locked, self.still = None, []
+        self.note(why if had else why + ' (no lock was set)')
 
 
 class PalmGrasp:
@@ -578,7 +611,7 @@ class BoxRoute:
         elif self.phase == 'to_box':
             if self.picked():
                 self.after_pick()
-            elif w.pick_id is None and w.holding_id is None and w.regrasp is None:
+            elif w.pick_id is None and w.holding_id is None and w.regrasp is None and b.pick_wait is None:
                 self.finish('failed', 'failed: the pick was given up')
             elif (w.pick_id is None and w.regrasp is not None and b.regrasp_wait == 'seen' and b.last_drop is not None
                   and time.time() - b.last_drop['wall'] > self.FIND_S):
@@ -646,6 +679,9 @@ class BoxDriver:
         self.slam_wall = 0.0
         self.slam_at = None             # monotonic time the SLAM pose was measured at
         self.raw_pose = None            # the map server's newest pose, however old
+        self.pose_hist = collections.deque(maxlen=64)   # (wall s of the pose, x, y, yaw): whether the robot stands
+        self.lock = BoxLock()
+        self.pick_wait = None           # {'until': monotonic s, 'box', 'regrasp'}: a pick waiting for the lock
         self.last_seed_xy = None
         self.skips = {'stopped': 0, 'stale': 0, 'jump': 0}
         self.seed_outcome = None        # the last re-plan: 'seeded' or the rule that skipped its seed
@@ -704,6 +740,9 @@ class BoxDriver:
         if p is not None and p.get('age_s', 9.0) < 0.5:
             self.slam, self.slam_wall = p, time.time()
             self.slam_at = time.monotonic() - float(p.get('age_s', 0.0))
+            t = time.time() - float(p.get('age_s', 0.0))
+            if not self.pose_hist or t > self.pose_hist[-1][0] + 1e-3:
+                self.pose_hist.append((t, float(p['root_xy'][0]), float(p['root_xy'][1]), float(p['root_yaw'])))
         elif time.time() - self.slam_wall > 0.5:
             self.slam = None
         return self.slam
@@ -776,18 +815,58 @@ class BoxDriver:
         self.box_id = b['id']
         self.reports.link(o)
         self.move_seen = None
+        self.lock.release(f"a new box, track #{o['track_id']}")
         self.say(f"box: track #{o['track_id']} at ({c[0]:.2f}, {c[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg, "
               f'{hypot(c[0] - xy[0], c[1] - xy[1]):.2f} m from the robot')
         if request:
             self.request_pick()
 
     def request_pick(self):
+        if self.box_id is None or self.sim.world.holding_id is not None:
+            return False
+        if self.lock_wait_needed():
+            self.pick_wait = {'until': time.monotonic() + self.args.box_lock_wait, 'box': self.box_id}
+            self.walking = False
+            self.say(f'pick requested: it starts once the box is locked (up to {self.args.box_lock_wait:.1f} s)')
+            return True
+        return self.start_pick()
+
+    def start_pick(self, why='pick requested'):
+        self.pick_wait = None
         if self.box_id is None or not self.sim.world.set_pick(self.box_id):
             return False
         self.walking = False
         self.sim.force_search = True
-        self.say('pick requested')
+        self.say(why)
         return True
+
+    def lock_wait_needed(self):
+        """--box-lock-wait: a pick asked for in Locomotion before the lock waits for it."""
+        a = self.args
+        return (a.box_lock == 'on' and a.box_freeze != 'on' and a.box_lock_wait > 0 and self.lock.locked is None
+                and self.fsm['state'] in LOCO_STATES)
+
+    def step_pick_wait(self):
+        """A pick waiting for the lock starts once the box is locked, at --box-lock-wait, or when it no longer has to
+        wait (the lock off, the freeze on)."""
+        pw = self.pick_wait
+        if pw is None:
+            return
+        if pw['box'] != self.box_id or self.sim.world.holding_id is not None:
+            self.pick_wait = None
+            return
+        if self.lock.locked is not None:
+            why = 'the box is locked: the pick starts'
+        elif time.monotonic() > pw['until']:
+            why = f'no lock within {self.args.box_lock_wait:.1f} s: the pick starts with the box as it is'
+            self.lock.note(why)
+        elif not (self.args.box_lock == 'on' and self.args.box_freeze != 'on' and self.args.box_lock_wait > 0):
+            why = 'the pick no longer waits for the lock: it starts'
+        else:
+            return
+        if pw.get('regrasp'):
+            self.fsm_cause('back in Locomotion after the drop, the box measured again: picking it up again')
+        self.start_pick(why)
 
     def place_ahead(self):
         w = self.sim.world
@@ -852,6 +931,7 @@ class BoxDriver:
     def cancel(self, from_task=False):
         self.sim.world.clear_targets()
         self.regrasp_wait = None
+        self.pick_wait = None
         self.sim.world.walk_to = None
         self.walking = False
         self.sim.force_search = True
@@ -914,7 +994,10 @@ class BoxDriver:
             n = len(self.sim.controller.p['weights'][WEIGHT_FLAGS[name]])
             if len(v) != n:
                 return self.say(f'UI 3: {fl.flag(name)} takes {n} weights, not {len(v)}')
+        old = getattr(self.args, name)
         setattr(self.args, name, v)
+        if name in BOX_LOCK_FLAGS:
+            self.lock_flag(name, v, old)
         if name == 'tour_speed':
             self.route_follow.speed = v
         elif name == 'keep_out' and self.runner is not None:
@@ -1209,6 +1292,7 @@ class BoxDriver:
         self.flush()
         self.update_fsm(self.frame_now())
         self.rearm_pick()
+        self.step_pick_wait()
         if self.mode in (MODE_PLANNER, MODE_POSE) and now - self.last['heartbeat'] >= 1.0:
             self.link.command(planner=self.mode == MODE_PLANNER)
             self.last['heartbeat'] = now
@@ -1304,8 +1388,12 @@ class BoxDriver:
             return
         self.grip.update(frame, w.holding_id, None)
         if w.regrasp == b['id'] and w.pick_id is None and meas['pos'][2] - self.args.box_size[2] / 2 < self.args.grip_phys_dz:
-            b['pos'] = [float(meas['pos'][0]), float(meas['pos'][1])]
-            b['yaw'] = box_yaw_near(meas['yaw'], b['yaw'], self.box_turn)
+            if self.args.box_freeze == 'on':           # seen on the floor, the pick goes on where the box was
+                self.lock.last = (time.time(), 'frozen')
+                self.lock.skipped['frozen'] += 1
+            else:
+                b['pos'] = [float(meas['pos'][0]), float(meas['pos'][1])]
+                b['yaw'] = box_yaw_near(meas['yaw'], b['yaw'], self.box_turn)
             if self.regrasp_wait == 'seen':
                 self.regrasp_wait = 'loco'
                 self.fsm_cause('the box is seen on the floor: it is picked up again from Locomotion')
@@ -1316,6 +1404,17 @@ class BoxDriver:
             return
         if meas['pos'][2] - self.args.box_size[2] / 2 > 0.15:
             return                                                     # off the floor: not a resting pose to take
+        gate = self.box_gate()
+        self.lock.last = (time.time(), gate)
+        if gate is not None:
+            self.lock.skipped[gate] += 1
+            self.move_seen = None
+            return
+        self.sync_report(b, meas)
+        self.lock_measure(b, meas)
+
+    def sync_report(self, b, meas):
+        """The page's box sync: --sync-need reports in a row that agree on a move move the box."""
         mv = sync_box(b, meas, self.box_turn, self.args.sync_move, self.args.sync_turn, self.args.sync_search)
         if mv is None:
             self.move_seen = None
@@ -1337,6 +1436,113 @@ class BoxDriver:
         self.syncs += 1
         if moved > 0.1:
             self.say(f'the box moved {moved:.2f} m to ({pos[0]:.2f}, {pos[1]:.2f}) m: moved in the world too')
+
+    # -- when a report may move the box (UI 3's Box tab) ----------------------------------------------------------
+    def box_gate(self):
+        """None when a new report of the box on the floor may move the controller's box, else the rule that holds
+        it: 'frozen' (--box-freeze), and with --box-lock 'pick' (Pick up, Lift), 'task' (any state but Locomotion)
+        and 'locked' (in Locomotion after the lock, with --box-lock-moving)."""
+        a = self.args
+        if a.box_freeze == 'on':
+            return 'frozen'
+        if a.box_lock != 'on':
+            return None
+        s = self.fsm['state']
+        if s in ('pick-pre', 'pick-post'):
+            return 'pick'
+        if s not in LOCO_STATES:
+            return 'task'
+        if self.lock.locked is not None and a.box_lock_moving == 'on':
+            return 'locked'
+        return None
+
+    def still_since(self):
+        """The wall time from which the measured pelvis (the SLAM pose) has stayed within STILL_M and STILL_RAD of
+        its newest pose, when that is --box-still-s or longer; else None (it moves, or there is no fresh pose)."""
+        h = self.pose_hist
+        if self.slam is None or not h or time.time() - h[-1][0] > 0.5:
+            return None
+        t, x, y, yaw = h[-1]
+        since = t
+        for q in reversed(h):
+            if hypot(q[1] - x, q[2] - y) > STILL_M or abs(math.remainder(q[3] - yaw, 2 * math.pi)) > STILL_RAD:
+                break
+            since = q[0]
+        return since if t - since >= self.args.box_still_s else None
+
+    def lock_measure(self, b, meas):
+        """--box-lock, before the lock: a report of the box taken while the robot stands still in Locomotion (its
+        image stamped after the robot stood). --box-lock-need of them in one stand lock the box at their median."""
+        a, L = self.args, self.lock
+        if a.box_lock != 'on' or L.locked is not None:
+            return
+        since = self.still_since()
+        if self.fsm['state'] not in LOCO_STATES or since is None:
+            L.still = []
+            return
+        if meas['stamp'] * 1e-9 < since - 0.05:
+            return                                     # seen before the robot stood: neither counted nor a break
+        L.still.append((np.asarray(meas['pos'][:2], float), float(meas['yaw'])))
+        if len(L.still) < a.box_lock_need:
+            return
+        xy = np.median([p for p, _ in L.still], axis=0)
+        yaws = [box_yaw_near(y, b['yaw'], self.box_turn) for _, y in L.still]
+        yaw = box_yaw_near(float(np.median(yaws)), b['yaw'], self.box_turn)
+        moved = hypot(xy[0] - b['pos'][0], xy[1] - b['pos'][1])
+        turned = abs(math.remainder(yaw - b['yaw'], 2 * math.pi))
+        b['pos'], b['yaw'] = [float(xy[0]), float(xy[1])], yaw
+        self.move_seen = None
+        if moved > a.sync_search or turned > 2 * a.sync_search:
+            self.sim.force_search = True
+        L.locked = {'pos': [float(xy[0]), float(xy[1])], 'yaw': yaw, 'wall': time.time(), 'n': len(L.still)}
+        L.still = []
+        text = (f'locked at ({xy[0]:.2f}, {xy[1]:.2f}) m, {math.degrees(yaw):.0f} deg: the median of {L.locked["n"]} '
+                f'reports standing still' + (f', the box moved {moved:.2f} m' if moved >= 0.01 else ''))
+        L.note(text)
+        self.say('the box is ' + text)
+
+    def lock_flag(self, name, v, old):
+        """A Box tab setting changed (set_flag): what it does to the lock."""
+        L, b = self.lock, self.world_box()
+        if name == 'box_lock':
+            L.release('Measure again (UI 3)' if old == 'on' and v == 'on' else
+                      'the lock is on: measured at the next stand' if v == 'on' else
+                      'the lock is off: every report moves the box')
+        elif name == 'box_freeze' and v != old:
+            if v == 'on':
+                L.note('frozen' + ('' if b is None else f" at ({b['pos'][0]:.2f}, {b['pos'][1]:.2f}) m") +
+                       ': no report moves the box')
+            else:
+                L.release('the freeze is off: measured at the next stand')
+        elif name == 'box_lock_moving' and v != old:
+            L.note('held while walking after the lock' if v == 'on' else
+                   'after the lock the box follows the reports in Locomotion')
+
+    def lock_word(self):
+        a = self.args
+        return ('frozen' if a.box_freeze == 'on' else 'off' if a.box_lock != 'on'
+                else 'locked' if self.lock.locked is not None else 'open')
+
+    def box_lock_state(self):
+        """UI 3's Box tab: the lock, what a report meets now, and the newest report against the box."""
+        a, L, b, meas = self.args, self.lock, self.world_box(), self.reports.last
+        since, now = self.still_since(), time.time()
+        return {
+            'state': self.lock_word(), 'fsm': self.fsm['state'], 'gate': self.box_gate(),
+            'last': None if L.last is None else {'age_s': round(now - L.last[0], 1), 'gate': L.last[1]},
+            'still_s': None if since is None else round(now - since, 1), 'n': len(L.still), 'need': a.box_lock_need,
+            'locked': None if L.locked is None else {
+                'xy': [round(v, 3) for v in L.locked['pos']], 'yaw': round(L.locked['yaw'], 3),
+                'age_s': round(now - L.locked['wall'], 1), 'n': L.locked['n']},
+            'box': None if b is None else [round(b['pos'][0], 3), round(b['pos'][1], 3), round(b['yaw'], 3)],
+            'report': None if meas is None else {
+                'xy': [round(float(meas['pos'][0]), 3), round(float(meas['pos'][1]), 3)],
+                'age_s': round(now - meas['wall'], 1),
+                'off_m': None if b is None else round(hypot(meas['pos'][0] - b['pos'][0], meas['pos'][1] - b['pos'][1]), 3)},
+            'pick_wait': None if self.pick_wait is None else {
+                'left_s': round(max(self.pick_wait['until'] - time.monotonic(), 0.0), 1),
+                'regrasp': bool(self.pick_wait.get('regrasp'))},
+            'skipped': dict(L.skipped), 'events': list(L.events)}
 
     # -- the grasp ----------------------------------------------------------------------------------------------
     def default_empty_gap(self):
@@ -1543,8 +1749,13 @@ class BoxDriver:
         if b is None:
             self.regrasp_wait = None
             return
-        w.pick_id = b['id']
         self.regrasp_wait = None
+        if self.lock_wait_needed() and b['id'] == self.box_id:
+            self.pick_wait = {'until': time.monotonic() + self.args.box_lock_wait, 'box': b['id'], 'regrasp': True}
+            self.say(f'back in Locomotion after the drop: the pick again once the box is locked (up to '
+                     f'{self.args.box_lock_wait:.1f} s)')
+            return
+        w.pick_id = b['id']
         self.sim.force_search = True
         self.fsm_cause('back in Locomotion after the drop: picking the box up again')
         self.say(f"back in Locomotion: the controller picks the box up again at ({b['pos'][0]:.2f}, {b['pos'][1]:.2f}) m")
@@ -1605,6 +1816,8 @@ class BoxDriver:
             why = words + (f' (after {why})' if why else '')
         if f['state'] is not None:
             f['history'].append((round(now, 2), f['state'], s, why, by))
+            if s in LOCO_STATES and f['state'] not in LOCO_STATES:
+                self.lock.release(f'back in Locomotion from {f["state"]}: measured at the next stand')
         f['state'], f['since'], f['why'] = s, now, None
 
     def fsm_signals(self, frame):
@@ -1707,6 +1920,7 @@ class BoxDriver:
             task = {'state': state, 'phase': self.phase, 'hud': hud, 'semantics': sem,
                     'box_xy': [round(b['pos'][0], 3), round(b['pos'][1], 3)], 'box_yaw': b['yaw'], 'box_held': holding,
                     'fixed': True, 'source': 'sam3', 'size': list(self.args.box_size), 'lost': self.lost,
+                    'lock': self.lock_word(),
                     'regrasps': self.drops, 'syncs': self.syncs,
                     'place_xy': None if t is None else [round(t['pos'][0], 3), round(t['pos'][1], 3)],
                     'grasp': {'on': self.grasp.on, 'ramp': round(self.grasp.ramp, 2)}}
@@ -1731,7 +1945,8 @@ class BoxDriver:
             'seed_rules': None if r is None else {
                 'outcome': self.seed_outcome, 'seeds': r.seeds,
                 'skipped': {**self.skips, 'hold': r.held_back, 'keep_out': r.kept_out}},
-            'phase': self.phase, 'task': task, 'match': match, 'grasp_trace': self.grasp_trace_state(),
+            'phase': self.phase, 'task': task, 'box_lock': self.box_lock_state(), 'match': match,
+            'grasp_trace': self.grasp_trace_state(),
             'db_port': None if self.db_page is None else self.db_page.port,
             'box_route': None if self.box_route is None else self.box_route.state(),
             'fsm': None if cur is None or self.fsm['state'] is None else {
@@ -2099,6 +2314,28 @@ def main():
     ap.add_argument('--sync-search', type=float, default=0.1, help='m: a move this large searches at once (the page: 0.1)')
     ap.add_argument('--sync-need', type=int, default=2, help='new reports in a row that agree on a move')
     ap.add_argument('--sync-agree', type=float, default=0.06, help='m two reports of a move agree within')
+    ap.add_argument('--box-lock', choices=('on', 'off'), default='on',
+                    help="on: the box's place is measured while the robot stands still in Locomotion (the median of "
+                         "--box-lock-need reports) and then held: no report moves the box during Pick up and Lift, nor "
+                         "in any other state but Locomotion, and with --box-lock-moving none until the task leaves "
+                         "Locomotion. Back in Locomotion from another state, the next stand measures it again. Until "
+                         "the lock the reports move it as before. Set on again: measure again. off: every report "
+                         "moves the box, as before 2026-11-09")
+    ap.add_argument('--box-lock-moving', choices=('on', 'off'), default='on',
+                    help='on: after the lock no report moves the box in Locomotion, walking or standing. off: in '
+                         'Locomotion the reports move it again after the lock; Pick up and Lift still hold it')
+    ap.add_argument('--box-freeze', choices=('on', 'off'), default='off',
+                    help="on: no report moves the box, whatever --box-lock says, nor after a drop: it stays where it "
+                         "is, in the controller's world and in UI 1 / UI 3. X, a click or UI 1's Go still take a box "
+                         "from its report")
+    ap.add_argument('--box-lock-need', type=int, default=3,
+                    help='reports of the box in one stand that lock it (their median)')
+    ap.add_argument('--box-still-s', type=float, default=0.5,
+                    help=f's the measured pelvis stays within {STILL_M * 100:.0f} cm and '
+                         f'{math.degrees(STILL_RAD):.1f} deg for the robot to stand still (--box-lock)')
+    ap.add_argument('--box-lock-wait', type=float, default=3.0,
+                    help='s a pick asked for in Locomotion before the lock (X, a click, UI 1\'s Go, the pick again '
+                         'after a drop) waits for it; it starts at the lock or after this. 0: at once, as before')
     ap.add_argument('--grip-phys-dz', type=float, default=0.06,
                     help='m: a reported box centre this close to its resting height is on the floor (the page: 0.04)')
     ap.add_argument('--grip-need', type=int, default=2, help='new reports in a row for the grip check')

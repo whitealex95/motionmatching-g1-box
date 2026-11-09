@@ -120,6 +120,13 @@ The page simulates the robot. Here the robot is measured, a little late and with
   own, whose +x is the robot's heading when the planner started (the node's heading state on `g1_debug`).
 - The box is `live.sam3box`'s report, a few times a second and 0.2 to 0.6 s late. A move is taken after
   `--sync-need 2` reports that agree, the grip check after `--grip-need 2` reports.
+- Since 2026-11-09 the reports move the box only while that can be trusted (`--box-lock on`, UI 3's *Box* tab): the
+  median of `--box-lock-need 3` reports seen while the measured pelvis stands still in Locomotion (within 5 cm and
+  3.4° for `--box-still-s 0.5`) locks it, and then no report moves it until the task leaves Locomotion
+  (`--box-lock-moving on`); none ever moves it during Pick up, Lift, the carry or the put-down. Back in Locomotion the
+  next stand measures it again. A pick asked for before the lock waits for it, up to `--box-lock-wait 3` s.
+  `--box-freeze on` stops every update. The page has no such rule: its box sync (runner.js `syncBoxes`) reads the
+  physics' box.
 - The palm force aims at a fresh report of the box on the floor until the reference lifts the box, then at the box
   where the reference holds it (the page: the physical box always).
 - In locomotion no seed puts the controller's simulation object inside a box's collision zone (the box's half size
