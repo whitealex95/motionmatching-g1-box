@@ -5,7 +5,7 @@ import json
 
 import numpy as np
 
-ROUTE_NAMES = ('halab', 'halab_gap')          # the map server's named routes (its live/route.py)
+ROUTE_NAMES = ('halab', 'halab_gap', 'halab_corridor')          # the map server's named routes (its live/route.py)
 
 
 def moving(sticks):
