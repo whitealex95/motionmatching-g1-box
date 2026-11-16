@@ -10,3 +10,18 @@ section h2 { margin: 18px 0 8px; font-size: 1.1rem; }
 .clip-head button { font: inherit; font-size: 0.82rem; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
 .clip-head button:disabled { opacity: 0.5; cursor: default; }
 #now-status.bad { color: var(--accent); }
+/* The live panel's state chips: lmm-g1-box's .flow of v3.0, which its page draws with fsm.js since v3.6. */
+.flow {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 2px 8px;
+  grid-template-areas: "a ab b bc c" "da . . . cf" "d ed e fe f";
+}
+.flow .st { display: grid; gap: 4px; }
+.flow .st span {
+  display: block; padding: 3px 9px; border-radius: 7px; font-size: 0.84rem; color: var(--text); text-align: center;
+  border: 1.5px solid var(--k); background: color-mix(in srgb, var(--k) 8%, var(--card));
+}
+.flow .st span.active { background: color-mix(in srgb, var(--k) 32%, var(--card)); box-shadow: 0 0 0 2px var(--k); font-weight: 650; }
+.flow .to { display: flex; flex-direction: column; align-items: center; color: var(--muted); line-height: 1.05; }
+.flow .to small { font-size: 0.7rem; }
+#loco { border: 0; padding: 0; margin: 0; display: grid; gap: 4px; }
+#loco legend { padding: 0; font-weight: 600; }

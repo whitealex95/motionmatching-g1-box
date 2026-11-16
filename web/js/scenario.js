@@ -3,9 +3,14 @@
 
 const after = (s) => (ctx) => ctx.stepTime >= s;
 
+// Box C stands at the -x edge of table T1 (World.boxOnTable), which faces east. The table is west of where the robot
+// walks with boxes A and B, so the way to it does not pass between them.
+export const INITIAL_TABLES = [{ label: 'T1', pos: [-4.6, -5.0], yaw: Math.PI + 0.3, size: [0.6, 0.9, 0.5] }];
+
 export const INITIAL_BOXES = [
   { label: 'A', pos: [2.0, 0.4], yaw: 0.3 },
   { label: 'B', pos: [-1.8, 2.2], yaw: -0.6 },
+  { label: 'C', table: 'T1', edge: 2 },
 ];
 
 export const SCENARIO = [
@@ -24,5 +29,8 @@ export const SCENARIO = [
     when: (ctx) => ctx.holding && ctx.uprightTime > 1.0, act: (w) => w.setPlaceNear('A', 0.0, 1.0, 0.0) },
   { title: 'The marker moves to the other side of box A while box B is being lowered',
     when: (ctx) => (ctx.phase === 'place-pre' && ctx.hipz < 0.71) || !ctx.holding, act: (w) => w.movePlaceBy(0.0, -2.0) },
+  { title: 'Pick up box C from the table', when: (ctx) => !ctx.holding && ctx.uprightTime > 1.0, act: (w) => w.setPick('C') },
+  { title: 'Put box C down on the floor',
+    when: (ctx) => ctx.holding && ctx.uprightTime > 1.0, act: (w) => w.setPlaceAhead(0.0, 1.8, 1.2) },
   { title: 'End', when: (ctx) => !ctx.holding && ctx.uprightTime > 1.5, act: (w) => w.finish() },
 ];

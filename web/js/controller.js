@@ -29,10 +29,16 @@ export const DEFAULTS = {
   slowScale: 0.5,
   adjustPosHalflife: 0.1, adjustRotHalflife: 0.2, adjustPosMaxRatio: 0.5, adjustRotMaxRatio: 0.5,
   clampMaxDistance: 0.15, clampMaxAngle: 0.5 * Math.PI,
-  boxEnter: { lmm: 2.5, mm: 2.5 },
-  boxLeave: { lmm: 4.0, mm: 4.0 },
+  // The cost thresholds of a pick and of a place, for each backend (thresholds).
+  boxEnter: { pick: { lmm: 2.5, mm: 2.5 }, place: { lmm: 2.5, mm: 2.5 } },
+  boxLeave: { pick: { lmm: 4.0, mm: 4.0 }, place: { lmm: 4.0, mm: 4.0 } },
+  // Locomotion hands a pick to the box controller within this distance of the box even at a cost above boxEnter, and a
+  // place within placeEngageRadius (variantDefaults) of the marker. 0: only by the cost.
   forceEngageRadius: 1.1,
-  sideMargin: { lmm: 0.25, mm: 0.25 },
+  // Locomotion hands a pick or a place to the box controller, by the cost or by the distance above, only within this
+  // distance of the box or marker centre. null: anywhere the box Matching Database is searched (engageRadius).
+  takeOverRadius: 1.0,
+  sideMargin: { pick: { lmm: 0.25, mm: 0.25 }, place: { lmm: 0.25, mm: 0.25 } },
   // Exact search only. 'different' searches the pick and the place frames as two Matching Databases.
   boxDb: 'same',
   // Exact search only. 'emm' searches the EMM locomotion takes instead of the empty-handed NSM frames, 'emmcarry' the
@@ -52,8 +58,9 @@ export const DEFAULTS = {
   // config.json's warp sets it for a variant.
   warp: 'always',
   // Upright before the bend, a target this far (m) from where it was when the box controller took over sends the robot
-  // back to Locomotion, which may not take the box controller again within 1.1 m for reapproachTime. Until the clip
-  // that takes it again reaches its last step, the search jumps only to frames before a last step (walkInMask).
+  // back to Locomotion, which may not take the box controller again by the distance (forceEngageRadius,
+  // placeEngageRadius) for reapproachTime. Until the clip that takes it again reaches its last step, the search jumps
+  // only to frames before a last step (walkInMask).
   // null: never.
   // config.json's leave_moved_m sets it for a variant.
   leaveMoved: null, reapproachTime: 1.0,
@@ -69,6 +76,13 @@ export const DEFAULTS = {
   // reach, or the physical grip lost) then sends the robot back to Locomotion to walk in again, as leaveMoved does.
   // config.json's rise sets it for a variant.
   rise: 'search',
+  // Exact search only, in the variants whose Box Matching Database has the SceneBot pick (sceneBotStances). 'stance':
+  // once the search has chosen a side of the box or the marker, Locomotion walks to where the SceneBot pick or place
+  // of that side starts (the captured or the mirrored one, whichever is nearer, switching only for one stanceSwitch
+  // nearer) along the axis of that side (axisPoint), so it arrives facing the box. 'arrive': the same, and within
+  // arriveReach of the stance the robot turns to its facing and the query's last trajectory point, 1 s ahead, is the
+  // stance (approach). 'centre': straight to the box or marker centre.
+  locoTarget: 'arrive', stanceSwitch: 0.05, axisLead: 1.0, axisLook: 0.5, arriveReach: 0.75,
   // Exact search only. transition_cost of motion_matching_search in Holden's Motion-Matching (database.h): added to the
   // squared cost of every frame but the playing one, so a jump must beat staying on the clip by this much.
   // config.json's transition_cost sets it for a variant.
@@ -82,7 +96,18 @@ export const DEFAULTS = {
   movedTolerance: 0.12, movedAngle: 0.35,
   collisionRadius: 0.36,
   standOff: 0.36, approachClearance: 0.3, approachFallback: 0.6,
+  // The pick and place motions take the box (a marker for a place) as this far (m) farther from the robot than the
+  // data has it, along the box X axis: the box of a query is moved back by it, and what a clip says about its box
+  // (animTarget, heldBoxWorld, the SceneBot stances) is moved ahead by it. The joints move as in the data, so the
+  // robot stands that much farther from the box, the hands close that much nearer to its near edge, and the box is
+  // carried and put down that much farther ahead of the hands. 0: as the data has it.
+  boxAhead: 0,
 };
+
+const NO_EDIT = [0, 0, 0];
+const WEDGE_IN = 15 * Math.PI / 180;
+const GROUP_MIDDLE = 0.1;
+const turned = (d, a) => [Math.cos(a) * d[0] - Math.sin(a) * d[1], Math.sin(a) * d[0] + Math.cos(a) * d[1]];
 
 // The bodies from the pelvis to torso_link.
 export function torsoChain(bodies) {
@@ -103,7 +128,28 @@ export function torsoTilt(chain, hipRot, angle) {
 }
 
 // The three queries and the Matching Database each one searches.
-export const QUERY_DB = { loco: 'loco', pick: 'box', place: 'box' };
+export const QUERY_DB = { loco: 'loco', arrive: 'loco', pick: 'box', place: 'box' };
+export const isBoxQuery = (kind) => QUERY_DB[kind] === 'box';
+const FSM_HISTORY = 24;
+
+// The group that the page adds to the Locomotion Matching Database when it loads it (addTrajectoryVelocity): the
+// velocity of the root at the last trajectory point, 1 s ahead, in the root frame of the frame. weight is the weight
+// its features are normalized with. arrive is the weight of the arrive query. The Locomotion query has it at 0, so
+// Locomotion searches as without the group.
+export const TRAJ_VEL = { group: 'traj_vel', size: 2, weight: 1, arrive: 0 };
+// The arrive state's own weights, in this order: trajectory position at 20, 40 and 60 frames, trajectory direction at
+// the same points, then trajectory velocity at 60 frames. The other Locomotion features keep the Locomotion weights.
+export const ARRIVE_GROUPS = ['traj_pos', 'traj_dir'];
+export function queryWeights(cfg, kind) {
+  const c = cfg.controllers[QUERY_DB[kind]], vel = c.groups.indexOf(TRAJ_VEL.group);
+  if (kind !== 'arrive') return c.weights.map((w, g) => (g === vel ? 0 : w));
+  return [...ARRIVE_GROUPS.flatMap((g) => Array(3).fill(c.weights[c.groups.indexOf(g)])), ...(vel >= 0 ? [TRAJ_VEL.arrive] : [])];
+}
+// Weights given without the trajectory velocity (links and commands of before v3.4.1) get its default.
+export function fillWeights(cfg, kind, w) {
+  const def = queryWeights(cfg, kind);
+  return w.length === def.length - 1 && !isBoxQuery(kind) ? [...w, def[def.length - 1]] : w;
+}
 
 function makePose() {
   return {
@@ -151,6 +197,15 @@ class Backend {
     const c = this.ctrl[name], out = new Float32Array(c.nfeatures);
     for (let i = 0; i < c.nfeatures; i++) out[i] = x[i] * c.scale[i] + c.offset[i];
     return out;
+  }
+  // The cost of the frame that plays now against a normalized query of its database, with the weights of the search.
+  // null when another database plays.
+  playCost(name, qn, gain) {
+    if (name !== this.active) return null;
+    const f = this.currentFeatures();
+    let c = 0;
+    for (let j = 0; j < f.length; j++) c += gain[j] * (qn[j] - f[j]) ** 2;
+    return Math.sqrt(c);
   }
 }
 
@@ -223,6 +278,7 @@ export class MMBackend extends Backend {
     this.width = cfg.pose_width;
     this.L = cfg.pose_layout;
     this.db = data.db;      // per controller: X, idx, ranges, rangeStop
+    this.stops = data.stops;  // per row of the variant's Animation Database: the row after its clip
     for (const name in data.db) {
       if (!this.ctrl[name]) this.ctrl[name] = { ...this.ctrl.box, offset: data.db[name].offset, scale: data.db[name].scale };
     }
@@ -234,9 +290,49 @@ export class MMBackend extends Backend {
     this.frac = 0;          // how far the playhead is from frame toward frame + 1, at a speed below 1
     this.steps = lastSteps(cfg, data.pose);
   }
+  // [x, y, yaw] of the root where the SceneBot pick and place start, in the frame of the box side they work on (x
+  // away from the robot): {pick: [...], place: [...]}, one per captured or mirrored clip that the Box Matching
+  // Database indexes, or null without the SceneBot pick. A pick is measured to the box on the floor at its start, a
+  // place to the box at its release.
+  sceneBotStances() {
+    const { names, rows } = this.cfg.clips, d = this.db.box, L = this.L;
+    const pick = names.indexOf('SceneBotPick'), place = names.indexOf('SceneBotPlace');
+    if (pick < 0 || !d) return null;
+    const indexed = (start, stop) => {
+      for (let r = 0; r < d.ranges.length / 2; r++) {
+        if (d.idx[d.ranges[2 * r]] < stop && d.idx[d.ranges[2 * r + 1] - 1] >= start) return true;
+      }
+      return false;
+    };
+    const at = (g) => this.pose.subarray(g * this.width, (g + 1) * this.width);
+    const out = { pick: [], place: [] };
+    for (const [n, , start, stop, , release] of rows) {
+      if ((n !== pick && n !== place) || !indexed(start, stop)) continue;
+      const e = n === pick ? 0 : release;
+      let px = 0, py = 0, yaw = 0;
+      for (let g = start; g < start + e; g++) {
+        const r = at(g), dx = r[L.root_delta[0]], dy = r[L.root_delta[0] + 1];
+        px += Math.cos(yaw) * dx - Math.sin(yaw) * dy;
+        py += Math.sin(yaw) * dx + Math.cos(yaw) * dy;
+        yaw += r[L.root_delta[0] + 2];
+      }
+      const r = at(start + e), bx = r[L.box_pos[0]], by = r[L.box_pos[0] + 1];
+      const cx = px + Math.cos(yaw) * bx - Math.sin(yaw) * by, cy = py + Math.sin(yaw) * bx + Math.cos(yaw) * by;
+      const byaw = yaw + q.yaw(Array.from(r.subarray(L.box_quat[0], L.box_quat[0] + 4)));
+      const c = Math.cos(byaw), s = Math.sin(byaw);
+      out[n === pick ? 'pick' : 'place'].push([-(c * cx + s * cy), s * cx - c * cy, wrapAngle(-byaw)]);
+    }
+    return out;
+  }
   // A frame of a box Matching Database between the last step before its grasp or release and the first step after.
   planted(name, frame) {
     return name !== 'loco' && this.steps.planted[this.db[name].idx[frame]] === 1;
+  }
+  // How much higher the pelvis of the playing frame is than in the data, where the pick motion is edited (edits,
+  // pickmotion.js).
+  editLift() {
+    if (!this.edits || !this.active || this.active === 'loco') return 0;
+    return this.edits.lift(this.db[this.active].idx[this.frame]);
   }
   // The frame index of the old database means nothing in the new one, and past its end it gave NaN poses.
   useLoco(name) {
@@ -265,7 +361,7 @@ export class MMBackend extends Backend {
       if (rows[mid][2] <= g0) lo = mid; else hi = mid - 1;
     }
     const [n, , start, stop, attach, release] = rows[lo];
-    return { name: this.cfg.clips.names[n], start, stop, event: (d.rangeKind ? d.rangeKind[r] : name === 'place') ? release : attach };
+    return { name: this.cfg.clips.names[n], row: lo, start, stop, event: (d.rangeKind ? d.rangeKind[r] : name === 'place') ? release : attach };
   }
   // Per frame of a box Matching Database: 1 in a range that ends before its clip's grasp (pick) or release (place),
   // from entryLead frames before the clip's last step on, and in the middle of a SceneBot clip (scenebot_entry_frames).
@@ -299,6 +395,19 @@ export class MMBackend extends Backend {
       for (let i = d.ranges[2 * r]; i < d.ranges[2 * r + 1]; i++) if (d.idx[i] - start >= event) out[i] = 1;
     }
     return (this.afterEventOf[name] = out);
+  }
+  // Per frame of a box Matching Database: 1 at or past the last step before its clip's grasp or release (lastSteps), and
+  // on every frame of a clip that has no last step.
+  fromLastStep(name) {
+    this.fromLastStepOf ??= {};
+    if (this.fromLastStepOf[name]) return this.fromLastStepOf[name];
+    const d = this.db[name], out = new Uint8Array(d.idx.length);
+    for (let r = 0; r < d.ranges.length / 2; r++) {
+      const { row, start, stop, event } = this.rangeClip(name, r);
+      const s = d.idx[d.ranges[2 * r]] < stop ? this.steps.clips[row].find((x) => x.event === event) : null;
+      for (let i = d.ranges[2 * r]; i < d.ranges[2 * r + 1]; i++) if (!s || d.idx[i] - start >= s.step) out[i] = 1;
+    }
+    return (this.fromLastStepOf[name] = out);
   }
   // Per frame of a box Matching Database: 1 in a range of a SceneBot pick or place before its grasp or release.
   sceneBotPre(name) {
@@ -498,19 +607,72 @@ export async function loadMMData(base, cfg, shared = base) {
   const pose = fromHalf(new Uint16Array(await fetchBin(shared, 'mm_pose.bin', cfg.parts?.mm_pose)));
   const db = {};
   for (const name of ['loco', 'box']) {
-    const c = cfg.controllers[name];
+    const c = cfg.controllers[name], n = c.stored ?? c.nfeatures;
     const buf = await fetchBin(name === 'loco' ? shared : base, `mm_${name}.bin`, cfg.parts?.[`mm_${name}`]);
-    const X = new Float32Array(buf, 0, c.nframes * c.nfeatures);
+    const X = new Float32Array(buf, 0, c.nframes * n);
     const idx = new Int32Array(buf, X.byteLength, c.nframes);
     const ranges = new Int32Array(buf, X.byteLength + idx.byteLength, c.nranges * 2);
     const rangeStop = new Int32Array(c.nframes);
     for (let r = 0; r < c.nranges; r++) for (let i = ranges[2 * r]; i < ranges[2 * r + 1]; i++) rangeStop[i] = ranges[2 * r + 1];
-    db[name] = { X, idx, ranges, rangeStop, nfeatures: c.nfeatures };
+    db[name] = { X, idx, ranges, rangeStop, nfeatures: n };
   }
+  const stops = clipStops(pose.length / cfg.pose_width, cfg.clips.rows);
+  db.loco = addTrajectoryVelocity(cfg, pose, stops, db.loco);
   db.box.rangeKind = cfg.controllers.box.range_kind;
   db.pick = boxPart(db.box, cfg.controllers.box, 0);
   db.place = boxPart(db.box, cfg.controllers.box, 1);
-  return { pose, db };
+  return { pose, db, stops };
+}
+
+// Per row of an Animation Database: the row after the last one of its clip. rows: [name, mirror, start, stop, ...].
+function clipStops(nrows, rows) {
+  const out = new Int32Array(nrows);  // (nrows,)
+  for (let g = 0; g < nrows; g++) out[g] = g + 1;
+  for (const [, , start, stop] of rows) out.fill(stop, start, stop);
+  return out;
+}
+
+// The velocity of the root `ahead` rows after row g, or at the last row of its clip (stop - 1), in the root frame of
+// row g: the stored root velocity of that row, turned by the yaw the root turns until then.
+function futureVelocity(pose, width, L, g, stop, ahead) {
+  const g1 = Math.min(g + ahead, stop - 1);
+  let yaw = 0;
+  for (let k = g; k < g1; k++) yaw += pose[k * width + L.root_delta[0] + 2];
+  const vx = pose[g1 * width + L.root_vel[0]], vy = pose[g1 * width + L.root_vel[0] + 1];
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  return [c * vx - s * vy, s * vx + c * vy];
+}
+
+// The Locomotion Matching Database of the files (d) with the group TRAJ_VEL after its features, normalized on its
+// frames as normalize_groups of lmm/database.py does. The stored features keep their values. cfg.controllers.loco gets
+// the group too, and stored, the number of features in the files.
+function addTrajectoryVelocity(cfg, pose, stops, d) {
+  const c = cfg.controllers.loco, n0 = d.nfeatures, n = n0 + TRAJ_VEL.size, len = d.idx.length;
+  const ahead = cfg.horizons[cfg.horizons.length - 1];
+  const raw = new Float64Array(len * TRAJ_VEL.size);  // (len, 2)
+  const offset = [0, 0];
+  for (let i = 0; i < len; i++) {
+    const v = futureVelocity(pose, cfg.pose_width, cfg.pose_layout, d.idx[i], stops[d.idx[i]], ahead);
+    raw[2 * i] = v[0]; raw[2 * i + 1] = v[1];
+    offset[0] += v[0] / len; offset[1] += v[1] / len;
+  }
+  let std = 0;
+  for (let j = 0; j < 2; j++) {
+    let sum = 0;
+    for (let i = 0; i < len; i++) sum += (raw[2 * i + j] - offset[j]) ** 2;
+    std += Math.sqrt(sum / len) / 2;
+  }
+  const scale = std > 1e-6 ? std / TRAJ_VEL.weight : 1;
+  const X = new Float32Array(len * n);  // (len, n)
+  for (let i = 0; i < len; i++) {
+    X.set(d.X.subarray(i * n0, (i + 1) * n0), i * n);
+    for (let j = 0; j < 2; j++) X[i * n + n0 + j] = (raw[2 * i + j] - offset[j]) / scale;
+  }
+  if (!c.groups.includes(TRAJ_VEL.group)) {
+    Object.assign(c, { stored: n0, nfeatures: n, groups: [...c.groups, TRAJ_VEL.group], group_sizes: [...c.group_sizes, TRAJ_VEL.size],
+      weights: [...c.weights, TRAJ_VEL.weight], offset: [...c.offset, ...offset], scale: [...c.scale, scale, scale] });
+  }
+  return { ...d, X, nfeatures: n };
 }
 
 // The pick (kind 0) or place (kind 1) ranges of the box database as a Matching Database of their own. The tag is the
@@ -537,7 +699,7 @@ function boxPart(d, c, kind) {
 // box take (emm_carry). Their frames go after the variant's in the Animation Database.
 async function loadExtra(dir, cfg, backend) {
   const e = await (await fetch(`${dir}/config.json`)).json();
-  if (e.nfeatures !== cfg.controllers.loco.nfeatures || e.pose_width !== cfg.pose_width) throw new Error(`${dir} does not fit this variant`);
+  if (e.nfeatures !== cfg.controllers.loco.stored || e.pose_width !== cfg.pose_width) throw new Error(`${dir} does not fit this variant`);
   const extra = fromHalf(new Uint16Array(await fetchBin(dir, 'mm_pose.bin')));
   const feats = new Float32Array(await fetchBin(dir, 'mm_loco.bin'));  // (e.nframes, n)
   const first = backend.pose.length / cfg.pose_width;
@@ -556,32 +718,35 @@ export const locoParts = (name) => ({ empty: name === 'emm' || name === 'emmboth
 
 function buildLoco(cfg, backend, name) {
   const { empty, carry } = locoParts(name);
-  const c = cfg.controllers.loco, n = c.nfeatures, tag = n - 1, d = backend.locos.nsm;
-  const parts = [];  // [frame -> Animation Database row, frame -> raw features (n,)]
+  const c = cfg.controllers.loco, n = c.nfeatures, n0 = c.stored, tag = n0 - 1, d = backend.locos.nsm;
+  const ahead = cfg.horizons[cfg.horizons.length - 1];
+  // [frames, frame -> Animation Database row, (frame, j < n0) -> stored feature, frame -> the row after its clip]
+  const parts = [];
   // Carrying first, then empty-handed, the order of the 'emm' database before v2.11, so its sums stay the same.
   for (const held of [true, false]) {
     const extra = held ? (carry === 'emm' ? backend.emmCarry : null) : (empty === 'emm' ? backend.emm : null);
     if (extra) {
       for (const [, , start, stop] of extra.cfg.clips.rows) {
-        parts.push([stop - start, (i) => extra.first + start + i, (i, j) => extra.feats[(start + i) * n + j]]);
+        parts.push([stop - start, (i) => extra.first + start + i, (i, j) => extra.feats[(start + i) * n0 + j], () => extra.first + stop]);
       }
       continue;
     }
     for (let r = 0; r < c.nranges; r++) {
       const a = d.ranges[2 * r], b = d.ranges[2 * r + 1];
       if ((d.X[a * n + tag] * c.scale[tag] + c.offset[tag] > 0.5) !== held) continue;
-      parts.push([b - a, (i) => d.idx[a + i], (i, j) => d.X[(a + i) * n + j] * c.scale[j] + c.offset[j]]);
+      parts.push([b - a, (i) => d.idx[a + i], (i, j) => d.X[(a + i) * n + j] * c.scale[j] + c.offset[j], (i) => backend.stops[d.idx[a + i]]]);
     }
   }
   const len = parts.reduce((s, [m]) => s + m, 0);
   const raw = new Float64Array(len * n);  // (len, n)
   const idx = new Int32Array(len), ranges = new Int32Array(2 * parts.length);
   let i = 0;
-  parts.forEach(([m, row, feat], k) => {
+  parts.forEach(([m, row, feat, stop], k) => {
     ranges[2 * k] = i;
     for (let f = 0; f < m; f++, i++) {
       idx[i] = row(f);
-      for (let j = 0; j < n; j++) raw[i * n + j] = feat(f, j);
+      for (let j = 0; j < n0; j++) raw[i * n + j] = feat(f, j);
+      raw.set(futureVelocity(backend.pose, cfg.pose_width, cfg.pose_layout, idx[i], stop(f), ahead), i * n + n0);
     }
     ranges[2 * k + 1] = i;
   });
@@ -628,8 +793,10 @@ function normalizedDb(raw, idx, ranges, c) {
   return { X, idx, ranges, rangeStop, nfeatures: n, offset, scale };
 }
 
+// A variant whose place clips do not walk in (holosoma-scenebot-place, sbplace) is put down from closer.
 export const variantDefaults = (cfg) => ({ warp: cfg.warp ?? DEFAULTS.warp, leaveMoved: cfg.leave_moved_m !== undefined ? cfg.leave_moved_m : DEFAULTS.leaveMoved,
-  rise: cfg.rise ?? DEFAULTS.rise, transitionCost: cfg.transition_cost ?? DEFAULTS.transitionCost });
+  rise: cfg.rise ?? DEFAULTS.rise, transitionCost: cfg.transition_cost ?? DEFAULTS.transitionCost,
+  placeEngageRadius: cfg.place_engage_radius ?? DEFAULTS.forceEngageRadius });
 
 export class Controller {
   constructor(cfg, backend, opts = {}) {
@@ -639,15 +806,18 @@ export class Controller {
     if (opts.uprightTilt === undefined) this.p.uprightTilt = cfg.upright_tilt_deg ?? null;
     Object.assign(this.p, variantDefaults(cfg), opts.warp === undefined ? {} : { warp: opts.warp },
       opts.leaveMoved === undefined ? {} : { leaveMoved: opts.leaveMoved }, opts.rise === undefined ? {} : { rise: opts.rise },
-      opts.transitionCost === undefined ? {} : { transitionCost: opts.transitionCost });
+      opts.transitionCost === undefined ? {} : { transitionCost: opts.transitionCost },
+      opts.placeEngageRadius === undefined ? {} : { placeEngageRadius: opts.placeEngageRadius });
     this.torso = torsoChain(opts.bodies);
     this.p.floorBoxZ = cfg.box_size[2] / 2 + this.p.floorBoxLift;
-    // A variant whose place clips do not walk in (holosoma-scenebot-place) is put down from closer, and its
-    // put-down starts at the first frames of a place clip, as the clip is played in its deploy.
-    this.p.placeEngageRadius = cfg.place_engage_radius ?? this.p.forceEngageRadius;
+    // [forward, left, yaw] of the box at rest of the pick and the place motion that play, from the data's
+    // (PickMotion.offsets): the robot takes a target for the data's box that far back.
+    this.boxEdit = { pick: NO_EDIT, place: NO_EDIT };
+    // A variant whose place clips do not walk in starts its put-down at the first frames of a place clip, as the clip
+    // is played in its deploy.
     this.p.placeEntryFrames = cfg.place_entry_frames ?? 0;
     this.dt = 1 / cfg.fps;
-    for (const kind in QUERY_DB) this.setWeights(kind, cfg.controllers[QUERY_DB[kind]].weights);
+    for (const kind in QUERY_DB) this.setWeights(kind, queryWeights(cfg, kind));
     this.setBackend(backend, true);
   }
 
@@ -655,22 +825,45 @@ export class Controller {
   // error of its features by (w / w0)². The Projector learned the nearest neighbour under w0, so the learned
   // backend ignores the gains.
   setWeights(kind, weights) {
+    this.p.weights[kind] = weights.slice();
+    if (kind === 'arrive') {
+      this.p.gains.arrive = this.arriveGains();
+      return;
+    }
     const c = this.cfg.controllers[QUERY_DB[kind]];
     const gain = new Float64Array(c.nfeatures);  // (nfeatures,)
     let i = 0;
     c.group_sizes.forEach((n, g) => { gain.fill((weights[g] / c.weights[g]) ** 2, i, i + n); i += n; });
-    this.p.weights[kind] = weights.slice();
     this.p.gains[kind] = gain;
+    if (kind === 'loco' && this.p.weights.arrive) this.p.gains.arrive = this.arriveGains();
   }
 
-  // boxEnter, boxLeave or sideMargin of exact search.
-  setThreshold(name, value) {
-    this.p[name] = { ...this.p[name], mm: value };
+  // The Locomotion gains, with the arrive weights on the x and y features of each trajectory point.
+  arriveGains() {
+    const c = this.cfg.controllers.loco, w = this.p.weights.arrive, gain = this.p.gains.loco.slice();  // (nfeatures,)
+    let start = 0;
+    c.groups.forEach((g, k) => {
+      const j = ARRIVE_GROUPS.indexOf(g);
+      for (let h = 0; j >= 0 && h < 3; h++) gain.fill((w[3 * j + h] / c.weights[k]) ** 2, start + 2 * h, start + 2 * h + 2);
+      if (g === TRAJ_VEL.group) gain.fill((w[3 * ARRIVE_GROUPS.length] / c.weights[k]) ** 2, start, start + c.group_sizes[k]);
+      start += c.group_sizes[k];
+    });
+    return gain;
+  }
+
+  // boxEnter, boxLeave or sideMargin of exact search, for a pick or a place.
+  setThreshold(name, act, value) {
+    this.p[name] = { ...this.p[name], [act]: { ...this.p[name][act], mm: value } };
+  }
+  thresholds(act) {
+    const p = this.p, k = this.backend.kind;
+    return { enter: p.boxEnter[act][k], leave: p.boxLeave[act][k], margin: p.sideMargin[act][k] };
   }
 
   setBackend(backend, reset = false) {
     const keep = this.pose ? { pos: this.pose.rootPos.slice(), rot: this.pose.rootRot.slice(), holding: this.holding } : null;
     this.backend = backend;
+    this.stances = backend.kind === 'mm' ? backend.sceneBotStances() : null;
     if (reset || !keep) this.reset([0, 0, 0], 0, false);
     else this.reset(keep.pos, q.yaw(keep.rot), keep.holding);
   }
@@ -688,18 +881,33 @@ export class Controller {
     this.holdSwitchTime = 0;
     this.commit = null;
     this.target = null;
+    this.navSide = null;
+    this.stance = null;
+    this.nav = null;
     this.boxCost = Infinity;
     this.lastCosts = [];
     this.lastMatch = {};
+    this.matchAt = {};
+    this.searchAt = -Infinity;
+    this.finishing = false;
     this.calledOff = false;
     this.engaged = null;
     this.reapproach = null;
     this.leaveBox = false;
     this.missed = false;
     this.walkIn = false;
+    this.arriving = false;
     this.semantics = 'none';
+    // For the page only (trace, status): the controller's time, the cause noted during an update for a change of state,
+    // and the state machine's record. Nothing the controller does reads them.
+    this.clock = 0;
+    this.why = null;
+    this.lastEvent = null;
+    this.activity = null;
+    this.goalDist = null;
+    this.fsm = { state: null, since: 0, history: [] };
     this.events = { grasp: false, release: false };
-    this.trajectory = { pos: [pos, pos, pos, pos].map((p) => p.slice()), rot: [rot, rot, rot, rot].map((r) => r.slice()) };
+    this.trajectory = { pos: [pos, pos, pos, pos].map((p) => p.slice()), rot: [rot, rot, rot, rot].map((r) => r.slice()), vel: [0, 0, 0] };
 
     const b = this.backend;
     const m = this.match('loco', this.standingQuery(holding));
@@ -726,6 +934,7 @@ export class Controller {
     for (let h = 0; h < 3; h++) qy[NPOSE_FEATURES + 6 + 2 * h] = 1;
     qy[NPOSE_FEATURES + 12] = holding ? 0 : 1;
     qy[NPOSE_FEATURES + 13] = holding ? 1 : 0;
+    for (let i = NPOSE_FEATURES + 14; i < qy.length; i++) qy[i] = 0;
     return qy;
   }
 
@@ -853,10 +1062,33 @@ export class Controller {
       v3.scale(j1, 1 / (y * y))), v3.scale(j0, 1 / y)), v3.add(v3.scale(desiredVel, dt), prev));
     s.vel = v3.add(v3.scale(v3.add(j0, v3.scale(j1, dt)), e), desiredVel);
     s.acc = v3.scale(v3.sub(s.acc, v3.scale(j1, y * dt)), e);
-    s.pos = this.collide(pos, obstacles);
+    s.pos = this.collide(pos, obstacles, prev);
   }
 
-  collide(pos, obstacles) {
+  // How deep p is in obstacle o grown by the collision radius: { lx, ly, hx, hy, depth }, depth <= 0 outside.
+  inObstacle(p, o) {
+    const r = this.p.collisionRadius, c = Math.cos(o.yaw), s = Math.sin(o.yaw);
+    const dx = p[0] - o.pos[0], dy = p[1] - o.pos[1];
+    const lx = c * dx + s * dy, ly = -s * dx + c * dy, hx = o.half[0] + r, hy = o.half[1] + r;
+    return { lx, ly, hx, hy, depth: Math.min(hx - Math.abs(lx), hy - Math.abs(ly)) };
+  }
+
+  // from: the position before the move. A robot in or on two obstacles at once (it stands between two boxes closer than
+  // twice the collision radius) is pushed out of one into the other, and could not move. There it moves without the
+  // part of the move that heads more than WEDGE_IN into either, toward its centre.
+  collide(pos, obstacles, from = null) {
+    const wedged = from ? obstacles.filter((o) => this.inObstacle(from, o).depth > -1e-6) : [];
+    if (wedged.length >= 2) {
+      let d = [pos[0] - from[0], pos[1] - from[1]];
+      const len = Math.hypot(d[0], d[1]), tol = Math.sin(WEDGE_IN) * len;
+      const away = (o) => { const u = [from[0] - o.pos[0], from[1] - o.pos[1]], l = Math.hypot(u[0], u[1]) || 1; return [u[0] / l, u[1] / l]; };
+      for (const o of wedged) {
+        const n = away(o), k = d[0] * n[0] + d[1] * n[1] + tol;
+        if (k < 0) d = [d[0] - k * n[0], d[1] - k * n[1]];
+      }
+      if (wedged.some((o) => { const n = away(o); return d[0] * n[0] + d[1] * n[1] + tol < -1e-9; })) return from.slice();
+      return [from[0] + d[0], from[1] + d[1], pos[2]];
+    }
     let p = pos.slice();
     const r = this.p.collisionRadius;
     for (const o of obstacles) {
@@ -874,8 +1106,100 @@ export class Controller {
     return p;
   }
 
-  // Turn away from boxes that block the straight line to the goal, to the side they are not on.
+  // The point Locomotion heads for on the way to pos, which it should reach facing yaw: on the line through pos along
+  // yaw, axisLook ahead of where from projects onto it, but at most axisLead out from pos and never past it.
+  axisPoint(pos, yaw, from) {
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const along = c * (from[0] - pos[0]) + s * (from[1] - pos[1]);
+    const k = Math.max(-this.p.axisLead, Math.min(0, along + this.p.axisLook));
+    return [pos[0] + c * k, pos[1] + s * k];
+  }
+
+  // A walk with a facing (axisPoint) is on: the variant has the SceneBot stances and locoTarget is 'stance'.
+  axisWalk() { return !!this.stances && this.p.locoTarget !== 'centre'; }
+
+  // {stick, face, arrive} for Locomotion walking to nav ({pos, yaw}, yaw null for no facing). arrive is the pose the
+  // query reaches at its last trajectory point (predictTrajectory), or null.
+  approach(nav, obstacles) {
+    const p = this.p, from = this.sim.pos;
+    const togo = Math.hypot(nav.pos[0] - from[0], nav.pos[1] - from[1]);
+    if (nav.yaw !== null && p.locoTarget === 'arrive' && togo < p.arriveReach) {
+      const face = [Math.cos(nav.yaw), Math.sin(nav.yaw)];
+      if (togo <= 0.05) return { stick: null, face, arrive: nav };
+      const mag = Math.min(1, togo / (60 * this.dt * p.walkFwd));
+      const dir = this.steer(from, [(nav.pos[0] - from[0]) / togo, (nav.pos[1] - from[1]) / togo], togo, obstacles);
+      return { stick: [mag * dir[0], mag * dir[1]], face, arrive: nav };
+    }
+    const aim = nav.yaw === null ? nav.pos : this.axisPoint(nav.pos, nav.yaw, from);
+    const d = [aim[0] - from[0], aim[1] - from[1]], dist = Math.hypot(d[0], d[1]);
+    if (dist <= 0.05) return { stick: null, face: null, arrive: null };
+    // A walk to a box or marker centre slows down as if to stop 0.4 m short of it. The stance is where the robot
+    // stands, so a walk to it does not keep that margin.
+    const mag = Math.min(1, Math.max(0.35, (nav.yaw === null ? dist - 0.4 : dist) / 1.0));
+    const dir = this.steer(from, [d[0] / dist, d[1] / dist], dist, obstacles);
+    return { stick: [mag * dir[0], mag * dir[1]], face: null, arrive: null };
+  }
+
+  // {pos, yaw} Locomotion walks a pick or a place to: with locoTarget 'stance', the start of the SceneBot pick or place
+  // of the side the last search chose for this goal, else the goal's centre with yaw null.
+  navTarget(goal, activity) {
+    const ns = this.navSide, st = this.axisWalk() ? this.stances[activity] : null;
+    if (!st || !st.length || !ns || ns.activity !== activity || ns.id !== (goal.id ?? null)) {
+      this.stance = null;
+      return { pos: goal.pos, yaw: null };
+    }
+    const side = targetSides(goal.pos, goal.yaw, this.cfg.box_sides)[ns.side];
+    const d = this.dataTarget(side.pos, side.dir, activity), [c, s] = d.dir, dyaw = d.dir === side.dir ? side.yaw : Math.atan2(s, c);
+    const at = st.map(([x, y, yaw]) => ({ pos: [d.pos[0] + c * x - s * y, d.pos[1] + s * x + c * y], yaw: dyaw + yaw }));
+    const dist = (t) => Math.hypot(t.pos[0] - this.sim.pos[0], t.pos[1] - this.sim.pos[1]);
+    const prev = this.stance;
+    let k = prev && prev.side === ns.side && prev.activity === activity && prev.k < at.length ? prev.k : -1, best = 0;
+    for (let i = 1; i < at.length; i++) if (dist(at[i]) < dist(at[best])) best = i;
+    if (k < 0 || dist(at[best]) < dist(at[k]) - this.p.stanceSwitch) k = best;
+    this.stance = { side: ns.side, activity, k };
+    return at[k];
+  }
+
+  // Boxes closer together than the robot can pass between (a chain of gaps under twice the collision radius): per group
+  // its centre, the radius around it, the direction across the line between its first two boxes, and its boxes. Tables
+  // and the box to pick up (keep) are in no group.
+  groupClose(obstacles, keep = null) {
+    const r = this.p.collisionRadius, rad = (o) => Math.max(o.half[0], o.half[1]);
+    const boxes = obstacles.filter((o) => !o.table && (keep === null || o.id !== keep)), root = boxes.map((_, i) => i);
+    const find = (i) => (root[i] === i ? i : (root[i] = find(root[i])));
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        if (Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1]) - rad(a) - rad(b) < 2 * r) root[find(j)] = find(i);
+      }
+    }
+    const groups = new Map();
+    boxes.forEach((o, i) => { const k = find(i); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(o); });
+    const out = [];
+    for (const members of groups.values()) {
+      if (members.length < 2) continue;
+      const pos = [0, 1].map((k) => members.reduce((a, o) => a + o.pos[k], 0) / members.length);
+      const R = Math.max(...members.map((o) => Math.hypot(o.pos[0] - pos[0], o.pos[1] - pos[1]) + rad(o)));
+      const [a, b] = members, u = [b.pos[0] - a.pos[0], b.pos[1] - a.pos[1]], l = Math.hypot(u[0], u[1]) || 1;
+      out.push({ pos, R, across: [-u[1] / l, u[0] / l], members });
+    }
+    return out;
+  }
+
+  // Turn away from boxes that block the straight line to the goal, to the side they are not on. The boxes of a group
+  // (groupClose) all turn to the side their group is not on, so their turns add up and do not lead into a gap. A robot
+  // inside a group (it put a box down next to another) first leaves it across the line between the boxes, on its own
+  // side, or toward the goal from the middle.
   steer(from, dir, goalDist, obstacles) {
+    const groups = this.groupClose(obstacles, this.goalBoxId ?? null), groupOf = new Map();
+    for (const g of groups) {
+      for (const o of g.members) groupOf.set(o, g);
+      const rel = [from[0] - g.pos[0], from[1] - g.pos[1]];
+      if (Math.hypot(rel[0], rel[1]) >= g.R) continue;
+      const n = g.across, own = n[0] * rel[0] + n[1] * rel[1];
+      const s = (Math.abs(own) > GROUP_MIDDLE ? own : n[0] * dir[0] + n[1] * dir[1]) >= 0 ? 1 : -1;
+      return [s * n[0], s * n[1]];
+    }
     let d = dir.slice();
     for (const o of obstacles) {
       const rel = [o.pos[0] - from[0], o.pos[1] - from[1]];
@@ -885,7 +1209,8 @@ export class Controller {
       const lateral = dir[0] * rel[1] - dir[1] * rel[0];
       const clearance = Math.max(o.half[0], o.half[1]) + this.p.collisionRadius + 0.15;
       if (Math.abs(lateral) >= clearance) continue;
-      const side = lateral > 0 ? -1 : 1;
+      const g = groupOf.get(o), gl = g ? dir[0] * (g.pos[1] - from[1]) - dir[1] * (g.pos[0] - from[0]) : lateral;
+      const side = gl > 0 ? -1 : 1;
       const w = 2 * (1 - Math.abs(lateral) / clearance) * (1 - dist / 1.6);
       d = [d[0] - side * w * dir[1], d[1] + side * w * dir[0]];
     }
@@ -893,13 +1218,16 @@ export class Controller {
     return [d[0] / l, d[1] / l];
   }
 
-  predictTrajectory(stick, speed, obstacles) {
+  // face: [x, y] world direction or null. The robot turns there instead of toward the stick, as with the face input of
+  // the deploy's box bridge. arrive: {pos} the trajectory reaches at its last point and stops at, or null.
+  predictTrajectory(stick, speed, obstacles, face = null, arrive = null) {
     const sim = this.sim, dt = 20 * this.dt;
     const rots = [sim.rot.slice()], drot = [this.desiredRot.slice()];
     const dvel = [this.desiredVel.slice()];
+    const faceRot = face ? q.fromYaw(Math.atan2(face[1], face[0])) : null;
     for (let i = 1; i < 4; i++) {
       const dv = this.desiredVelocity(stick, rots[i - 1], speed);
-      drot.push(stick ? q.fromYaw(Math.atan2(dv[1], dv[0])) : drot[i - 1]);
+      drot.push(faceRot || (stick ? q.fromYaw(Math.atan2(dv[1], dv[0])) : drot[i - 1]));
       const st = { x: sim.rot.slice(), v: sim.ang.slice() };
       simpleSpringDamperQuat(st, drot[i], this.p.simRotationHalflife, i * dt);
       rots.push(st.x);
@@ -911,7 +1239,19 @@ export class Controller {
       this.simPositionUpdate(s, dvel[i], this.p.simVelocityHalflife, dt, obstacles);
       pos.push(s.pos.slice());
     }
-    this.trajectory = { pos, rot: rots };
+    if (arrive) {
+      // A cubic from the simulation object's position and velocity to rest at arrive. A speed above 3 × distance / time
+      // would carry the cubic past arrive and back, so it is cut there.
+      const D = [arrive.pos[0] - sim.pos[0], arrive.pos[1] - sim.pos[1], 0];
+      const T = 3 * dt, room = 3 * Math.hypot(D[0], D[1]) / T, v = Math.hypot(sim.vel[0], sim.vel[1]);
+      const v0 = v > room ? v3.scale([sim.vel[0], sim.vel[1], 0], room / v) : [sim.vel[0], sim.vel[1], 0];
+      for (let i = 1; i < 4; i++) {
+        const t = i / 3;
+        pos[i] = v3.add(sim.pos, v3.add(v3.scale(v0, T * (t - 2 * t * t + t * t * t)), v3.scale(D, 3 * t * t - 2 * t * t * t)));
+      }
+    }
+    // The velocity at the last point: the simulation object's, or none where the trajectory stops at arrive.
+    this.trajectory = { pos, rot: rots, vel: arrive ? [0, 0, 0] : s.vel.slice() };
   }
 
   // ---- queries ----
@@ -933,17 +1273,21 @@ export class Controller {
     }
     qy[NPOSE_FEATURES + 12] = holding ? 0 : 1;
     qy[NPOSE_FEATURES + 13] = holding ? 1 : 0;
+    if (qy.length > NPOSE_FEATURES + 14) {
+      const tv = q.invMulVec(P.rootRot, this.trajectory.vel);
+      qy[NPOSE_FEATURES + 14] = tv[0]; qy[NPOSE_FEATURES + 15] = tv[1];
+    }
     return qy;
   }
 
   boxQuery(targetPos, targetDir, tag) {
     const qy = new Float32Array(this.backend.ctrl.box.nfeatures);
     qy.set(this.poseFeatures());
-    const P = this.pose;
-    let tp = q.invMulVec(P.rootRot, [targetPos[0] - P.rootPos[0], targetPos[1] - P.rootPos[1], 0]);
+    const P = this.pose, d = this.dataTarget(targetPos, targetDir, tag);
+    let tp = q.invMulVec(P.rootRot, [d.pos[0] - P.rootPos[0], d.pos[1] - P.rootPos[1], 0]);
     const r = Math.hypot(tp[0], tp[1]);
     if (r > this.p.boxQueryRadius) tp = v3.scale(tp, this.p.boxQueryRadius / r);
-    const td = q.invMulVec(P.rootRot, [targetDir[0], targetDir[1], 0]);
+    const td = q.invMulVec(P.rootRot, [d.dir[0], d.dir[1], 0]);
     qy[NPOSE_FEATURES] = tp[0]; qy[NPOSE_FEATURES + 1] = tp[1];
     qy[NPOSE_FEATURES + 2] = td[0]; qy[NPOSE_FEATURES + 3] = td[1];
     qy[NPOSE_FEATURES + 4] = tag === 'pick' ? 1 : 0; qy[NPOSE_FEATURES + 5] = tag === 'place' ? 1 : 0;
@@ -969,25 +1313,46 @@ export class Controller {
     return (ph === 'pick-pre' || ph === 'place-pre') && this.isLow();
   }
 
-  // Where the playing animation believes the box target is, in world coordinates.
+  // The target {pos, dir} of the data's pick or place motion for a target of the world: back by the edit of the motion
+  // that plays (boxEdit) and by boxAhead. worldTarget goes the other way. dir: [x, y], unit.
+  dataTarget(pos, dir, kind) {
+    const [ex, ey, eyaw] = this.boxEdit[kind] ?? NO_EDIT, x = ex + this.p.boxAhead;
+    const d = eyaw ? turned(dir, -eyaw) : dir;
+    return { pos: [pos[0] - x * d[0] + ey * d[1], pos[1] - x * d[1] - ey * d[0]], dir: d };
+  }
+  worldTarget(pos, dir, kind) {
+    const [ex, ey, eyaw] = this.boxEdit[kind] ?? NO_EDIT, x = ex + this.p.boxAhead;
+    return { pos: [pos[0] + x * dir[0] - ey * dir[1], pos[1] + x * dir[1] + ey * dir[0]], dir: eyaw ? turned(dir, eyaw) : dir };
+  }
+
+  // Where the playing animation believes the box target is, in world coordinates, as worldTarget moves it.
   animTarget() {
     const b = this.backend;
     if (b.active === 'loco') return null;
     const f = b.denormalize(b.active, b.currentFeatures());
     const P = this.pose;
-    const pos = v3.add(P.rootPos, q.mulVec(P.rootRot, [f[NPOSE_FEATURES], f[NPOSE_FEATURES + 1], 0]));
     const dir = q.mulVec(P.rootRot, [f[NPOSE_FEATURES + 2], f[NPOSE_FEATURES + 3], 0]);
-    return { pos, dir };
+    const at = v3.add(P.rootPos, q.mulVec(P.rootRot, [f[NPOSE_FEATURES], f[NPOSE_FEATURES + 1], 0]));
+    const w = this.worldTarget(at, dir, this.boxTag || 'pick');
+    return { pos: [w.pos[0], w.pos[1], at[2]], dir: [w.dir[0], w.dir[1], 0] };
   }
 
-  // The held box in world coordinates, from the Decompressor's box outputs.
+  // The held box in world coordinates, from the Decompressor's box outputs, boxAhead farther along its X axis, which
+  // points away from the carrier.
   heldBoxWorld() {
-    const P = this.pose;
-    return { pos: v3.add(P.rootPos, q.mulVec(P.rootRot, P.boxPos)), rot: q.norm(q.mul(P.rootRot, P.boxRot)) };
+    const P = this.pose, ahead = q.mulVec(P.boxRot, [this.p.boxAhead, 0, 0]);
+    return { pos: v3.add(P.rootPos, q.mulVec(P.rootRot, v3.add(P.boxPos, ahead))), rot: q.norm(q.mul(P.rootRot, P.boxRot)) };
   }
 
-  hipHeight() { return this.pose.hipPos[2]; }
+  // The pelvis height the data has at the playing frame: an edited pick or place keeps the data's moments for bent and
+  // upright.
+  hipHeight() { return this.pose.hipPos[2] - (this.backend.editLift ? this.backend.editLift() : 0); }
   isLow() { return this.hipHeight() < this.p.zLow; }
+  // The clip of the box controller is at or past its last step (fromLastStep). The learned backend has no steps.
+  pastLastStep() {
+    const b = this.backend;
+    return b.kind !== 'mm' || b.active === 'loco' || b.fromLastStep(b.active)[b.frame] === 1;
+  }
   afterLastStep() {
     const b = this.backend;
     return this.mode === 'box' && b.kind === 'mm' && b.planted(b.active, b.frame);
@@ -1022,39 +1387,55 @@ export class Controller {
 
   // ---- the frame update ----
 
-  // input: { stick: [x, y] world direction or null, slow: bool, holding: bool,
+  // input: { stick: [x, y] world direction or null, face: [x, y] world direction or null, walkTo: {pos, yaw} or null
+  //          (a click on the floor that Locomotion walks to itself), slow: bool, holding: bool,
   //          pickBox: {pos, yaw, id} or null, placeTarget: {pos, yaw} or null,
   //          boxes: floor boxes [{pos, yaw, id}], boxHalf: [x, y], forceSearch: bool }
   update(input) {
     const dt = this.dt, p = this.p, b = this.backend;
+    // The box left the hands while the robot rises with it (the physical grip lost, or the box removed): the tag flips
+    // to place, so the robot rises with empty hands, as after a pick cancelled while bent.
+    if (this.holding && !input.holding && this.mode === 'box' && this.boxTag === 'pick') this.boxTag = 'place';
     this.holding = input.holding;
     this.events = { grasp: false, release: false };
     const speedScale = input.slow ? p.slowScale : 1;
     const speed = { fwd: p.walkFwd * speedScale, side: p.walkSide * speedScale, back: p.walkBack * speedScale };
     const goal = input.holding ? input.placeTarget : input.pickBox;
     const activity = input.holding ? (input.placeTarget ? 'place' : null) : (input.pickBox ? 'pick' : null);
+    this.why = null;
+    this.activity = activity;
+    this.goalDist = goal ? Math.hypot(goal.pos[0] - this.pose.rootPos[0], goal.pos[1] - this.pose.rootPos[1]) : null;
     const obstacles = input.boxes.filter((o) => !(this.mode === 'box' && input.pickBox && o.id === input.pickBox.id))
-      .map((o) => ({ id: o.id, pos: o.pos, yaw: o.yaw, half: input.boxHalf }));
+      .map((o) => ({ id: o.id, pos: o.pos, yaw: o.yaw, half: input.boxHalf })).concat(input.tables ?? []);
 
-    let stick = input.stick;
+    let stick = input.stick, face = input.face || null, arrive = null;
     let navigating = false;
-    if (!stick && goal && this.mode === 'loco') {
-      const d = [goal.pos[0] - this.sim.pos[0], goal.pos[1] - this.sim.pos[1]];
-      const dist = Math.hypot(d[0], d[1]);
-      if (dist > 0.05) {
-        const mag = Math.min(1, Math.max(0.35, (dist - 0.4) / 1.0));
-        const dir = this.steer(this.sim.pos, [d[0] / dist, d[1] / dist], dist, obstacles);
-        stick = [mag * dir[0], mag * dir[1]];
-        navigating = true;
+    this.nav = null;
+    const walkTo = goal ? null : input.walkTo || null;
+    this.goalBoxId = activity === 'pick' ? input.pickBox.id : null;
+    if (!stick && !face && (goal || walkTo) && this.mode === 'loco') {
+      const nav = goal ? this.navTarget(goal, activity) : walkTo;
+      ({ stick, face, arrive } = this.approach(nav, obstacles));
+      if (goal) {
+        navigating = !!(stick || arrive);
+        this.nav = nav;
       }
     }
     this.navigating = navigating;
+    // The arrive state: the query's trajectory ends at a pose (approach), and the search uses the arrive weights.
+    this.arriving = !!arrive;
+    // The stance of a pick is closer to the box than collisionRadius, so on the way there the box being picked does not
+    // stop the simulation object or the trajectory, nor does the table under a pick or a place target. steer still turns
+    // around them.
+    const toStance = this.nav && this.nav.yaw !== null;
+    const blocking = toStance ? obstacles.filter((o) => !(activity === 'pick' && o.id === input.pickBox.id) && !(goal.table && o.id === goal.table)) : obstacles;
 
     const dvel = this.desiredVelocity(stick, this.sim.rot, speed);
     const dvelChange = v3.len(v3.sub(dvel, this.desiredVel)) / dt;
     this.desiredVel = dvel;
-    if (stick && Math.hypot(stick[0], stick[1]) > 0.01) this.desiredRot = q.fromYaw(Math.atan2(dvel[1], dvel[0]));
-    this.predictTrajectory(stick, speed, obstacles);
+    if (face) this.desiredRot = q.fromYaw(Math.atan2(face[1], face[0]));
+    else if (stick && Math.hypot(stick[0], stick[1]) > 0.01) this.desiredRot = q.fromYaw(Math.atan2(dvel[1], dvel[0]));
+    this.predictTrajectory(stick, speed, blocking, face, arrive);
     if (input.forceSearch) this.forceSearch = true;
     if (!navigating && dvelChange > 50 * 0.25) this.forceSearch = true;
 
@@ -1083,10 +1464,17 @@ export class Controller {
       const c = this.commit || { boxId: phase === 'pick-pre' && input.pickBox ? input.pickBox.id : null,
                                  side: t.side, pos: t.pos.slice(), yaw: t.yaw, dir: t.dir.slice() };
       const want = phase === 'pick-pre' ? 'pick' : 'place';
-      abort = this.calledOff || activity !== want || !!input.stick || (input.pickBox && phase === 'pick-pre' && c.boxId !== input.pickBox.id) ||
-        Math.hypot(sides[c.side].pos[0] - c.pos[0], sides[c.side].pos[1] - c.pos[1]) > p.movedTolerance ||
-        Math.abs(wrapAngle(sides[c.side].yaw - c.yaw)) > p.movedAngle;
+      const moved = () => Math.hypot(sides[c.side].pos[0] - c.pos[0], sides[c.side].pos[1] - c.pos[1]);
+      const turned = () => Math.abs(wrapAngle(sides[c.side].yaw - c.yaw));
+      const cause = this.calledOff ? 'check' : activity !== want ? 'cleared' : input.stick ? 'stick'
+        : input.pickBox && phase === 'pick-pre' && c.boxId !== input.pickBox.id ? 'other'
+          : moved() > p.movedTolerance ? 'moved' : turned() > p.movedAngle ? 'turned' : null;
+      abort = cause !== null;
       if (abort && !this.commit) this.commit = c;
+      if (abort) {
+        this.why = { by: `cancel-${cause}`, ...(cause === 'moved' ? { moved: moved(), limit: p.movedTolerance } : {}),
+          ...(cause === 'turned' ? { turned: turned(), limit: p.movedAngle } : {}) };
+      }
     }
     this.calledOff = false;
     if (abort) {
@@ -1097,8 +1485,10 @@ export class Controller {
     const hold = this.animHold();
     this.holdSwitchTime = this.bentForEvent() && hold && hold[1] > 0.1 && hold[1] < 0.9 ? this.holdSwitchTime + dt : 0;
     const finishing = rising && !this.risen() && !b.endOfAnim();
+    this.finishing = finishing;
     const searchDue = !finishing && (this.forceSearch || this.searchTimer <= 0 || (b.kind === 'mm' && b.endOfAnim()));
     if (searchDue) {
+      this.searchAt = this.clock;
       this.search(input, sides, activity, goal, this.forceSearch, obstacles);
       this.searchTimer = p.searchTime / this.clipSpeed(b.active);
       this.forceSearch = false;
@@ -1123,15 +1513,17 @@ export class Controller {
     if (ph === 'pick-pre' && held >= p.graspOn && input.pickBox &&
         Math.hypot(hb.pos[0] - input.pickBox.pos[0], hb.pos[1] - input.pickBox.pos[1]) < p.graspReach) {
       this.events.grasp = true;
+      this.lastEvent = { kind: 'grasp', t: this.clock };
       if (!this.commit && this.target) this.commit = { boxId: input.pickBox.id, side: this.target.side, pos: this.target.pos.slice(), yaw: this.target.yaw, dir: this.target.dir.slice() };
     }
-    if (ph === 'place-pre' && held <= p.releaseOff && hb.pos[2] < p.floorBoxZ) {
+    if (ph === 'place-pre' && held <= p.releaseOff && hb.pos[2] < p.floorBoxZ + (input.placeTarget?.z ?? 0)) {
       this.events.release = true;
+      this.lastEvent = { kind: 'release', t: this.clock };
       if (!this.commit && this.target) this.commit = { boxId: null, side: this.target.side, pos: this.target.pos.slice(), yaw: this.target.yaw, dir: this.target.dir.slice() };
     }
 
     if (this.mode === 'loco') {
-      this.simPositionUpdate(this.sim, this.desiredVel, p.simVelocityHalflife, dt, obstacles);
+      this.simPositionUpdate(this.sim, this.desiredVel, p.simVelocityHalflife, dt, blocking);
       const st = { x: this.sim.rot, v: this.sim.ang };
       simpleSpringDamperQuat(st, this.desiredRot, p.simRotationHalflife, dt);
       this.sim.rot = st.x; this.sim.ang = st.v;
@@ -1145,14 +1537,93 @@ export class Controller {
       this.sim.ang = [0, 0, 0];
       this.desiredRot = this.pose.rootRot.slice();
     }
-    this.semantics = this.mode === 'loco' ? (navigating ? 'navigate' : 'locomotion') : this.boxPhase();
+    this.semantics = this.mode !== 'loco' ? this.boxPhase() : this.arriving ? 'arrive' : navigating ? 'navigate' : 'locomotion';
+    this.clock += dt;
+    this.trace(!!goal);
   }
 
-  // A side is usable when the straight walk to where the robot stands for it (standOff behind the target) stays
-  // clear of the other floor boxes. The box controller walks straight at the target, only locomotion steers.
-  approachClear(from, side, obstacles) {
-    const p = this.p;
-    const stand = [side.pos[0] - p.standOff * side.dir[0], side.pos[1] - p.standOff * side.dir[1]];
+  // The page's record of the state machine: each change of state with its cause, which is noted where the decision was
+  // made (why), or else told from the two states. A state is the semantics and what plays it: 'navigate:loco',
+  // 'navigate:carry', 'pick-pre:pick' (stateOf of states.js).
+  trace(hasGoal) {
+    const f = this.fsm, s = this.semantics;
+    const key = s.startsWith('pick') ? `${s}:pick` : s.startsWith('place') ? `${s}:place` : `${s}:${this.holding ? 'carry' : 'loco'}`;
+    if (key === f.state) return;
+    if (f.state !== null) {
+      f.history.push({ t: this.clock, from: f.state, to: key, ...(this.why || this.inferWhy(f.state, key, hasGoal)) });
+      if (f.history.length > FSM_HISTORY) f.history.shift();
+    }
+    f.state = key;
+    f.since = this.clock;
+  }
+
+  inferWhy(from, to, hasGoal) {
+    const [fs, fk] = from.split(':'), [ts, tk] = to.split(':');
+    const walks = (x) => x === 'locomotion' || x === 'navigate' || x === 'arrive';
+    const togo = this.nav ? Math.hypot(this.nav.pos[0] - this.sim.pos[0], this.nav.pos[1] - this.sim.pos[1]) : null;
+    if (fs === 'pick-pre' && ts === 'pick-post') return { by: 'grasp' };
+    if (fs === 'place-pre' && ts === 'place-post') {
+      return this.lastEvent && this.lastEvent.kind === 'release' && this.clock - this.lastEvent.t < 0.5 ? { by: 'release' } : { by: 'drop', again: hasGoal };
+    }
+    if ((fk === 'carry' && tk === 'loco') || (fs === 'pick-post' && ts === 'place-post')) return { by: 'drop', again: hasGoal };
+    if (walks(fs) && walks(ts)) {
+      if (fk !== tk) return { by: 'held' };
+      if (ts === 'arrive') return { by: 'near', togo, reach: this.p.arriveReach };
+      if (ts === 'navigate') return fs === 'arrive' ? { by: 'far', togo, reach: this.p.arriveReach } : { by: 'target' };
+      return { by: hasGoal ? 'reached' : 'cleared' };
+    }
+    return { by: 'other' };
+  }
+
+  // The cost of the clip that plays, against the query of now: the cost every search starts from, which another frame
+  // must beat. The query takes its pose from the playing frame, so the cost is how far the trajectory of the clip
+  // (Locomotion) or the box or marker of the clip (box controller) is from the one asked for now. While the robot
+  // rises, the target is where the grasp or the release happened.
+  playCost() {
+    const b = this.backend;
+    if (this.fsm.state === null) return null;
+    let kind, query;
+    if (this.mode === 'loco') {
+      kind = this.arriving ? 'arrive' : 'loco';
+      query = this.locoQuery(this.holding);
+    } else {
+      const ph = this.boxPhase(), t = ((ph === 'pick-post' || ph === 'place-post') && this.commit) || this.target;
+      if (!t || !this.boxTag) return null;
+      kind = this.boxTag;
+      query = this.boxQuery(t.pos, t.dir, kind);
+    }
+    const name = this.dbOf(kind);
+    return b.playCost(name, b.normalize(name, query), this.p.gains[kind]);
+  }
+
+  // The numbers the rules of the state machine compare now, for the page.
+  status() {
+    const p = this.p, f = this.fsm, th = this.thresholds(this.activity || this.boxTag || 'pick');
+    const cost = {};
+    for (const k in QUERY_DB) cost[k] = this.lastMatch[k] ? this.lastMatch[k].cost : null;
+    const query = this.mode !== 'loco' ? this.boxTag : this.arriving ? 'arrive' : 'loco', at = this.matchAt[query];
+    // Between two searches (every searchTime) the cost is held as usual. It is frozen when the search is skipped
+    // (the rise is finished first) or when the last search did not match the query of now.
+    const frozen = at === undefined ? null : this.finishing ? 'rise' : at < this.searchAt ? 'unmatched' : null;
+    return {
+      state: f.state, since: this.clock - f.since, last: f.history.length ? f.history[f.history.length - 1] : null, clock: this.clock,
+      mode: this.mode, query, activity: this.activity, cost, frozen, costAge: at === undefined ? null : this.clock - at,
+      play: this.playCost(), boxCost: Number.isFinite(this.boxCost) ? this.boxCost : null, sides: this.lastCosts.slice(), side: this.target ? this.target.side : null,
+      searchedAt: { ...this.matchAt }, enter: th.enter, leave: th.leave, margin: th.margin,
+      dist: this.goalDist, engage: this.activity === 'place' ? p.placeEngageRadius : p.forceEngageRadius, limit: p.takeOverRadius,
+      search: p.engageRadius, wait: this.reapproach === null ? null : Math.max(0, p.reapproachTime - this.reapproach),
+      togo: this.nav ? Math.hypot(this.nav.pos[0] - this.sim.pos[0], this.nav.pos[1] - this.sim.pos[1]) : null,
+      reach: this.axisWalk() && p.locoTarget === 'arrive' ? p.arriveReach : null,
+      hip: this.hipHeight(), upright: p.zUpright, low: p.zLow, tilt: this.torsoTilt(), tiltMax: p.uprightTilt,
+    };
+  }
+
+  // A side is usable when the straight walk to where the robot stands for it (standOff behind the target, and
+  // boxAhead more) stays clear of the other floor boxes. The box controller walks straight at the target, only
+  // locomotion steers.
+  approachClear(from, side, obstacles, kind = 'pick') {
+    const p = this.p, t = this.dataTarget(side.pos, side.dir, kind);
+    const stand = [t.pos[0] - p.standOff * t.dir[0], t.pos[1] - p.standOff * t.dir[1]];
     const d = [stand[0] - from[0], stand[1] - from[1]], len2 = d[0] * d[0] + d[1] * d[1] || 1e-9;
     return obstacles.every((o) => {
       const t = Math.max(0, Math.min(1, ((o.pos[0] - from[0]) * d[0] + (o.pos[1] - from[1]) * d[1]) / len2));
@@ -1170,28 +1641,29 @@ export class Controller {
     b.useLoco(name);
     this.p.loco = name;
     if (!qy) return;
-    const m = this.match('loco', qy);
+    const m = this.match(this.arriving ? 'arrive' : 'loco', qy);
     this.transition(b.matchPose(m, this.curr.rootPos, this.curr.rootRot, this.dt));
     b.commit(m);
   }
 
   // The learned backend has one box Projector, so only exact search can use different box databases.
   dbOf(kind) {
-    return kind !== 'loco' && this.p.boxDb === 'different' && this.backend.db?.[kind] ? kind : QUERY_DB[kind];
+    return isBoxQuery(kind) && this.p.boxDb === 'different' && this.backend.db?.[kind] ? kind : QUERY_DB[kind];
   }
 
   match(kind, query, entry = 0) {
     const b = this.backend, name = this.dbOf(kind), qn = b.normalize(name, query), gain = this.p.gains[kind];
-    const sbPre = kind !== 'loco' && this.cfg.scenebot_entry_frames && b.sceneBotPre && b.active === name && b.sceneBotPre(name)[b.frame] === 1;
-    const mask = kind !== 'loco' && this.p.boxEntry === 'walk' && b.noEntry
+    const sbPre = isBoxQuery(kind) && this.cfg.scenebot_entry_frames && b.sceneBotPre && b.active === name && b.sceneBotPre(name)[b.frame] === 1;
+    const mask = isBoxQuery(kind) && this.p.boxEntry === 'walk' && b.noEntry
       ? (sbPre ? b.beforeEventMask(name) : this.walkIn ? b.walkInMask(name) : b.noEntry(name)) : null;
     return { ...b.match(name, qn, gain, undefined, undefined, entry, mask, this.p.transitionCost), kind, qn, gain };
   }
 
   search(input, sides, activity, goal, forced, obstacles) {
     const b = this.backend, p = this.p, P = this.pose;
-    const enter = p.boxEnter[b.kind], leave = p.boxLeave[b.kind], margin = p.sideMargin[b.kind];
+    const { enter, leave, margin } = this.thresholds(activity || this.boxTag || 'pick');
     this.lastCosts = [];
+    this.navSide = null;
     let boxMatch = null;
     const phase = this.boxPhase();
 
@@ -1205,10 +1677,12 @@ export class Controller {
       const near = Math.hypot(goal.pos[0] - P.rootPos[0], goal.pos[1] - P.rootPos[1]);
       if (this.mode === 'box' || near < p.engageRadius) {
         const locked = this.mode === 'box' && this.target && (this.isLow() || this.commit);
-        const others = obstacles.filter((o) => !input.pickBox || o.id !== input.pickBox.id);
-        let cands = locked ? [sides[this.target.side]] : sides.filter((s) => this.approachClear(P.rootPos, s, others));
+        const others = obstacles.filter((o) => (!input.pickBox || o.id !== input.pickBox.id) && o.id !== goal.table);
+        // A target on a table is taken from outside the table only (World.sidesFor).
+        const open = goal.sides ? sides.filter((s) => goal.sides.includes(s.side)) : sides;
+        let cands = locked ? [sides[this.target.side]] : open.filter((s) => this.approachClear(P.rootPos, s, others, activity));
         // A target pressed against another box blocks every side, so the robot takes any side once it is there.
-        if (!cands.length && near < p.approachFallback) cands = sides;
+        if (!cands.length && near < p.approachFallback) cands = open;
         let best = null;
         const entry = this.mode === 'loco' && activity === 'place' ? p.placeEntryFrames : 0;
         for (const s of cands) {
@@ -1220,32 +1694,44 @@ export class Controller {
         if (best) {
           boxMatch = best.m;
           this.target = best.s;
+          this.navSide = { side: best.s.side, activity, id: goal.id ?? null };
         }
       }
     }
     this.boxCost = boxMatch ? boxMatch.cost : Infinity;
-    if (boxMatch) this.lastMatch[boxMatch.kind] = boxMatch;
+    if (boxMatch) { this.lastMatch[boxMatch.kind] = boxMatch; this.matchAt[boxMatch.kind] = this.clock; }
 
     let useBox = false;
     const engage = activity === 'place' ? p.placeEngageRadius : p.forceEngageRadius;
     if (this.leaveBox || this.missed) {
+      this.why = !this.leaveBox ? { by: 'leave-missed' }
+        : { by: 'leave-moved', moved: Math.hypot(goal.pos[0] - this.engaged.pos[0], goal.pos[1] - this.engaged.pos[1]), limit: p.leaveMoved };
       this.reapproach = 0;
       this.engaged = null;
       this.walkIn = true;
     } else if (this.mode === 'box') {
-      if (phase === 'pick-post' || phase === 'place-post') useBox = !!boxMatch;
-      else if (!activity || input.stick) useBox = !this.isUpright() && !!boxMatch;
-      else {
+      if (phase === 'pick-post' || phase === 'place-post') {
+        useBox = !!boxMatch;
+        if (!useBox) this.why = { by: 'upright', hip: this.hipHeight(), tilt: this.torsoTilt() };
+      } else if (!activity || input.stick) {
+        useBox = !this.isUpright() && !!boxMatch;
+        if (!useBox) this.why = { by: !activity ? 'leave-cleared' : 'leave-stick' };
+      } else {
         // Near the target the robot stays in the box controller even at a high cost, as it entered it.
         const dist = Math.hypot(goal.pos[0] - P.rootPos[0], goal.pos[1] - P.rootPos[1]);
         useBox = !!boxMatch && !(this.isUpright() && this.boxCost > leave && dist > engage + 0.3);
+        if (!useBox) this.why = boxMatch ? { by: 'leave-cost', cost: this.boxCost, leave, dist, radius: engage + 0.3 } : { by: 'leave-nomatch' };
       }
     } else if (boxMatch && !input.stick) {
-      const near = Math.hypot(goal.pos[0] - P.rootPos[0], goal.pos[1] - P.rootPos[1]) < engage;
-      useBox = this.boxCost < enter || (near && this.reapproach === null);
+      const dist = Math.hypot(goal.pos[0] - P.rootPos[0], goal.pos[1] - P.rootPos[1]);
+      const within = p.takeOverRadius === null || dist < p.takeOverRadius;
+      const byCost = this.boxCost < enter, byDist = dist < engage && this.reapproach === null;
+      useBox = within && (byCost || byDist);
       if (useBox) {
         this.boxTag = activity;
         this.reapproach = null;
+        this.why = { by: byCost && byDist ? 'both' : byCost ? 'cost' : 'distance', cost: this.boxCost, enter, dist, radius: engage,
+          limit: p.takeOverRadius, side: this.target ? this.target.side : null };
       }
     }
 
@@ -1257,8 +1743,10 @@ export class Controller {
       if (this.mode === 'box') { this.commit = null; this.boxTag = null; }
       this.mode = 'loco';
       if (!activity) this.target = null;
-      m = this.match('loco', this.locoQuery(input.holding));
-      this.lastMatch.loco = m;
+      const kind = this.arriving ? 'arrive' : 'loco';
+      m = this.match(kind, this.locoQuery(input.holding));
+      this.lastMatch[kind] = m;
+      this.matchAt[kind] = this.clock;
     }
     if (b.kind === 'mm' && m.same) return;
     // The transition cost of projector_evaluate in lmm.h. Near the box the query hardly changes, and the

@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
-import { BOX } from './sim.js';
+import { BOX, TABLE } from './sim.js';
 
 export { BOX };
+
+const TABLE_LEG = 0.04;
 
 const toThreeQuat = (w) => new THREE.Quaternion(w[1], w[2], w[3], w[0]);
 
@@ -22,6 +24,23 @@ function groundTexture() {
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(30, 30);
   t.anisotropy = 8;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function woodTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#9c7b58';
+  g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 60; i++) {
+    g.strokeStyle = `rgba(70, 45, 25, ${0.04 + Math.random() * 0.07})`;
+    g.lineWidth = 1 + Math.random() * 2;
+    const y = Math.random() * 256;
+    g.beginPath(); g.moveTo(0, y); g.bezierCurveTo(90, y + 4, 160, y - 4, 256, y + 1); g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
@@ -90,6 +109,11 @@ export class Scene {
     this.scene.add(ground);
     this.ground = ground;
 
+    this.tableMeshes = new Map();
+    this.tableMat = new THREE.MeshStandardMaterial({ map: woodTexture(), roughness: 0.7 });
+    this.legMat = new THREE.MeshStandardMaterial({ color: '#5c5f66', roughness: 0.5, metalness: 0.3 });
+    this.unitBox = new THREE.BoxGeometry(1, 1, 1);
+    this.unitEdges = new THREE.EdgesGeometry(this.unitBox);
     this.boxMeshes = new Map();
     this.boxGeom = new THREE.BoxGeometry(...BOX.size);
     this.boxMat = new THREE.MeshStandardMaterial({ map: boxTexture(), roughness: 0.8 });
@@ -112,6 +136,13 @@ export class Scene {
     this.placeMarker.visible = false;
     this.scene.add(this.placeMarker);
     this.placeGhost = ghost;
+    this.walkMarker = new THREE.Group();
+    const walkRing = new THREE.Mesh(new THREE.RingGeometry(0.1, 0.13, 40), new THREE.MeshBasicMaterial({ color: '#1971c2', transparent: true, opacity: 0.85, depthWrite: false }));
+    this.walkArrow = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.035, 0.005), new THREE.MeshBasicMaterial({ color: '#1971c2' }));
+    this.walkArrow.position.x = 0.2;
+    this.walkMarker.add(walkRing, this.walkArrow);
+    this.walkMarker.visible = false;
+    this.scene.add(this.walkMarker);
 
     this.gizmos = new THREE.Group();
     this.scene.add(this.gizmos);
@@ -280,7 +311,7 @@ export class Scene {
         m.mesh.position.set(...held.pos);
         m.mesh.quaternion.copy(toThreeQuat(held.rot));
       } else {
-        m.mesh.position.set(box.pos[0], box.pos[1], BOX.size[2] / 2);
+        m.mesh.position.set(box.pos[0], box.pos[1], (box.z ?? 0) + BOX.size[2] / 2);
         m.mesh.rotation.set(0, 0, box.yaw);
       }
       m.label.visible = !isHeld;
@@ -297,9 +328,70 @@ export class Scene {
     }
     this.placeMarker.visible = !!placeTarget;
     if (placeTarget) {
-      this.placeMarker.position.set(placeTarget.pos[0], placeTarget.pos[1], BOX.size[2] / 2);
+      this.placeMarker.position.set(placeTarget.pos[0], placeTarget.pos[1], (placeTarget.z ?? 0) + BOX.size[2] / 2);
       this.placeMarker.rotation.set(0, 0, placeTarget.yaw);
     }
+  }
+
+  // tables: [{ id, label, pos, yaw, size: [x, y, height] }], a top and four legs as the physics has them.
+  syncTables(tables, selectedId = null) {
+    const alive = new Set();
+    for (const t of tables) {
+      alive.add(t.id);
+      let m = this.tableMeshes.get(t.id);
+      if (!m) {
+        const group = new THREE.Group();
+        const top = new THREE.Mesh(this.unitBox, this.tableMat);
+        top.castShadow = top.receiveShadow = true;
+        top.userData.tableId = t.id;
+        const edges = new THREE.LineSegments(this.unitEdges, new THREE.LineBasicMaterial({ color: '#5a4026' }));
+        top.add(edges);
+        const legs = [0, 1, 2, 3].map(() => {
+          const leg = new THREE.Mesh(this.unitBox, this.legMat);
+          leg.castShadow = true;
+          leg.userData.tableId = t.id;
+          group.add(leg);
+          return leg;
+        });
+        const label = this.makeLabel(t.label);
+        label.scale.set(0.16, 0.16, 1);
+        group.add(top, label);
+        this.scene.add(group);
+        m = { group, top, edges, legs, label, key: '' };
+        this.tableMeshes.set(t.id, m);
+      }
+      const key = JSON.stringify([t.pos, t.yaw, t.size]);
+      if (m.key !== key) {
+        const [x, y, h] = t.size, leg = h - TABLE.top;
+        m.group.position.set(t.pos[0], t.pos[1], 0);
+        m.group.rotation.set(0, 0, t.yaw);
+        m.top.scale.set(x, y, TABLE.top);
+        m.top.position.set(0, 0, h - TABLE.top / 2);
+        m.legs.forEach((l, k) => {
+          l.scale.set(TABLE_LEG, TABLE_LEG, leg);
+          l.position.set((k & 1 ? -1 : 1) * (x / 2 - TABLE_LEG / 2), (k & 2 ? -1 : 1) * (y / 2 - TABLE_LEG / 2), leg / 2);
+        });
+        m.label.position.set(x / 2 - 0.08, y / 2 - 0.08, h + 0.1);
+        m.label.visible = !!t.label;
+        m.key = key;
+      }
+      m.edges.material.color.set(t.id === selectedId ? '#1971c2' : '#5a4026');
+    }
+    for (const [id, m] of this.tableMeshes) {
+      if (!alive.has(id)) {
+        this.scene.remove(m.group);
+        this.tableMeshes.delete(id);
+      }
+    }
+  }
+
+  // walk: {pos, yaw} of a click on the floor or null. The arrow shows a facing set with Q/R while it is used.
+  syncWalk(walk, directed = false) {
+    this.walkMarker.visible = !!walk;
+    if (!walk) return;
+    this.walkMarker.position.set(walk.pos[0], walk.pos[1], 0.006);
+    this.walkMarker.rotation.set(0, 0, walk.yaw ?? 0);
+    this.walkArrow.visible = directed && walk.yaw !== null;
   }
 
   makeLabel(text) {
@@ -343,12 +435,13 @@ export class Scene {
     this.targetMarker = ring('#e8590c');
     this.animMarker = ring('#2f9e44');
     this.riseMarker = ring('#7048e8');
+    this.navMarker = ring('#0c8599');
   }
 
   updateGizmos(ctrl) {
     const show = this.showGizmos && !!ctrl;
     if (!ctrl) {
-      for (const g of [...this.trajPts, this.targetMarker, this.animMarker, this.riseMarker]) g.visible = false;
+      for (const g of [...this.trajPts, this.targetMarker, this.animMarker, this.riseMarker, this.navMarker]) g.visible = false;
       return;
     }
     const loco = ctrl.mode === 'loco';
@@ -372,6 +465,8 @@ export class Scene {
     place(this.animMarker, a ? a.pos : [0, 0], a ? Math.atan2(a.dir[1], a.dir[0]) : 0, 0.018, !!a);
     const c = !pre && phase ? ctrl.commit : null;
     place(this.riseMarker, c ? c.pos : [0, 0], c ? c.yaw : 0, 0.015, !!c);
+    const n = loco && ctrl.nav && ctrl.nav.yaw !== null ? ctrl.nav : null;
+    place(this.navMarker, n ? n.pos : [0, 0], n ? n.yaw : 0, 0.021, !!n);
   }
 
   // A G1 sole: its contact spheres are 0.05 m behind to 0.12 m in front of the ankle roll link, 0.03 m to each side.
@@ -432,12 +527,26 @@ export class Scene {
     this.raycaster.setFromCamera(ndc, this.camera);
     const targets = [...this.boxMeshes.values()].map((m) => m.mesh);
     if (this.placeMarker.visible) targets.push(this.placeGhost);
+    for (const m of this.tableMeshes.values()) targets.push(m.top, ...m.legs);
     const hits = this.raycaster.intersectObjects(targets, false);
     const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     const g = new THREE.Vector3();
     const onGround = this.raycaster.ray.intersectPlane(plane, g);
     const top = hits.length ? hits[0].object.userData : {};
-    return { boxId: top.boxId ?? null, marker: !!top.placeMarker, ground: onGround ? [g.x, g.y] : null };
+    const at = hits.length ? hits[0].point : null;
+    return {
+      boxId: top.boxId ?? null, marker: !!top.placeMarker, tableId: top.tableId ?? null,
+      point: at ? [at.x, at.y, at.z] : null, ground: onGround ? [g.x, g.y] : null,
+    };
+  }
+
+  // The point at height z under a screen point, as pick's ground is at the floor.
+  pointAt(clientX, clientY, z) {
+    const r = this.canvas.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const g = new THREE.Vector3();
+    return this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -z), g) ? [g.x, g.y] : null;
   }
 
   cameraYaw() {

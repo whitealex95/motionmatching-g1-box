@@ -1,4 +1,5 @@
-// The controller states of the HUD and the clips behind the two Matching Databases, drawn under the viewer.
+// The names of the controller states, and the clip that plays with what the two Matching Databases hold of it, drawn
+// under the viewer. The state machine itself is js/fsm.js.
 
 import { locoParts, torsoChain, torsoTilt } from './controller.js';
 
@@ -10,21 +11,30 @@ export const KINDS = {
 const STATES = {
   locomotion: { loco: 'Locomotion', carry: 'Carrying' },
   navigate: { loco: 'Walking to the box', carry: 'Carrying the box to the marker' },
+  arrive: { loco: 'Arriving at the box', carry: 'Arriving at the marker' },
   'pick-pre': { pick: 'Picking up' }, 'pick-post': { pick: 'Lifting the box' },
   'place-pre': { place: 'Putting down' }, 'place-post': { place: 'Standing up' },
 };
 
-export function stateOf(semantics, holding) {
+// The arrive state of a clicked walk with a facing, which has no box or marker to name.
+const ARRIVE_POINT = { loco: 'Arriving', carry: 'Arriving with the box' };
+const LOCOMOTION = new Set(['locomotion', 'navigate', 'arrive']);
+
+// 'navigate:loco' -> 'Walking to the box': the keys of Controller.fsm and of stateOf.
+export const STATE_NAME = Object.fromEntries(Object.entries(STATES).flatMap(([s, m]) => Object.entries(m).map(([kind, label]) => [`${s}:${kind}`, label])));
+
+export function stateOf(semantics, holding, navigating = true) {
   const s = STATES[semantics];
   if (!s) return { key: semantics, label: semantics, kind: null };
-  const kind = semantics === 'locomotion' || semantics === 'navigate' ? (holding ? 'carry' : 'loco') : Object.keys(s)[0];
-  return { key: `${semantics}:${kind}`, label: s[kind], kind };
+  const kind = LOCOMOTION.has(semantics) ? (holding ? 'carry' : 'loco') : Object.keys(s)[0];
+  const label = semantics === 'arrive' && !navigating ? ARRIVE_POINT[kind] : s[kind];
+  return { key: `${semantics}:${kind}`, label, kind };
 }
 
 // A recorded physical run keeps only the HUD text, which starts with the state's label.
 export function stateOfLabel(text) {
   let best = null;
-  for (const [semantics, s] of Object.entries(STATES)) {
+  for (const [semantics, s] of [...Object.entries(STATES), ['arrive', ARRIVE_POINT]]) {
     for (const [kind, label] of Object.entries(s)) {
       if (text.startsWith(label) && (!best || label.length > best.label.length)) best = { key: `${semantics}:${kind}`, label, kind };
     }
@@ -43,7 +53,6 @@ export class StatePanel {
     this.cfg = cfg;
     this.b = backend;
     this.chain = torsoChain(bodies);
-    this.chips = Object.fromEntries([...root.querySelectorAll('[data-state]')].map((el) => [el.dataset.state, el]));
     this.svg = root.querySelector('svg');
     this.tip = root.querySelector('.clip-tip');
     this.select = root.querySelector('select');
@@ -57,7 +66,6 @@ export class StatePanel {
     this.follow = true;
     this.clip = null;
     this.frame = null;
-    this.active = null;
     this.shownAt = 0;
     new ResizeObserver(() => { if (this.clip !== null) this.show(this.clip, true); }).observe(this.svg.parentElement);
     this.svg.addEventListener('pointermove', (e) => this.hover(e));
@@ -212,13 +220,7 @@ export class StatePanel {
   }
 
   // frame: the animation frame the controller plays, or null when it does not run (video, recorded physical run).
-  update(state, frame) {
-    const key = state && state.kind ? state.key : null;
-    if (key !== this.active) {
-      this.chips[this.active]?.classList.remove('active');
-      this.chips[key]?.classList.add('active');
-      this.active = key;
-    }
+  update(frame) {
     if (document.body.classList.contains('recording')) return;
     const has = frame !== null && frame !== undefined;
     // Motion Matching may jump between clips several times a second. The graph follows at most twice a second.

@@ -37,13 +37,13 @@
           <div>
             <h3>Controller states</h3>
             <div class="flow">
-              <div class="st k-loco" style="grid-area: a"><span data-state="locomotion:loco">Locomotion</span><span data-state="navigate:loco">Walking to the box</span></div>
+              <div class="st k-loco" style="grid-area: a"><span data-state="locomotion:loco">Locomotion</span><span data-state="navigate:loco">Walking to the box</span><span data-state="arrive:loco">Arriving at the box</span></div>
               <div class="to" style="grid-area: ab">→</div>
               <div class="st k-pick" style="grid-area: b"><span data-state="pick-pre:pick">Picking up</span></div>
               <div class="to" style="grid-area: bc"><small>grasp</small>→</div>
               <div class="st k-pick" style="grid-area: c"><span data-state="pick-post:pick">Lifting the box</span></div>
               <div class="to" style="grid-area: cf">↓</div>
-              <div class="st k-carry" style="grid-area: f"><span data-state="locomotion:carry">Carrying</span><span data-state="navigate:carry">Carrying the box to the marker</span></div>
+              <div class="st k-carry" style="grid-area: f"><span data-state="locomotion:carry">Carrying</span><span data-state="navigate:carry">Carrying the box to the marker</span><span data-state="arrive:carry">Arriving at the marker</span></div>
               <div class="to" style="grid-area: fe">←</div>
               <div class="st k-place" style="grid-area: e"><span data-state="place-pre:place">Putting down</span></div>
               <div class="to" style="grid-area: ed"><small>release</small>←</div>
@@ -72,11 +72,12 @@
           <p class="small" id="mt-use"></p>
           <div class="seg mmw-kinds" role="group" aria-label="Query">
             <button data-kind="loco" class="active">Locomotion</button>
+            <button data-kind="arrive">Arriving</button>
             <button data-kind="pick">Pick up</button>
             <button data-kind="place">Put down</button>
           </div>
           <table class="mmw-table">
-            <thead><tr><th>Feature</th><th>Weight</th><th>Cost share</th></tr></thead>
+            <thead><tr><th>Feature</th><th>Weight</th><th>Weighted cost</th><th>Cost share</th></tr></thead>
             <tbody id="mt-weights"></tbody>
           </table>
           <p class="small" id="mt-last"></p>
@@ -124,12 +125,12 @@
 
         <aside class="panel motions-panel">
           <p class="small muted" id="variant"></p>
-          <label>Locomotion database
-            <select id="loco">
-              <option value="nsm">the variant's own</option>
-              <option value="emmboth">EMM locomotion takes and EMM carry spans</option>
-            </select>
-          </label>
+          <fieldset id="loco">
+            <legend>Locomotion database</legend>
+            <label class="check"><input type="checkbox" id="emmloco"> Empty-handed Locomotion from the EMM locomotion takes</label>
+            <label class="check"><input type="checkbox" id="emmcarry"> Carrying Locomotion only from the EMM carry spans</label>
+            <p class="muted small">Unchecked, it comes from the variant's own clips. It starts as the driver's.</p>
+          </fieldset>
           <div class="seg db-tabs" role="tablist" aria-label="Database">
             <button type="button" role="tab" data-db="loco">Locomotion</button>
             <button type="button" role="tab" data-db="pick">Box, picks</button>

@@ -1,11 +1,11 @@
-// The box driver's database page (web/index.html): lmm-g1-box's motions.js (v3.0) with one data variant and, above it,
+// The box driver's database page (web/index.html): lmm-g1-box's motions.js (v4.0) with one data variant and, above it,
 // the driver's controller now (GET /api/live of sonic_g1_box/db_page.py): the controller states, the clip the robot
 // plays and the last matches.
 
 import * as THREE from 'three';
 import { Scene } from './scene.js';
 import { BOX } from './sim.js';
-import { MMBackend, loadMMData, loadLoco } from './controller.js';
+import { MMBackend, loadMMData, loadLoco, locoName, locoParts } from './controller.js';
 import { q, v3 } from './math.js';
 import { VARIANTS, VARIANT, DEFAULT_VARIANT } from './variants.js';
 import { StatePanel, KINDS, stateOf } from './states.js';
@@ -19,8 +19,12 @@ const FEATURES = {
   foot_pos: 'Foot positions', foot_vel: 'Foot velocities', hip_vel: 'Hip velocity',
   traj_pos: 'Trajectory positions', traj_dir: 'Trajectory directions', loco_tag: 'Empty-handed or carrying tag',
   box_pos: 'Box position', box_dir: 'Box direction', box_tag: 'Pick or place tag', box_hold: 'Hold state',
+  traj_vel: 'Trajectory velocity',
 };
-const QUERY_NAME = { loco: 'Locomotion', pick: 'Pick up', place: 'Put down' };
+const QUERY_NAME = { loco: 'Locomotion', arrive: 'Arriving', pick: 'Pick up', place: 'Put down' };
+const LOCO_NAMES = ['nsm', 'emm', 'emmcarry', 'emmboth'];
+// A threshold of the box driver: one for a pick and one for a place since lmm-g1-box v3.6.1.
+const actValue = (v, act) => (v !== null && typeof v === 'object' ? v[act] : v);
 const MODE_NAME = { idle: 'idle', planner: 'planner mode', pose: 'POSE', stopped: 'stopped' };
 
 const $ = (id) => document.getElementById(id);
@@ -74,7 +78,7 @@ const panel = new StatePanel($('clipview'), { cfg, backend: mm, bodies: scene.me
 await setLoco(driverLoco, false);
 // The live panel's clips are those of the driver's Locomotion database, whatever the browser below shows.
 const livePanel = new StatePanel($('live'), { cfg, backend: mm, bodies: scene.meta.bodies });
-const wantLoco = ['nsm', 'emmboth'].includes(params.get('loco')) ? params.get('loco') : driverLoco;
+const wantLoco = LOCO_NAMES.includes(params.get('loco')) ? params.get('loco') : driverLoco;
 if (wantLoco !== driverLoco) await setLoco(wantLoco, false);
 $('loading').hidden = true;
 
@@ -227,7 +231,7 @@ function draw(dt) {
   }
   scene.follow = $('follow').checked;
   scene.followCharacter(p.hipPos, dt);
-  panel.update(null, p.frame);
+  panel.update(p.frame);
   const n = state.span.m.frames.length, k = Math.round(state.t);
   $('time').value = String(Math.min(n - 1, k));
   $('time-out').textContent = `${(state.t / FPS).toFixed(2)} / ${((n - 1) / FPS).toFixed(2)} s · frame ${Math.min(n - 1, k) + 1}/${n}` +
@@ -259,15 +263,23 @@ function step(dir) {
 // ---- databases and the address
 
 async function setLoco(name, show = true) {
-  if (name !== 'nsm' && !mm.locos[name]) {
+  const parts = locoParts(name);
+  $('emmloco').checked = parts.empty === 'emm';
+  $('emmcarry').checked = parts.carry === 'emm';
+  if (!mm.locos[name]) {
+    const what = [parts.empty === 'emm' && !mm.emm && 'locomotion takes', parts.carry === 'emm' && !mm.emmCarry && 'carry spans'];
     $('loading').hidden = false;
-    $('loading').textContent = 'Loading the EMM locomotion takes and carry spans…';
-    await loadLoco(name, cfg, mm, cfg.emm_loco.dir, EMM_CARRY_DIR);
-    $('loading').hidden = true;
+    $('loading').textContent = `Loading the EMM ${what.filter(Boolean).join(' and ') || 'Locomotion'}…`;
+    $('loco').disabled = true;
+    try {
+      await loadLoco(name, cfg, mm, cfg.emm_loco.dir, EMM_CARRY_DIR);
+    } finally {
+      $('loco').disabled = false;
+      $('loading').hidden = true;
+    }
   }
   mm.useLoco(name);
   state.loco = name;
-  $('loco').value = name;
   panel.setDatabases(false);
   panel.follow = false;
   if (show) {
@@ -315,7 +327,7 @@ panel.svg.addEventListener('click', (e) => {
   state.t = f;
 });
 
-$('loco').addEventListener('change', (e) => setLoco(e.target.value));
+$('loco').addEventListener('change', () => setLoco(locoName($('emmloco').checked ? 'emm' : 'nsm', $('emmcarry').checked ? 'emm' : 'nsm')));
 for (const b of document.querySelectorAll('.db-tabs button')) b.addEventListener('click', () => { setDb(b.dataset.db); syncUrl(); });
 $('filter').value = state.filter;
 $('filter').addEventListener('input', (e) => {
@@ -367,13 +379,27 @@ function renderMatching() {
     b.classList.toggle('inuse', !!m && b.dataset.kind === m.controller.in_use);
   }
   if (!m || !mtKind) { $('mt-weights').innerHTML = ''; $('mt-last').textContent = ''; $('mt-sides').textContent = ''; return; }
-  const last = m.last[mtKind], groups = m.groups[mtKind] || [], weights = m.weights[mtKind] || [];
-  $('mt-weights').innerHTML = groups.map((g, i) => `<tr><td>${esc(FEATURES[g] || g)}</td><td>${weights[i] ?? ''}</td>` +
+  const last = m.last[mtKind];
+  const rows = m.rows ? m.rows[mtKind] || []
+    : (m.groups[mtKind] || []).map((g, i) => ({ label: FEATURES[g] || g, value: (m.weights[mtKind] || [])[i] }));
+  $('mt-weights').innerHTML = rows.map((r, i) => `<tr><td>${esc(r.label)}</td><td>${r.value ?? ''}</td>` +
+    `<td class="share">${last && last.wcost ? last.wcost[i].toFixed(3) : ''}</td>` +
     `<td class="share">${last ? `${Math.round(100 * last.share[i])}%` : ''}</td></tr>`).join('');
-  const th = mtKind !== 'loco' ? `. Enter below ${m.enter}, leave above ${m.leave}` : '';
+  const box = mtKind === 'pick' || mtKind === 'place';
+  const th = box ? `. Enter below ${actValue(m.enter, mtKind)}, leave above ${actValue(m.leave, mtKind)}` : '';
   $('mt-last').innerHTML = last ? `Last match: cost ${last.cost.toFixed(2)}, ${clipText(last.clip)}${th}.` : 'No search of this query yet.';
-  $('mt-sides').textContent = mtKind !== 'loco' && m.side_costs.length
-    ? `The box sides of the last search cost ${m.side_costs.map((c) => c.toFixed(2)).join(', ')}.` : '';
+  $('mt-sides').textContent = box && m.side_costs.length
+    ? `The box sides of the last search cost ${m.side_costs.map((c) => (c === null ? 'blocked' : c.toFixed(2))).join(', ')}.` : '';
+}
+
+// lmm-g1-box's StatePanel highlighted the state of the frame that plays until v3.6, its state machine (fsm.js) since.
+const chips = Object.fromEntries([...$('live').querySelectorAll('[data-state]')].map((el) => [el.dataset.state, el]));
+let chipOn = null;
+function markState(key) {
+  if (key === chipOn) return;
+  chips[chipOn]?.classList.remove('active');
+  chips[key]?.classList.add('active');
+  chipOn = key;
 }
 
 function renderLive(lv) {
@@ -383,9 +409,10 @@ function renderLive(lv) {
   $('now-status').textContent = !lv ? 'the driver does not answer' : !m ? `the driver: ${MODE_NAME[lv.mode] || lv.mode}, no stream yet` :
     `the driver: ${MODE_NAME[lv.mode] || lv.mode}${lv.fsm ? `, task state ${lv.fsm}` : ''}`;
   $('play-now').disabled = !m || m.robot.g === null;
-  if (!m) { livePanel.update(null, null); $('now-ahead').textContent = ''; renderMatching(); return; }
+  if (!m) { livePanel.update(null); markState(null); $('now-ahead').textContent = ''; renderMatching(); return; }
   const r = m.robot, c = m.controller;
-  livePanel.update(stateOf(r.semantics, r.holding), r.g);
+  livePanel.update(r.g);
+  markState(stateOf(r.semantics, r.holding).key);
   $('now-ahead').textContent = `The highlighted state is the frame the robot plays. The controller runs ${m.ahead_s.toFixed(1)} s ahead of it: ` +
     `${stateOf(c.semantics, c.holding).label}, searching ${QUERY_NAME[c.in_use] || c.in_use}.`;
   if (!mtChosen || !mtKind) mtKind = c.in_use || 'loco';
