@@ -1,5 +1,5 @@
-"""Port of the Controller of lmm-g1-box's web/js/controller.js (exact search only): Locomotion and the box
-controller, inertialization, the simulation object and trajectory, root warping and the moving-target rules.
+"""Port of the Controller of lmm-g1-box's web/js/controller.js (exact search only): Locomotion with its arrive state, the
+box controller, inertialization, the simulation object and trajectory, root warping and the moving-target rules.
 
 The box controller has four states, set by its tag and by whether the robot holds the box:
   pick, empty      walk in and bend down to the box. The held output of the clip rising is the grasp.
@@ -13,7 +13,7 @@ import math
 
 import numpy as np
 
-from .database import NDOF, NPOSE_FEATURES, Pose
+from .database import NDOF, NPOSE_FEATURES, TRAJ_VEL
 from .mathq import (add, hypot, damp_factor, decay_spring_quat, decay_spring_scalar, decay_spring_vec, js_sign1, length,
                     norm, qabs, qangle_between, qfrom_angle_axis, qfrom_scaled_angle_axis, qfrom_yaw, qid, qinv,
                     qinv_mul, qinv_mul_vec, qmul, qmul_inv, qmul_vec, qnorm, qslerp_shortest_approx,
@@ -24,18 +24,52 @@ DEFAULTS = dict(
     walkFwd=0.8, walkSide=0.45, walkBack=0.4, slowScale=0.5,
     adjustPosHalflife=0.1, adjustRotHalflife=0.2, adjustPosMaxRatio=0.5, adjustRotMaxRatio=0.5,
     clampMaxDistance=0.15, clampMaxAngle=0.5 * math.pi,
-    boxEnter=2.5, boxLeave=4.0, forceEngageRadius=1.1, sideMargin=0.25,
+    boxEnter={'pick': 2.5, 'place': 2.5}, boxLeave={'pick': 4.0, 'place': 4.0}, forceEngageRadius=1.1,
+    takeOverRadius=1.0, sideMargin={'pick': 0.25, 'place': 0.25},
     boxDb='same', loco='nsm', engageRadius=3.0, boxQueryRadius=3.0,
     warpHalflife=0.2, warpMaxRatio=0.8, warpMaxDist=0.7, warpMaxAngle=1.2,
     pickPlaceSpeed=1.0, pickPlaceSlow='clip', warp='always', leaveMoved=None, reapproachTime=1.0,
-    boxEntry='walk', entryLead=30, rise='search', transitionCost=0.0,
+    boxEntry='walk', entryLead=30, rise='search',
+    locoTarget='arrive', stanceSwitch=0.05, axisLead=1.0, axisLook=0.5, arriveReach=0.75,
+    transitionCost=0.0,
     zLow=0.66, zUpright=0.72, uprightTilt=None,
     graspOn=0.6, releaseOff=0.4, graspReach=0.25, floorBoxLift=0.15,
     holdSwitchMax=0.5, movedTolerance=0.12, movedAngle=0.35, collisionRadius=0.36,
     standOff=0.36, approachClearance=0.3, approachFallback=0.6,
+    boxAhead=0.0,
 )
-QUERY_DB = {'loco': 'loco', 'pick': 'box', 'place': 'box'}
+THRESHOLDS = ('boxEnter', 'boxLeave', 'sideMargin')
+NO_EDIT = (0.0, 0.0, 0.0)
+WEDGE_IN = 15 * math.pi / 180
+GROUP_MIDDLE = 0.1
+FSM_HISTORY = 24
+QUERY_DB = {'loco': 'loco', 'arrive': 'loco', 'pick': 'box', 'place': 'box'}
+ARRIVE_GROUPS = ('traj_pos', 'traj_dir')
 ENGAGE_IDS = itertools.count(1)       # each take-over its own id, across the re-plans' saved and restored states
+
+
+def is_box_query(kind):
+    return QUERY_DB[kind] == 'box'
+
+
+def query_weights(cfg, kind):
+    """The default weights of a query: Locomotion without the trajectory velocity, the arrive state's own."""
+    c = cfg['controllers'][QUERY_DB[kind]]
+    vel = c['groups'].index(TRAJ_VEL['group']) if TRAJ_VEL['group'] in c['groups'] else -1
+    if kind != 'arrive':
+        return [0.0 if g == vel else w for g, w in enumerate(c['weights'])]
+    out = [c['weights'][c['groups'].index(g)] for g in ARRIVE_GROUPS for _ in range(3)]
+    return out + ([TRAJ_VEL['arrive']] if vel >= 0 else [])
+
+
+def fill_weights(cfg, kind, w):
+    """Locomotion or arrive weights given without the trajectory velocity get its default."""
+    d = query_weights(cfg, kind)
+    return [*w, d[-1]] if len(w) == len(d) - 1 and not is_box_query(kind) else list(w)
+
+
+def turned(d, a):
+    return [math.cos(a) * d[0] - math.sin(a) * d[1], math.sin(a) * d[0] + math.cos(a) * d[1]]
 
 
 def torso_chain(bodies):
@@ -75,43 +109,78 @@ def zero_offsets():
             'boxPos': [0.0, 0.0, 0.0], 'boxVel': [0.0, 0.0, 0.0], 'boxRot': qid(), 'boxAng': [0.0, 0.0, 0.0]}
 
 
+def variant_defaults(cfg):
+    return {'warp': cfg.get('warp', DEFAULTS['warp']), 'leaveMoved': cfg.get('leave_moved_m', DEFAULTS['leaveMoved']),
+            'rise': cfg.get('rise', DEFAULTS['rise']), 'transitionCost': cfg.get('transition_cost', DEFAULTS['transitionCost']),
+            'placeEngageRadius': cfg.get('place_engage_radius', DEFAULTS['forceEngageRadius'])}
+
+
 class Controller:
     STATE = ('mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch',
-             'holdSwitchTime', 'commit', 'target', 'boxCost', 'lastCosts', 'calledOff', 'engaged', 'reapproach',
-             'engageCheck', 'engagedBy', 'leaveBox', 'missed', 'walkIn', 'semantics', 'events', 'trajectory', 'curr', 'pose', 'off', 'tsrc',
-             'tdst', 'navigating')
+             'holdSwitchTime', 'commit', 'target', 'navSide', 'stance', 'nav', 'boxCost', 'lastCosts', 'matchAt',
+             'searchAt', 'finishing', 'calledOff', 'engaged', 'reapproach', 'engageCheck', 'engagedBy', 'leaveBox',
+             'missed', 'walkIn', 'arriving', 'semantics', 'clock', 'why', 'lastEvent', 'activity', 'goalDist', 'fsm',
+             'events', 'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'navigating', 'goalBoxId', 'boxEdit')
 
     def __init__(self, cfg, backend, bodies, **opts):
         self.cfg = cfg
-        self.p = dict(DEFAULTS)
+        self.p = copy.deepcopy(DEFAULTS)
+        self.p.update(variant_defaults(cfg))
         self.p.update(opts)
         self.p['weights'], self.p['gains'] = {}, {}
         if 'uprightTilt' not in opts:
             self.p['uprightTilt'] = cfg.get('upright_tilt_deg')
-        for key, ck in (('warp', 'warp'), ('leaveMoved', 'leave_moved_m'), ('rise', 'rise'), ('transitionCost', 'transition_cost')):
-            if key not in opts and ck in cfg:
-                self.p[key] = cfg[ck]
         self.torso = torso_chain(bodies)
         self.p['floorBoxZ'] = cfg['box_size'][2] / 2 + self.p['floorBoxLift']
-        self.p['placeEngageRadius'] = cfg.get('place_engage_radius', self.p['forceEngageRadius'])
+        self.boxEdit = {'pick': NO_EDIT, 'place': NO_EDIT}
         self.p['placeEntryFrames'] = cfg.get('place_entry_frames', 0)
         self.dt = 1.0 / cfg['fps']
-        for kind, db in QUERY_DB.items():
-            self.set_weights(kind, cfg['controllers'][db]['weights'])
+        for kind in QUERY_DB:
+            self.set_weights(kind, query_weights(cfg, kind))
         self.backend = backend
+        self.stances = backend.scenebot_stances()
         self.navigating = False
+        self.goalBoxId = None
         self.lastMatch = {}
         self.reset([0.0, 0.0, 0.0], 0.0, False)
 
     def set_weights(self, kind, weights):
+        """The search weighs each feature group's squared error by (w / w0)^2, w0 the database's normalization weight."""
+        self.p['weights'][kind] = list(weights)
+        if kind == 'arrive':
+            self.p['gains']['arrive'] = self.arrive_gains()
+            return
         c = self.cfg['controllers'][QUERY_DB[kind]]
-        gain = np.zeros(c['nfeatures'])
+        gain = np.zeros(c['nfeatures'])  # (nfeatures,)
         i = 0
         for g, n in enumerate(c['group_sizes']):
             gain[i:i + n] = (weights[g] / c['weights'][g]) ** 2
             i += n
-        self.p['weights'][kind] = list(weights)
         self.p['gains'][kind] = gain
+        if kind == 'loco' and 'arrive' in self.p['weights']:
+            self.p['gains']['arrive'] = self.arrive_gains()
+
+    def arrive_gains(self):
+        """The Locomotion gains with the arrive weights on the x and y features of each trajectory point."""
+        c, w = self.cfg['controllers']['loco'], self.p['weights']['arrive']
+        gain = self.p['gains']['loco'].copy()  # (nfeatures,)
+        start = 0
+        for k, g in enumerate(c['groups']):
+            if g in ARRIVE_GROUPS:
+                j = ARRIVE_GROUPS.index(g)
+                for h in range(3):
+                    gain[start + 2 * h:start + 2 * h + 2] = (w[3 * j + h] / c['weights'][k]) ** 2
+            if g == TRAJ_VEL['group']:
+                gain[start:start + c['group_sizes'][k]] = (w[3 * len(ARRIVE_GROUPS)] / c['weights'][k]) ** 2
+            start += c['group_sizes'][k]
+        return gain
+
+    def set_threshold(self, name, act, value):
+        self.p[name] = dict(self.p[name], **{act: value})
+
+    def thresholds(self, act):
+        p = self.p
+        return {'enter': p['boxEnter'][act], 'leave': p['boxLeave'][act], 'margin': p['sideMargin'][act]}
 
     def reset(self, pos, yaw, holding=False):
         rot = qfrom_yaw(yaw)
@@ -126,9 +195,15 @@ class Controller:
         self.holdSwitchTime = 0.0
         self.commit = None
         self.target = None
+        self.navSide = None
+        self.stance = None
+        self.nav = None
         self.boxCost = math.inf
         self.lastCosts = []
         self.lastMatch = {}
+        self.matchAt = {}
+        self.searchAt = -math.inf
+        self.finishing = False
         self.calledOff = False
         self.engaged = None
         self.reapproach = None
@@ -137,9 +212,17 @@ class Controller:
         self.leaveBox = False
         self.missed = False
         self.walkIn = False
+        self.arriving = False
         self.semantics = 'none'
+        # For display only (trace, status): nothing the controller does reads them.
+        self.clock = 0.0
+        self.why = None
+        self.lastEvent = None
+        self.activity = None
+        self.goalDist = None
+        self.fsm = {'state': None, 'since': 0.0, 'history': []}
         self.events = {'grasp': False, 'release': False}
-        self.trajectory = {'pos': [list(pos) for _ in range(4)], 'rot': [list(rot) for _ in range(4)]}
+        self.trajectory = {'pos': [list(pos) for _ in range(4)], 'rot': [list(rot) for _ in range(4)], 'vel': [0.0, 0.0, 0.0]}
         b = self.backend
         m = self.match('loco', self.standing_query(holding))
         b.commit(m)
@@ -159,6 +242,7 @@ class Controller:
             qy[NPOSE_FEATURES + 6 + 2 * h] = 1
         qy[NPOSE_FEATURES + 12] = 0 if holding else 1
         qy[NPOSE_FEATURES + 13] = 1 if holding else 0
+        qy[NPOSE_FEATURES + 14:] = 0
         return qy
 
     # ---- snapshot for the replan (Sim.saveState of the page: the databases and settings are shared) ----
@@ -278,9 +362,36 @@ class Controller:
             scale(j1, 1 / (y * y))), scale(j0, 1 / y)), add(scale(desired_vel, dt), prev))
         s['vel'] = add(scale(add(j0, scale(j1, dt)), e), desired_vel)
         s['acc'] = scale(sub(s['acc'], scale(j1, y * dt)), e)
-        s['pos'] = self.collide(pos, obstacles)
+        s['pos'] = self.collide(pos, obstacles, prev)
 
-    def collide(self, pos, obstacles):
+    def in_obstacle(self, p, o):
+        """How deep p is in obstacle o grown by the collision radius: depth <= 0 outside."""
+        r, c, s = self.p['collisionRadius'], math.cos(o['yaw']), math.sin(o['yaw'])
+        dx, dy = p[0] - o['pos'][0], p[1] - o['pos'][1]
+        lx, ly, hx, hy = c * dx + s * dy, -s * dx + c * dy, o['half'][0] + r, o['half'][1] + r
+        return min(hx - abs(lx), hy - abs(ly))
+
+    def collide(self, pos, obstacles, frm=None):
+        """frm: the position before the move. A robot in or on two obstacles at once moves without the part of the move
+        that heads more than WEDGE_IN into either, toward its centre (pushed out of one into the other, it could not)."""
+        wedged = [o for o in obstacles if self.in_obstacle(frm, o) > -1e-6] if frm is not None else []
+        if len(wedged) >= 2:
+            d = [pos[0] - frm[0], pos[1] - frm[1]]
+            tol = math.sin(WEDGE_IN) * hypot(d[0], d[1])
+
+            def away(o):
+                u = [frm[0] - o['pos'][0], frm[1] - o['pos'][1]]
+                l = hypot(u[0], u[1]) or 1.0
+                return [u[0] / l, u[1] / l]
+
+            for o in wedged:
+                n = away(o)
+                k = d[0] * n[0] + d[1] * n[1] + tol
+                if k < 0:
+                    d = [d[0] - k * n[0], d[1] - k * n[1]]
+            if any(d[0] * n[0] + d[1] * n[1] + tol < -1e-9 for n in map(away, wedged)):
+                return list(frm)
+            return [frm[0] + d[0], frm[1] + d[1], pos[2]]
         p = list(pos)
         r = self.p['collisionRadius']
         for o in obstacles:
@@ -297,7 +408,111 @@ class Controller:
                 p = [o['pos'][0] + c * nx - s * ny, o['pos'][1] + s * nx + c * ny, 0.0]
         return p
 
+    def axis_point(self, pos, yaw, frm):
+        """The point Locomotion heads for on the way to pos, reached facing yaw: on the line through pos along yaw,
+        axisLook ahead of where frm projects onto it, at most axisLead out from pos and never past it."""
+        c, s = math.cos(yaw), math.sin(yaw)
+        along = c * (frm[0] - pos[0]) + s * (frm[1] - pos[1])
+        k = max(-self.p['axisLead'], min(0.0, along + self.p['axisLook']))
+        return [pos[0] + c * k, pos[1] + s * k]
+
+    def axis_walk(self):
+        return bool(self.stances) and self.p['locoTarget'] != 'centre'
+
+    def approach(self, nav, obstacles):
+        """(stick, face, arrive) for Locomotion walking to nav {pos, yaw} (yaw None: no facing). arrive is the pose the
+        query reaches at its last trajectory point, or None."""
+        p, frm = self.p, self.sim['pos']
+        togo = hypot(nav['pos'][0] - frm[0], nav['pos'][1] - frm[1])
+        if nav['yaw'] is not None and p['locoTarget'] == 'arrive' and togo < p['arriveReach']:
+            face = [math.cos(nav['yaw']), math.sin(nav['yaw'])]
+            if togo <= 0.05:
+                return None, face, nav
+            mag = min(1.0, togo / (60 * self.dt * p['walkFwd']))
+            dr = self.steer(frm, [(nav['pos'][0] - frm[0]) / togo, (nav['pos'][1] - frm[1]) / togo], togo, obstacles)
+            return [mag * dr[0], mag * dr[1]], face, nav
+        aim = nav['pos'] if nav['yaw'] is None else self.axis_point(nav['pos'], nav['yaw'], frm)
+        d = [aim[0] - frm[0], aim[1] - frm[1]]
+        dist = hypot(d[0], d[1])
+        if dist <= 0.05:
+            return None, None, None
+        # A walk to a box or marker centre slows down as if to stop 0.4 m short of it, a walk to a stance does not.
+        mag = min(1.0, max(0.35, (dist - 0.4 if nav['yaw'] is None else dist) / 1.0))
+        dr = self.steer(frm, [d[0] / dist, d[1] / dist], dist, obstacles)
+        return [mag * dr[0], mag * dr[1]], None, None
+
+    def nav_target(self, goal, activity):
+        """{pos, yaw} Locomotion walks a pick or a place to: the start of the SceneBot pick or place of the side the
+        last search chose for this goal, or the goal's centre with yaw None."""
+        ns, st = self.navSide, self.stances[activity] if self.axis_walk() else None
+        if not st or not ns or ns['activity'] != activity or ns['id'] != goal.get('id'):
+            self.stance = None
+            return {'pos': goal['pos'], 'yaw': None}
+        side = target_sides(goal['pos'], goal['yaw'], self.cfg['box_sides'])[ns['side']]
+        d = self.data_target(side['pos'], side['dir'], activity)
+        c, s = d['dir']
+        dyaw = side['yaw'] if d['dir'] is side['dir'] else math.atan2(s, c)
+        at = [{'pos': [d['pos'][0] + c * x - s * y, d['pos'][1] + s * x + c * y], 'yaw': dyaw + yaw} for x, y, yaw in st]
+        dist = lambda t: hypot(t['pos'][0] - self.sim['pos'][0], t['pos'][1] - self.sim['pos'][1])
+        prev = self.stance
+        k = prev['k'] if prev and prev['side'] == ns['side'] and prev['activity'] == activity and prev['k'] < len(at) else -1
+        best = 0
+        for i in range(1, len(at)):
+            if dist(at[i]) < dist(at[best]):
+                best = i
+        if k < 0 or dist(at[best]) < dist(at[k]) - self.p['stanceSwitch']:
+            k = best
+        self.stance = {'side': ns['side'], 'activity': activity, 'k': k}
+        return at[k]
+
+    def group_close(self, obstacles, keep=None):
+        """Boxes closer together than the robot can pass between: per group its centre, radius, the direction across
+        the line between its first two boxes, and its boxes. Tables and the box to pick up (keep) are in no group."""
+        r = self.p['collisionRadius']
+        rad = lambda o: max(o['half'][0], o['half'][1])
+        boxes = [o for o in obstacles if not o.get('table') and (keep is None or o['id'] != keep)]
+        root = list(range(len(boxes)))
+
+        def find(i):
+            if root[i] != i:
+                root[i] = find(root[i])
+            return root[i]
+
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                a, b = boxes[i], boxes[j]
+                if hypot(a['pos'][0] - b['pos'][0], a['pos'][1] - b['pos'][1]) - rad(a) - rad(b) < 2 * r:
+                    root[find(j)] = find(i)
+        groups = {}
+        for i, o in enumerate(boxes):
+            groups.setdefault(find(i), []).append(o)
+        out = []
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            pos = [seq_mean([o['pos'][k] for o in members]) for k in (0, 1)]
+            R = max(hypot(o['pos'][0] - pos[0], o['pos'][1] - pos[1]) + rad(o) for o in members)
+            a, b = members[0], members[1]
+            u = [b['pos'][0] - a['pos'][0], b['pos'][1] - a['pos'][1]]
+            l = hypot(u[0], u[1]) or 1.0
+            out.append({'pos': pos, 'R': R, 'across': [-u[1] / l, u[0] / l], 'members': members})
+        return out
+
     def steer(self, frm, direction, goal_dist, obstacles):
+        """Turn away from boxes that block the straight line to the goal, to the side they (or their group) are not on.
+        A robot inside a group first leaves it across the line between its boxes."""
+        groups = self.group_close(obstacles, self.goalBoxId)
+        group_of = {}
+        for g in groups:
+            for o in g['members']:
+                group_of[id(o)] = g
+            rel = [frm[0] - g['pos'][0], frm[1] - g['pos'][1]]
+            if hypot(rel[0], rel[1]) >= g['R']:
+                continue
+            n = g['across']
+            own = n[0] * rel[0] + n[1] * rel[1]
+            s = 1 if (own if abs(own) > GROUP_MIDDLE else n[0] * direction[0] + n[1] * direction[1]) >= 0 else -1
+            return [s * n[0], s * n[1]]
         d = list(direction)
         for o in obstacles:
             rel = [o['pos'][0] - frm[0], o['pos'][1] - frm[1]]
@@ -309,13 +524,17 @@ class Controller:
             clearance = max(o['half'][0], o['half'][1]) + self.p['collisionRadius'] + 0.15
             if abs(lateral) >= clearance:
                 continue
-            side = -1 if lateral > 0 else 1
+            g = group_of.get(id(o))
+            gl = direction[0] * (g['pos'][1] - frm[1]) - direction[1] * (g['pos'][0] - frm[0]) if g else lateral
+            side = -1 if gl > 0 else 1
             w = 2 * (1 - abs(lateral) / clearance) * (1 - dist / 1.6)
             d = [d[0] - side * w * direction[1], d[1] + side * w * direction[0]]
         l = hypot(d[0], d[1]) or 1.0
         return [d[0] / l, d[1] / l]
 
-    def predict_trajectory(self, stick, speed, obstacles, face=None):
+    def predict_trajectory(self, stick, speed, obstacles, face=None, arrive=None):
+        """face: [x, y] world direction the robot turns to instead of the stick's. arrive: {pos} the trajectory reaches
+        at its last point and stops at."""
         sim, dt = self.sim, 20 * self.dt
         rots, drot, dvel = [list(sim['rot'])], [list(self.desiredRot)], [list(self.desiredVel)]
         face_rot = qfrom_yaw(math.atan2(face[1], face[0])) if face else None
@@ -330,7 +549,17 @@ class Controller:
         for i in range(1, 4):
             self.sim_position_update(s, dvel[i], self.p['simVelocityHalflife'], dt, obstacles)
             pos.append(list(s['pos']))
-        self.trajectory = {'pos': pos, 'rot': rots}
+        if arrive:
+            # A cubic from the simulation object's position and velocity to rest at arrive, its entry speed cut where
+            # it would carry the cubic past arrive and back.
+            D = [arrive['pos'][0] - sim['pos'][0], arrive['pos'][1] - sim['pos'][1], 0.0]
+            T = 3 * dt
+            room, v = 3 * hypot(D[0], D[1]) / T, hypot(sim['vel'][0], sim['vel'][1])
+            v0 = scale([sim['vel'][0], sim['vel'][1], 0.0], room / v) if v > room else [sim['vel'][0], sim['vel'][1], 0.0]
+            for i in range(1, 4):
+                t = i / 3
+                pos[i] = add(sim['pos'], add(scale(v0, T * (t - 2 * t * t + t * t * t)), scale(D, 3 * t * t - 2 * t * t * t)))
+        self.trajectory = {'pos': pos, 'rot': rots, 'vel': [0.0, 0.0, 0.0] if arrive else list(s['vel'])}
 
     # ---- queries ----
 
@@ -349,17 +578,20 @@ class Controller:
             qy[NPOSE_FEATURES + 6 + 2 * h], qy[NPOSE_FEATURES + 6 + 2 * h + 1] = td[0], td[1]
         qy[NPOSE_FEATURES + 12] = 0 if holding else 1
         qy[NPOSE_FEATURES + 13] = 1 if holding else 0
+        if len(qy) > NPOSE_FEATURES + 14:
+            tv = qinv_mul_vec(P.rootRot, self.trajectory['vel'])
+            qy[NPOSE_FEATURES + 14], qy[NPOSE_FEATURES + 15] = tv[0], tv[1]
         return qy
 
     def box_query(self, target_pos, target_dir, tag):
         qy = np.zeros(self.backend.ctrl['box']['nfeatures'], dtype=np.float32)
         qy[:NPOSE_FEATURES] = self.pose_features()
-        P = self.pose
-        tp = qinv_mul_vec(P.rootRot, [target_pos[0] - P.rootPos[0], target_pos[1] - P.rootPos[1], 0.0])
+        P, d = self.pose, self.data_target(target_pos, target_dir, tag)
+        tp = qinv_mul_vec(P.rootRot, [d['pos'][0] - P.rootPos[0], d['pos'][1] - P.rootPos[1], 0.0])
         r = hypot(tp[0], tp[1])
         if r > self.p['boxQueryRadius']:
             tp = scale(tp, self.p['boxQueryRadius'] / r)
-        td = qinv_mul_vec(P.rootRot, [target_dir[0], target_dir[1], 0.0])
+        td = qinv_mul_vec(P.rootRot, [d['dir'][0], d['dir'][1], 0.0])
         qy[NPOSE_FEATURES], qy[NPOSE_FEATURES + 1] = tp[0], tp[1]
         qy[NPOSE_FEATURES + 2], qy[NPOSE_FEATURES + 3] = td[0], td[1]
         qy[NPOSE_FEATURES + 4] = 1 if tag == 'pick' else 0
@@ -382,28 +614,50 @@ class Controller:
         ph = self.box_phase()
         return ph in ('pick-pre', 'place-pre') and self.is_low()
 
+    def data_target(self, pos, d, kind):
+        """The target {pos, dir} of the data's motion for a target of the world: back by the edit of the motion that
+        plays (boxEdit) and by boxAhead. world_target goes the other way. dir is returned as given when not turned."""
+        ex, ey, eyaw = self.boxEdit.get(kind) or NO_EDIT
+        x = ex + self.p['boxAhead']
+        dd = turned(d, -eyaw) if eyaw else d
+        return {'pos': [pos[0] - x * dd[0] + ey * dd[1], pos[1] - x * dd[1] - ey * dd[0]], 'dir': dd}
+
+    def world_target(self, pos, d, kind):
+        ex, ey, eyaw = self.boxEdit.get(kind) or NO_EDIT
+        x = ex + self.p['boxAhead']
+        return {'pos': [pos[0] + x * d[0] - ey * d[1], pos[1] + x * d[1] + ey * d[0]], 'dir': turned(d, eyaw) if eyaw else d}
+
     def anim_target(self):
+        """Where the playing animation believes the box target is, in world coordinates, as world_target moves it."""
         b = self.backend
         if b.active == 'loco':
             return None
         f = b.denormalize(b.active, b.current_features())
         P = self.pose
-        pos = add(P.rootPos, qmul_vec(P.rootRot, [float(f[NPOSE_FEATURES]), float(f[NPOSE_FEATURES + 1]), 0.0]))
         d = qmul_vec(P.rootRot, [float(f[NPOSE_FEATURES + 2]), float(f[NPOSE_FEATURES + 3]), 0.0])
-        return {'pos': pos, 'dir': d}
+        at = add(P.rootPos, qmul_vec(P.rootRot, [float(f[NPOSE_FEATURES]), float(f[NPOSE_FEATURES + 1]), 0.0]))
+        w = self.world_target(at, d, self.boxTag or 'pick')
+        return {'pos': [w['pos'][0], w['pos'][1], at[2]], 'dir': [w['dir'][0], w['dir'][1], 0.0]}
 
     def held_box_world(self):
+        """The held box in world coordinates, boxAhead farther along its X axis (away from the carrier)."""
         P = self.pose
-        return {'pos': add(P.rootPos, qmul_vec(P.rootRot, P.boxPos)), 'rot': qnorm(qmul(P.rootRot, P.boxRot))}
+        ahead = qmul_vec(P.boxRot, [self.p['boxAhead'], 0.0, 0.0])
+        return {'pos': add(P.rootPos, qmul_vec(P.rootRot, add(P.boxPos, ahead))), 'rot': qnorm(qmul(P.rootRot, P.boxRot))}
 
     def hip_height(self):
-        return self.pose.hipPos[2]
+        """The pelvis height the data has at the playing frame: an edited pick keeps the data's bent and upright."""
+        return self.pose.hipPos[2] - self.backend.edit_lift()
 
     def is_low(self):
         return self.hip_height() < self.p['zLow']
 
     def is_upright(self):
         return self.hip_height() > self.p['zUpright']
+
+    def past_last_step(self):
+        b = self.backend
+        return b.active == 'loco' or b.from_last_step(b.active)[b.frame] == 1
 
     def after_last_step(self):
         b = self.backend
@@ -441,32 +695,45 @@ class Controller:
     # ---- the frame update ----
 
     def update(self, inp):
-        """inp: stick [x, y] world direction or None, slow, holding, pickBox {pos, yaw, id} or None,
-        placeTarget {pos, yaw} or None, boxes (floor boxes [{pos, yaw, id}]), boxHalf [x, y], forceSearch.
-        face [x, y] world direction or None is not the page's: the arrows of the loco driver's window. It turns the
-        character there instead of toward the stick and, like the stick, takes over from the box task."""
+        """inp: stick [x, y] world direction or None, face [x, y] or None, walkTo {pos, yaw} or None, slow, holding,
+        pickBox {pos, yaw, id, table, sides} or None, placeTarget {pos, yaw, z, table, sides} or None, boxes (the boxes
+        on the floor [{pos, yaw, id}]), boxHalf [x, y], tables [{id, pos, yaw, half, table}], forceSearch.
+        face is not only the page's: like the stick, it also takes over from the box task (the loco driver's arrows)."""
         dt, p, b = self.dt, self.p, self.backend
+        if self.holding and not inp['holding'] and self.mode == 'box' and self.boxTag == 'pick':
+            self.boxTag = 'place'
         self.holding = inp['holding']
         self.events = {'grasp': False, 'release': False}
         ss = p['slowScale'] if inp.get('slow') else 1.0
         speed = {'fwd': p['walkFwd'] * ss, 'side': p['walkSide'] * ss, 'back': p['walkBack'] * ss}
         goal = inp['placeTarget'] if inp['holding'] else inp['pickBox']
         activity = ('place' if inp['placeTarget'] else None) if inp['holding'] else ('pick' if inp['pickBox'] else None)
+        self.why = None
+        self.activity = activity
+        self.goalDist = hypot(goal['pos'][0] - self.pose.rootPos[0], goal['pos'][1] - self.pose.rootPos[1]) if goal else None
         pick_box = inp['pickBox']
         obstacles = [{'id': o['id'], 'pos': o['pos'], 'yaw': o['yaw'], 'half': inp['boxHalf']} for o in inp['boxes']
-                     if not (self.mode == 'box' and pick_box and o['id'] == pick_box['id'])]
+                     if not (self.mode == 'box' and pick_box and o['id'] == pick_box['id'])] + list(inp.get('tables') or [])
 
-        stick, face = inp.get('stick'), inp.get('face')
+        user = inp.get('stick') or inp.get('face')
+        stick, face, arrive = inp.get('stick'), inp.get('face'), None
         navigating = False
-        if not stick and not face and goal and self.mode == 'loco':
-            d = [goal['pos'][0] - self.sim['pos'][0], goal['pos'][1] - self.sim['pos'][1]]
-            dist = hypot(d[0], d[1])
-            if dist > 0.05:
-                mag = min(1.0, max(0.35, (dist - 0.4) / 1.0))
-                dr = self.steer(self.sim['pos'], [d[0] / dist, d[1] / dist], dist, obstacles)
-                stick = [mag * dr[0], mag * dr[1]]
-                navigating = True
+        self.nav = None
+        walk_to = None if goal else inp.get('walkTo')
+        self.goalBoxId = pick_box['id'] if activity == 'pick' else None
+        if not stick and not face and (goal or walk_to) and self.mode == 'loco':
+            nav = self.nav_target(goal, activity) if goal else walk_to
+            stick, face, arrive = self.approach(nav, obstacles)
+            if goal:
+                navigating = bool(stick or arrive)
+                self.nav = nav
         self.navigating = navigating
+        self.arriving = bool(arrive)
+        # The stance of a pick is closer to the box than collisionRadius: on the way there the box being picked and the
+        # table under the target stop neither the simulation object nor the trajectory. steer still turns round them.
+        to_stance = self.nav is not None and self.nav['yaw'] is not None
+        blocking = [o for o in obstacles if not (activity == 'pick' and o['id'] == pick_box['id'])
+                    and not (goal.get('table') and o['id'] == goal['table'])] if to_stance else obstacles
 
         dvel = self.desired_velocity(stick, self.sim['rot'], speed)
         dvel_change = length(sub(dvel, self.desiredVel)) / dt
@@ -475,7 +742,7 @@ class Controller:
             self.desiredRot = qfrom_yaw(math.atan2(face[1], face[0]))
         elif stick and hypot(stick[0], stick[1]) > 0.01:
             self.desiredRot = qfrom_yaw(math.atan2(dvel[1], dvel[0]))
-        self.predict_trajectory(stick, speed, obstacles, face)
+        self.predict_trajectory(stick, speed, blocking, face, arrive)
         if inp.get('forceSearch'):
             self.forceSearch = True
         if not navigating and dvel_change > 50 * 0.25:
@@ -497,7 +764,7 @@ class Controller:
                 self.reapproach = None
         self.leaveBox = bool(pre and self.is_upright() and p['leaveMoved'] is not None and self.engaged
                              and hypot(goal['pos'][0] - self.engaged['pos'][0],
-                                            goal['pos'][1] - self.engaged['pos'][1]) > p['leaveMoved'])
+                                       goal['pos'][1] - self.engaged['pos'][1]) > p['leaveMoved'])
         rising = self.rising()
         self.missed = bool(rising and pre and (self.risen() or b.end_of_anim()))
         if self.leaveBox or self.missed:
@@ -511,12 +778,20 @@ class Controller:
             c = self.commit or {'boxId': pick_box['id'] if phase == 'pick-pre' and pick_box else None,
                                 'side': t['side'], 'pos': list(t['pos']), 'yaw': t['yaw'], 'dir': list(t['dir'])}
             want = 'pick' if phase == 'pick-pre' else 'place'
-            abort = bool(self.calledOff or activity != want or inp.get('stick') or inp.get('face')
-                         or (pick_box and phase == 'pick-pre' and c['boxId'] != pick_box['id'])
-                         or hypot(sides[c['side']]['pos'][0] - c['pos'][0], sides[c['side']]['pos'][1] - c['pos'][1]) > p['movedTolerance']
-                         or abs(wrap_angle(sides[c['side']]['yaw'] - c['yaw'])) > p['movedAngle']) if sides else True
+            moved = lambda: hypot(sides[c['side']]['pos'][0] - c['pos'][0], sides[c['side']]['pos'][1] - c['pos'][1])
+            turn = lambda: abs(wrap_angle(sides[c['side']]['yaw'] - c['yaw']))
+            cause = ('check' if self.calledOff else 'cleared' if activity != want else 'stick' if user
+                     else 'other' if pick_box and phase == 'pick-pre' and c['boxId'] != pick_box['id']
+                     else 'moved' if moved() > p['movedTolerance'] else 'turned' if turn() > p['movedAngle'] else None)
+            abort = cause is not None
             if abort and not self.commit:
                 self.commit = c
+            if abort:
+                self.why = {'by': f'cancel-{cause}'}
+                if cause == 'moved':
+                    self.why.update(moved=moved(), limit=p['movedTolerance'])
+                if cause == 'turned':
+                    self.why.update(turned=turn(), limit=p['movedAngle'])
         self.calledOff = False
         if abort:
             self.boxTag = 'place' if self.boxTag == 'pick' else 'pick'
@@ -525,8 +800,10 @@ class Controller:
         hold = self.anim_hold()
         self.holdSwitchTime = self.holdSwitchTime + dt if (self.bent_for_event() and hold is not None and 0.1 < hold[1] < 0.9) else 0.0
         finishing = rising and not self.risen() and not b.end_of_anim()
+        self.finishing = finishing
         search_due = not finishing and (self.forceSearch or self.searchTimer <= 0 or b.end_of_anim())
         if search_due:
+            self.searchAt = self.clock
             self.search(inp, sides, activity, goal, self.forceSearch, obstacles)
             self.searchTimer = p['searchTime'] / self.clip_speed(b.active)
             self.forceSearch = False
@@ -546,17 +823,20 @@ class Controller:
         if (ph == 'pick-pre' and held >= p['graspOn'] and pick_box
                 and hypot(hb['pos'][0] - pick_box['pos'][0], hb['pos'][1] - pick_box['pos'][1]) < p['graspReach']):
             self.events['grasp'] = True
+            self.lastEvent = {'kind': 'grasp', 't': self.clock}
             if not self.commit and self.target:
                 self.commit = {'boxId': pick_box['id'], 'side': self.target['side'], 'pos': list(self.target['pos']),
                                'yaw': self.target['yaw'], 'dir': list(self.target['dir'])}
-        if ph == 'place-pre' and held <= p['releaseOff'] and hb['pos'][2] < p['floorBoxZ']:
+        place_z = (inp['placeTarget'] or {}).get('z') or 0.0
+        if ph == 'place-pre' and held <= p['releaseOff'] and hb['pos'][2] < p['floorBoxZ'] + place_z:
             self.events['release'] = True
+            self.lastEvent = {'kind': 'release', 't': self.clock}
             if not self.commit and self.target:
                 self.commit = {'boxId': None, 'side': self.target['side'], 'pos': list(self.target['pos']),
                                'yaw': self.target['yaw'], 'dir': list(self.target['dir'])}
 
         if self.mode == 'loco':
-            self.sim_position_update(self.sim, self.desiredVel, p['simVelocityHalflife'], dt, obstacles)
+            self.sim_position_update(self.sim, self.desiredVel, p['simVelocityHalflife'], dt, blocking)
             self.sim['rot'], self.sim['ang'] = simple_spring_damper_quat(self.sim['rot'], self.sim['ang'], self.desiredRot,
                                                                          p['simRotationHalflife'], dt)
             self.adjust_to_simulation()
@@ -570,16 +850,101 @@ class Controller:
             self.sim['rot'] = list(self.pose.rootRot)
             self.sim['ang'] = [0.0, 0.0, 0.0]
             self.desiredRot = list(self.pose.rootRot)
-        self.semantics = ('navigate' if navigating else 'locomotion') if self.mode == 'loco' else self.box_phase()
+        self.semantics = (self.box_phase() if self.mode != 'loco' else 'arrive' if self.arriving
+                          else 'navigate' if navigating else 'locomotion')
+        self.clock += dt
+        self.trace(bool(goal))
 
-    def approach_clear(self, frm, side, obstacles):
-        p = self.p
-        stand = [side['pos'][0] - p['standOff'] * side['dir'][0], side['pos'][1] - p['standOff'] * side['dir'][1]]
+    # ---- the record of the state machine and the numbers its rules compare (display only) ----
+
+    def trace(self, has_goal):
+        """Each change of state with its cause, noted where the decision was made (why) or told from the two states. A
+        state is the semantics and what plays it: 'navigate:loco', 'navigate:carry', 'pick-pre:pick'."""
+        f, s = self.fsm, self.semantics
+        key = f'{s}:pick' if s.startswith('pick') else f'{s}:place' if s.startswith('place') else f"{s}:{'carry' if self.holding else 'loco'}"
+        if key == f['state']:
+            return
+        if f['state'] is not None:
+            f['history'].append({'t': self.clock, 'from': f['state'], 'to': key, **(self.why or self.infer_why(f['state'], key, has_goal))})
+            if len(f['history']) > FSM_HISTORY:
+                f['history'].pop(0)
+        f['state'] = key
+        f['since'] = self.clock
+
+    def infer_why(self, frm, to, has_goal):
+        fs, fk = frm.split(':')
+        ts, tk = to.split(':')
+        walks = lambda x: x in ('locomotion', 'navigate', 'arrive')
+        togo = hypot(self.nav['pos'][0] - self.sim['pos'][0], self.nav['pos'][1] - self.sim['pos'][1]) if self.nav else None
+        if fs == 'pick-pre' and ts == 'pick-post':
+            return {'by': 'grasp'}
+        if fs == 'place-pre' and ts == 'place-post':
+            le = self.lastEvent
+            return {'by': 'release'} if le and le['kind'] == 'release' and self.clock - le['t'] < 0.5 else {'by': 'drop', 'again': has_goal}
+        if (fk == 'carry' and tk == 'loco') or (fs == 'pick-post' and ts == 'place-post'):
+            return {'by': 'drop', 'again': has_goal}
+        if walks(fs) and walks(ts):
+            if fk != tk:
+                return {'by': 'held'}
+            if ts == 'arrive':
+                return {'by': 'near', 'togo': togo, 'reach': self.p['arriveReach']}
+            if ts == 'navigate':
+                return {'by': 'far', 'togo': togo, 'reach': self.p['arriveReach']} if fs == 'arrive' else {'by': 'target'}
+            return {'by': 'reached' if has_goal else 'cleared'}
+        return {'by': 'other'}
+
+    def play_cost(self):
+        """The cost of the clip that plays against the query of now, which another frame must beat."""
+        b = self.backend
+        if self.fsm['state'] is None:
+            return None
+        if self.mode == 'loco':
+            kind = 'arrive' if self.arriving else 'loco'
+            query = self.loco_query(self.holding)
+        else:
+            ph = self.box_phase()
+            t = (ph in ('pick-post', 'place-post') and self.commit) or self.target
+            if not t or not self.boxTag:
+                return None
+            kind = self.boxTag
+            query = self.box_query(t['pos'], t['dir'], kind)
+        name = self.db_of(kind)
+        return b.play_cost(name, b.normalize(name, query), self.p['gains'][kind])
+
+    def status(self):
+        """The numbers the rules of the state machine compare now (Controller.status of the page)."""
+        p, f = self.p, self.fsm
+        th = self.thresholds(self.activity or self.boxTag or 'pick')
+        cost = {k: (self.lastMatch[k]['cost'] if k in self.lastMatch else None) for k in QUERY_DB}
+        query = self.boxTag if self.mode != 'loco' else 'arrive' if self.arriving else 'loco'
+        at = self.matchAt.get(query)
+        frozen = None if at is None else 'rise' if self.finishing else 'unmatched' if at < self.searchAt else None
+        return {
+            'state': f['state'], 'since': self.clock - f['since'], 'last': f['history'][-1] if f['history'] else None,
+            'clock': self.clock, 'mode': self.mode, 'query': query, 'activity': self.activity, 'cost': cost,
+            'frozen': frozen, 'costAge': None if at is None else self.clock - at, 'play': self.play_cost(),
+            'boxCost': self.boxCost if math.isfinite(self.boxCost) else None, 'sides': list(self.lastCosts),
+            'side': self.target['side'] if self.target else None, 'searchedAt': dict(self.matchAt),
+            'enter': th['enter'], 'leave': th['leave'], 'margin': th['margin'], 'dist': self.goalDist,
+            'engage': p['placeEngageRadius'] if self.activity == 'place' else p['forceEngageRadius'],
+            'limit': p['takeOverRadius'], 'search': p['engageRadius'],
+            'wait': None if self.reapproach is None else max(0.0, p['reapproachTime'] - self.reapproach),
+            'togo': hypot(self.nav['pos'][0] - self.sim['pos'][0], self.nav['pos'][1] - self.sim['pos'][1]) if self.nav else None,
+            'reach': p['arriveReach'] if self.axis_walk() and p['locoTarget'] == 'arrive' else None,
+            'hip': self.hip_height(), 'upright': p['zUpright'], 'low': p['zLow'], 'tilt': self.torso_tilt(),
+            'tiltMax': p['uprightTilt'],
+        }
+
+    def approach_clear(self, frm, side, obstacles, kind='pick'):
+        """A side is usable when the straight walk to where the robot stands for it (standOff behind the target, and
+        boxAhead more) stays clear of the other floor boxes."""
+        p, t = self.p, self.data_target(side['pos'], side['dir'], kind)
+        stand = [t['pos'][0] - p['standOff'] * t['dir'][0], t['pos'][1] - p['standOff'] * t['dir'][1]]
         d = [stand[0] - frm[0], stand[1] - frm[1]]
         len2 = d[0] * d[0] + d[1] * d[1] or 1e-9
         for o in obstacles:
-            t = max(0.0, min(1.0, ((o['pos'][0] - frm[0]) * d[0] + (o['pos'][1] - frm[1]) * d[1]) / len2))
-            gap = hypot(frm[0] + t * d[0] - o['pos'][0], frm[1] + t * d[1] - o['pos'][1])
+            u = max(0.0, min(1.0, ((o['pos'][0] - frm[0]) * d[0] + (o['pos'][1] - frm[1]) * d[1]) / len2))
+            gap = hypot(frm[0] + u * d[0] - o['pos'][0], frm[1] + u * d[1] - o['pos'][1])
             if not gap > hypot(o['half'][0], o['half'][1]) + p['approachClearance']:
                 return False
         return True
@@ -593,20 +958,20 @@ class Controller:
         self.p['loco'] = name
         if qy is None:
             return
-        m = self.match('loco', qy)
+        m = self.match('arrive' if self.arriving else 'loco', qy)
         self.transition(b.match_pose(m, self.curr.rootPos, self.curr.rootRot, self.dt))
         b.commit(m)
 
     def db_of(self, kind):
-        return kind if kind != 'loco' and self.p['boxDb'] == 'different' else QUERY_DB[kind]
+        return kind if is_box_query(kind) and self.p['boxDb'] == 'different' else QUERY_DB[kind]
 
     def match(self, kind, query, entry=0):
         b, name = self.backend, self.db_of(kind)
         qn, gain = b.normalize(name, query), self.p['gains'][kind]
-        sb_pre = (kind != 'loco' and self.cfg.get('scenebot_entry_frames') and b.active == name
+        sb_pre = (is_box_query(kind) and self.cfg.get('scenebot_entry_frames') and b.active == name
                   and b.scenebot_pre(name)[b.frame] == 1)
         mask = None
-        if kind != 'loco' and self.p['boxEntry'] == 'walk':
+        if is_box_query(kind) and self.p['boxEntry'] == 'walk':
             mask = b.before_event_mask(name) if sb_pre else b.walk_in_mask(name) if self.walkIn else b.no_entry(name)
         m = b.match(name, qn, gain, entry=entry, mask=mask, transition_cost=self.p['transitionCost'])
         m.update(kind=kind, qn=qn, gain=gain)
@@ -614,11 +979,14 @@ class Controller:
 
     def search(self, inp, sides, activity, goal, forced, obstacles):
         b, p, P = self.backend, self.p, self.pose
-        enter, leave, margin = p['boxEnter'], p['boxLeave'], p['sideMargin']
+        th = self.thresholds(activity or self.boxTag or 'pick')
+        enter, leave, margin = th['enter'], th['leave'], th['margin']
         self.lastCosts = []
+        self.navSide = None
         box_match = None
         phase = self.box_phase()
         pick_box = inp['pickBox']
+        user = inp.get('stick') or inp.get('face')
 
         if phase in ('pick-post', 'place-post'):
             c = self.commit or self.target
@@ -628,10 +996,14 @@ class Controller:
             near = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1])
             if self.mode == 'box' or near < p['engageRadius']:
                 locked = self.mode == 'box' and self.target and (self.is_low() or self.commit)
-                others = [o for o in obstacles if not pick_box or o['id'] != pick_box['id']]
-                cands = [sides[self.target['side']]] if locked else [s for s in sides if self.approach_clear(P.rootPos, s, others)]
+                others = [o for o in obstacles if (not pick_box or o['id'] != pick_box['id']) and o['id'] != goal.get('table')]
+                # A target on a table is taken from outside the table only.
+                gs = goal.get('sides')
+                open_ = [s for s in sides if s['side'] in gs] if gs is not None else sides
+                cands = ([sides[self.target['side']]] if locked
+                         else [s for s in open_ if self.approach_clear(P.rootPos, s, others, activity)])
                 if not cands and near < p['approachFallback']:
-                    cands = sides
+                    cands = open_
                 best = None
                 entry = p['placeEntryFrames'] if self.mode == 'loco' and activity == 'place' else 0
                 bonus = lambda x: margin if self.target and x['side'] == self.target['side'] else 0.0
@@ -643,9 +1015,11 @@ class Controller:
                 if best:
                     box_match = best[1]
                     self.target = best[0]
+                    self.navSide = {'side': best[0]['side'], 'activity': activity, 'id': goal.get('id')}
         self.boxCost = box_match['cost'] if box_match else math.inf
         if box_match:
             self.lastMatch[box_match['kind']] = box_match
+            self.matchAt[box_match['kind']] = self.clock
 
         use_box = False
         engage = p['placeEngageRadius'] if activity == 'place' else p['forceEngageRadius']
@@ -653,26 +1027,41 @@ class Controller:
         if activity and sides:
             self.engageCheck = {'kind': activity, 'mode': self.mode, 'cost': self.boxCost, 'enter': enter,
                                 'dist': hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1]),
-                                'radius': engage, 'search': p['engageRadius'], 'reapproach': self.reapproach}
+                                'radius': engage, 'limit': p['takeOverRadius'], 'search': p['engageRadius'],
+                                'reapproach': self.reapproach}
         if self.leaveBox or self.missed:
+            self.why = ({'by': 'leave-missed'} if not self.leaveBox else
+                        {'by': 'leave-moved', 'moved': hypot(goal['pos'][0] - self.engaged['pos'][0], goal['pos'][1] - self.engaged['pos'][1]),
+                         'limit': p['leaveMoved']})
             self.reapproach = 0.0
             self.engaged = None
             self.walkIn = True
         elif self.mode == 'box':
             if phase in ('pick-post', 'place-post'):
                 use_box = bool(box_match)
-            elif not activity or inp.get('stick') or inp.get('face'):
+                if not use_box:
+                    self.why = {'by': 'upright', 'hip': self.hip_height(), 'tilt': self.torso_tilt()}
+            elif not activity or user:
                 use_box = not self.is_upright() and bool(box_match)
+                if not use_box:
+                    self.why = {'by': 'leave-cleared' if not activity else 'leave-stick'}
             else:
                 dist = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1])
                 use_box = bool(box_match) and not (self.is_upright() and self.boxCost > leave and dist > engage + 0.3)
-        elif box_match and not (inp.get('stick') or inp.get('face')):
-            near = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1]) < engage
-            by_cost, by_dist = self.boxCost < enter, near and self.reapproach is None
-            use_box = by_cost or by_dist
+                if not use_box:
+                    self.why = ({'by': 'leave-cost', 'cost': self.boxCost, 'leave': leave, 'dist': dist, 'radius': engage + 0.3}
+                                if box_match else {'by': 'leave-nomatch'})
+        elif box_match and not user:
+            dist = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1])
+            within = p['takeOverRadius'] is None or dist < p['takeOverRadius']
+            by_cost, by_dist = self.boxCost < enter, dist < engage and self.reapproach is None
+            use_box = within and (by_cost or by_dist)
             if use_box:
                 self.boxTag = activity
                 self.reapproach = None
+                self.why = {'by': 'both' if by_cost and by_dist else 'cost' if by_cost else 'distance', 'cost': self.boxCost,
+                            'enter': enter, 'dist': dist, 'radius': engage, 'limit': p['takeOverRadius'],
+                            'side': self.target['side'] if self.target else None}
                 self.engagedBy = dict(self.engageCheck, by_cost=by_cost, by_dist=bool(by_dist), id=next(ENGAGE_IDS))
 
         if use_box:
@@ -685,8 +1074,10 @@ class Controller:
             self.mode = 'loco'
             if not activity:
                 self.target = None
-            m = self.match('loco', self.loco_query(inp['holding']))
-            self.lastMatch['loco'] = m
+            kind = 'arrive' if self.arriving else 'loco'
+            m = self.match(kind, self.loco_query(inp['holding']))
+            self.lastMatch[kind] = m
+            self.matchAt[kind] = self.clock
         if m['same']:
             return
         dst = b.match_pose(m, self.curr.rootPos, self.curr.rootRot, self.dt, self.clip_speed(m['name'], m['frame']))
@@ -747,3 +1138,11 @@ class Controller:
         P = self.pose
         return {'hipPos': add(P.rootPos, qmul_vec(P.rootRot, P.hipPos)), 'hipRot': qmul(P.rootRot, P.hipRot),
                 'joints': P.joints, 'root': P.rootPos, 'rootRot': P.rootRot, 'contacts': P.contacts}
+
+
+def seq_mean(xs):
+    """members.reduce((a, o) => a + o, 0) / n: the JS running sum."""
+    s = 0.0
+    for x in xs:
+        s += x
+    return s / len(xs)

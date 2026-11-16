@@ -22,10 +22,10 @@ serveWebFetch();
 const { Controller, MMBackend, loadMMData, loadLoco } = await webImport('js/controller.js');
 const { FootLock } = await webImport('js/ik.js');
 const { Sim, BOX } = await webImport('js/sim.js');
-const { VARIANTS } = await webImport('js/variants.js');
+const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/variants.js');
 const { q } = await webImport('js/math.js');
 
-const variant = 'holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60';
+const variant = DEFAULT_VARIANT;
 const DATA = VARIANTS[variant].data;
 const cfg = await (await fetch(`${DATA}/config.json`)).json();
 BOX.size = [cfg.data_box_size[1], cfg.data_box_size[1], cfg.data_box_size[2]];
@@ -37,17 +37,20 @@ controller.setLoco('emmboth');
 const sim = new Sim(controller, new FootLock(robot.bodies), cfg);
 sim.startScripted();
 
+// The controller's state that the next frame depends on, and what the page shows of it (navSide to fsm).
+const C_KEYS = ['mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch', 'holdSwitchTime',
+  'commit', 'target', 'navSide', 'stance', 'boxCost', 'calledOff', 'engaged', 'reapproach', 'leaveBox', 'missed', 'walkIn',
+  'navigating', 'arriving', 'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'events', 'semantics', 'searchAt', 'matchAt',
+  'finishing', 'clock', 'lastEvent', 'fsm'];
 const r = (v, n = 6) => +v.toFixed(n);
 const pick = (o, keys) => Object.fromEntries(keys.map((k) => [k, o[k]]));
 const stateOf = () => {
   const c = sim.controller, b = c.backend, w = sim.world;
   return {
-    c: pick(c, ['mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch', 'holdSwitchTime',
-      'commit', 'target', 'boxCost', 'calledOff', 'engaged', 'reapproach', 'leaveBox', 'missed', 'walkIn', 'navigating',
-      'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'events', 'semantics']),
+    c: pick(c, C_KEYS),
     b: pick(b, ['active', 'frame', 'frac', 'loco']),
-    w: pick(w, ['boxes', 'nextId', 'pickId', 'holdingId', 'placeTarget', 'regrasp']),
-    s: pick(sim, ['scenario', 'simTime', 'stats', 'forceSearch', 'grip', 'parked', 'heldPose', 'renderJoints']),
+    w: pick(w, ['boxes', 'tables', 'nextId', 'pickId', 'holdingId', 'placeTarget', 'regrasp']),
+    s: pick(sim, ['scenario', 'simTime', 'stats', 'forceSearch', 'grip', 'parked', 'heldPose', 'renderJoints', 'supports']),
     f: { feet: sim.footLock.feet, skate: sim.footLock.skate },
   };
 };
@@ -66,6 +69,7 @@ for (let k = 0; k < maxFrames; k++) {
     boxes: w.boxes.map((x) => [x.id, r(x.pos[0]), r(x.pos[1]), r(x.yaw)]),
     place: w.placeTarget ? [r(w.placeTarget.pos[0]), r(w.placeTarget.pos[1]), r(w.placeTarget.yaw)] : null,
     target: c.target ? c.target.side : null, cost: Number.isFinite(c.boxCost) ? r(c.boxCost, 4) : null,
+    fsm: c.fsm.state, play: c.playCost(),
   }));
   if (sim.done && --tail <= 0) break;
 }
@@ -74,4 +78,4 @@ if (statesOut) {
   states.push(JSON.stringify(stateOf(), plain));
   fs.writeFileSync(statesOut, states.join('\n') + '\n');
 }
-console.log(`${lines.length} frames, done=${sim.done}, step ${sim.scenario.index}`);
+console.log(`${lines.length} frames, done=${sim.done}, failed=${JSON.stringify(sim.failed)}, step ${sim.scenario.index}`);

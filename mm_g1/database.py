@@ -10,7 +10,7 @@ import os
 
 import numpy as np
 
-from .mathq import add, qfrom_yaw, qmul, qmul_vec, qnorm, qslerp_shortest_approx
+from .mathq import add, qfrom_yaw, qmul, qmul_vec, qnorm, qslerp_shortest_approx, qyaw, wrap_angle
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(os.path.dirname(HERE), 'data')
@@ -144,12 +144,58 @@ def last_steps(cfg, pose):
 
 
 def load_db_file(path, c):
+    n = c.get('stored', c['nfeatures'])
     buf = np.fromfile(path, dtype=np.uint8)
-    nX = c['nframes'] * c['nfeatures'] * 4
-    X = buf[:nX].view('<f4').reshape(c['nframes'], c['nfeatures'])
+    nX = c['nframes'] * n * 4
+    X = buf[:nX].view('<f4').reshape(c['nframes'], n)
     idx = buf[nX:nX + c['nframes'] * 4].view('<i4')
     ranges = buf[nX + c['nframes'] * 4:nX + c['nframes'] * 4 + c['nranges'] * 8].view('<i4').reshape(-1, 2)
     return X, idx, ranges
+
+
+TRAJ_VEL = {'group': 'traj_vel', 'size': 2, 'weight': 1.0, 'arrive': 0.0}
+
+
+def clip_stops(nrows, rows):
+    """Per row of an Animation Database: the row after the last one of its clip (clipStops of the page)."""
+    out = np.arange(1, nrows + 1, dtype=np.int64)  # (nrows,)
+    for row in rows:
+        out[row[2]:row[3]] = row[3]
+    return out
+
+
+def future_velocity(pose, L, g, stop, ahead):
+    """futureVelocity of the page for every row g at once: the root velocity `ahead` rows after g, or at the last row of
+    its clip, in the root frame of g. pose (rows, width), g and stop (N,). The yaw is summed in the page's order."""
+    g = np.asarray(g, dtype=np.int64)
+    g1 = np.minimum(g + ahead, np.asarray(stop, dtype=np.int64) - 1)  # (N,)
+    dyaw = pose[:, L['root_delta'][0] + 2].astype(np.float64)
+    yaw = np.zeros(len(g))
+    for k in range(ahead):
+        on = g + k < g1
+        yaw = yaw + np.where(on, dyaw[np.minimum(g + k, len(dyaw) - 1)], 0.0)
+    v = pose[g1, L['root_vel'][0]:L['root_vel'][0] + 2].astype(np.float64)  # (N, 2)
+    c, s = np.cos(yaw), np.sin(yaw)
+    return np.stack([c * v[:, 0] - s * v[:, 1], s * v[:, 0] + c * v[:, 1]], axis=1)  # (N, 2)
+
+
+def add_trajectory_velocity(cfg, pose, stops, d):
+    """The Locomotion Matching Database d with the group TRAJ_VEL after its features, normalized on its frames
+    (addTrajectoryVelocity of the page). cfg's loco controller gets the group too, and `stored`, the number of features
+    in the files."""
+    c, n0, length = cfg['controllers']['loco'], d.nfeatures, len(d.idx)
+    raw = future_velocity(pose, cfg['pose_layout'], d.idx, stops[d.idx], cfg['horizons'][-1])  # (len, 2)
+    offset = seq_sum(raw / length)
+    std = 0.0
+    for j in range(2):
+        std += math.sqrt(float(seq_sum((raw[:, j] - offset[j]) ** 2)) / length) / 2
+    scale = std / TRAJ_VEL['weight'] if std > 1e-6 else 1.0
+    X = np.concatenate([d.X, ((raw - offset) / scale).astype(np.float32)], axis=1)  # (len, n0 + 2)
+    if TRAJ_VEL['group'] not in c['groups']:
+        c.update(stored=n0, nfeatures=n0 + TRAJ_VEL['size'], groups=[*c['groups'], TRAJ_VEL['group']],
+                 group_sizes=[*c['group_sizes'], TRAJ_VEL['size']], weights=[*c['weights'], TRAJ_VEL['weight']],
+                 offset=[*c['offset'], *offset.tolist()], scale=[*c['scale'], scale, scale])
+    return MatchingDb(X, d.idx, d.ranges)
 
 
 def box_part(d, c, kind):
@@ -172,7 +218,7 @@ class Extra:
 
     def __init__(self, folder, cfg, first):
         self.cfg = read_json(os.path.join(folder, 'config.json'))
-        if self.cfg['nfeatures'] != cfg['controllers']['loco']['nfeatures'] or self.cfg['pose_width'] != cfg['pose_width']:
+        if self.cfg['nfeatures'] != cfg['controllers']['loco'].get('stored', cfg['controllers']['loco']['nfeatures']) or self.cfg['pose_width'] != cfg['pose_width']:
             raise ValueError(f'{folder} does not fit this variant')
         self.pose = load_half(os.path.join(folder, 'mm_pose.bin'))
         n = self.cfg['nfeatures']
@@ -195,14 +241,16 @@ class MMBackend:
         self.width = cfg['pose_width']
         self.L = cfg['pose_layout']
         pose = load_half(os.path.join(folder, 'mm_pose.bin'))
-        self.ctrl = {}
-        for name in ('loco', 'box'):
-            c = cfg['controllers'][name]
-            self.ctrl[name] = dict(c, offset=np.asarray(c['offset'], np.float32), scale=np.asarray(c['scale'], np.float32))
         self.db = {}
         for name in ('loco', 'box'):
             X, idx, ranges = load_db_file(os.path.join(folder, f'mm_{name}.bin'), cfg['controllers'][name])
             self.db[name] = MatchingDb(X, idx, ranges)
+        self.stops = clip_stops(len(pose) // self.width, cfg['clips']['rows'])
+        self.db['loco'] = add_trajectory_velocity(cfg, pose.reshape(-1, self.width), self.stops, self.db['loco'])
+        self.ctrl = {}
+        for name in ('loco', 'box'):
+            c = cfg['controllers'][name]
+            self.ctrl[name] = dict(c, offset=np.asarray(c['offset'], np.float32), scale=np.asarray(c['scale'], np.float32))
         self.db['box'].range_kind = list(cfg['controllers']['box']['range_kind'])
         self.db['pick'] = box_part(self.db['box'], cfg['controllers']['box'], 0)
         self.db['place'] = box_part(self.db['box'], cfg['controllers']['box'], 1)
@@ -232,6 +280,7 @@ class MMBackend:
         planted[:len(self.planted_rows)] = self.planted_rows
         self.planted_rows = planted
         self._masks = {}
+        self.edits = None
         if loco != 'nsm':
             self.build_loco(loco)
 
@@ -240,9 +289,10 @@ class MMBackend:
     def build_loco(self, name):
         empty, carry = loco_parts(name)
         c = self.cfg['controllers']['loco']
-        n, tag, d = c['nfeatures'], c['nfeatures'] - 1, self.locos['nsm']
-        off, sc = np.asarray(c['offset'], np.float64), np.asarray(c['scale'], np.float64)
-        raws, idxs, ranges, i = [], [], [], 0
+        n0 = c['stored']
+        tag, d = n0 - 1, self.locos['nsm']
+        off, sc = np.asarray(c['offset'], np.float64)[:n0], np.asarray(c['scale'], np.float64)[:n0]
+        raws, idxs, stops, ranges, i = [], [], [], [], 0
         for held in (True, False):
             extra = (self.emm_carry if carry == 'emm' else None) if held else (self.emm if empty == 'emm' else None)
             if extra is not None:
@@ -250,17 +300,21 @@ class MMBackend:
                     start, stop = row[2], row[3]
                     raws.append(extra.feats[start:stop].astype(np.float64))
                     idxs.append(extra.first + np.arange(start, stop))
+                    stops.append(np.full(stop - start, extra.first + stop))
                     ranges.append((i, i + stop - start))
                     i += stop - start
                 continue
             for a, b in d.ranges:
                 if (float(d.X[a, tag]) * float(sc[tag]) + float(off[tag]) > 0.5) != held:
                     continue
-                raws.append(d.X[a:b].astype(np.float64) * sc + off)
+                raws.append(d.X[a:b, :n0].astype(np.float64) * sc + off)
                 idxs.append(d.idx[a:b])
+                stops.append(self.stops[d.idx[a:b]])
                 ranges.append((i, i + b - a))
                 i += b - a
-        db = normalized_db(np.concatenate(raws), np.concatenate(idxs), ranges, c)
+        idx = np.concatenate(idxs)
+        vel = future_velocity(self.pose, self.L, idx, np.concatenate(stops), self.cfg['horizons'][-1])  # (len, 2)
+        db = normalized_db(np.concatenate([np.concatenate(raws), vel], axis=1), idx, ranges, c)
         self.locos[name] = db
         self.loco_scale[name] = (db.offset, db.scale)
 
@@ -313,7 +367,7 @@ class MMBackend:
         nm, _, start, stop, attach, release = rows[lo]
         is_place = d.range_kind[r] if d.range_kind is not None else name == 'place'
         event = release if is_place else attach
-        return self.cfg['clips']['names'][nm], start, stop, (-1 if event is None else event)
+        return self.cfg['clips']['names'][nm], start, stop, (-1 if event is None else event), lo
 
     def _mask(self, kind, name, make):
         key = (kind, name)
@@ -326,7 +380,7 @@ class MMBackend:
             d, out, sbn = self.db[name], np.zeros(len(self.db[name].idx), dtype=np.uint8), self.cfg.get('scenebot_entry_frames')
             for r, (a, b) in enumerate(d.ranges):
                 g0, g1 = d.idx[a], d.idx[b - 1]
-                clip, start, stop, event = self.range_clip(name, r)
+                clip, start, stop, event, _ = self.range_clip(name, r)
                 if g0 >= stop or not event >= 0:
                     continue
                 if g1 - start >= event:
@@ -348,7 +402,7 @@ class MMBackend:
         def make(name):
             d, out = self.db[name], np.zeros(len(self.db[name].idx), dtype=np.uint8)
             for r, (a, b) in enumerate(d.ranges):
-                _, start, _, event = self.range_clip(name, r)
+                _, start, _, event, _ = self.range_clip(name, r)
                 if not event >= 0:
                     continue
                 out[a:b] = (d.idx[a:b] - start >= event)
@@ -359,12 +413,73 @@ class MMBackend:
         def make(name):
             d, out = self.db[name], np.zeros(len(self.db[name].idx), dtype=np.uint8)
             for r, (a, b) in enumerate(d.ranges):
-                clip, start, _, event = self.range_clip(name, r)
+                clip, start, _, event, _ = self.range_clip(name, r)
                 if not clip.startswith('SceneBot') or not event >= 0:
                     continue
                 out[a:b] = (d.idx[a:b] - start < event)
             return out
         return self._mask('scenebot_pre', name, make)
+
+    def from_last_step(self, name):
+        """1 at or past the last step before the clip's grasp or release, and on every frame of a clip without one."""
+        def make(name):
+            d, out = self.db[name], np.zeros(len(self.db[name].idx), dtype=np.uint8)
+            for r, (a, b) in enumerate(d.ranges):
+                _, start, stop, event, row = self.range_clip(name, r)
+                s = next((x for x in self.steps[row] if x['event'] == event), None) if d.idx[a] < stop else None
+                out[a:b] = 1 if s is None else (d.idx[a:b] - start >= s['step'])
+            return out
+        return self._mask('from_last_step', name, make)
+
+    def scenebot_stances(self):
+        """sceneBotStances of the page: [x, y, yaw] of the root where each SceneBot pick and place that the box database
+        indexes starts, in the frame of the box side it works on (x away from the robot), or None."""
+        names, rows, d, L = self.cfg['clips']['names'], self.cfg['clips']['rows'], self.db.get('box'), self.L
+        if 'SceneBotPick' not in names or d is None:
+            return None
+        pick, place = names.index('SceneBotPick'), names.index('SceneBotPlace')
+
+        def indexed(start, stop):
+            return any(d.idx[a] < stop and d.idx[b - 1] >= start for a, b in d.ranges)
+
+        rd, bp, bq = L['root_delta'][0], L['box_pos'][0], L['box_quat'][0]
+        out = {'pick': [], 'place': []}
+        for n, _, start, stop, _, release in rows:
+            if n not in (pick, place) or not indexed(start, stop):
+                continue
+            e = 0 if n == pick else release
+            px = py = yaw = 0.0
+            for g in range(start, start + e):
+                r = self.pose[g]
+                dx, dy = float(r[rd]), float(r[rd + 1])
+                px += math.cos(yaw) * dx - math.sin(yaw) * dy
+                py += math.sin(yaw) * dx + math.cos(yaw) * dy
+                yaw += float(r[rd + 2])
+            r = self.pose[start + e]
+            bx, by = float(r[bp]), float(r[bp + 1])
+            cx = px + math.cos(yaw) * bx - math.sin(yaw) * by
+            cy = py + math.sin(yaw) * bx + math.cos(yaw) * by
+            byaw = yaw + qyaw([float(v) for v in r[bq:bq + 4]])
+            c, s = math.cos(byaw), math.sin(byaw)
+            out['pick' if n == pick else 'place'].append([-(c * cx + s * cy), s * cx - c * cy, wrap_angle(-byaw)])
+        return out
+
+    def edit_lift(self):
+        """How much higher the playing frame's pelvis is than in the data, where the pick motion is edited."""
+        if self.edits is None or not self.active or self.active == 'loco':
+            return 0.0
+        return self.edits.lift(int(self.db[self.active].idx[self.frame]))
+
+    def play_cost(self, name, qn, gain):
+        """The cost of the playing frame against a normalized query of its database, or None when another plays."""
+        if name != self.active:
+            return None
+        f = self.current_features().astype(np.float64)
+        q = qn.astype(np.float64)
+        c = 0.0
+        for j in range(len(f)):
+            c += gain[j] * (q[j] - f[j]) ** 2
+        return math.sqrt(c)
 
     def before_event_mask(self, name):
         def make(name):

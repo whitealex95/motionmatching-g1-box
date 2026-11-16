@@ -33,7 +33,8 @@ def frame_state(sim, k):
             'held': P.held, 'joints': sim.render_joints, 'holding': w.holding_id, 'pick': w.pick_id,
             'boxes': [[x['id'], x['pos'][0], x['pos'][1], x['yaw']] for x in w.boxes],
             'place': [*w.place_target['pos'], w.place_target['yaw']] if w.place_target else None,
-            'target': c.target['side'] if c.target else None, 'cost': c.boxCost if math.isfinite(c.boxCost) else None}
+            'target': c.target['side'] if c.target else None, 'cost': c.boxCost if math.isfinite(c.boxCost) else None,
+            'fsm': c.fsm['state'], 'play': c.play_cost()}
 
 
 def pose_from(d):
@@ -47,6 +48,12 @@ def num(v):
     return math.inf if v == 'inf' else v
 
 
+C_KEYS = ('mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch', 'holdSwitchTime',
+          'commit', 'target', 'navSide', 'stance', 'boxCost', 'calledOff', 'engaged', 'reapproach', 'leaveBox', 'missed',
+          'walkIn', 'navigating', 'arriving', 'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'events', 'semantics',
+          'searchAt', 'matchAt', 'finishing', 'clock', 'lastEvent', 'fsm')
+
+
 def load_state(sim, S):
     c, b, w = sim.controller, sim.controller.backend, sim.world
     for k, v in S['c'].items():
@@ -54,12 +61,13 @@ def load_state(sim, S):
             v = pose_from(v)
         elif k == 'off':
             v = {key: np.asarray(x, dtype=np.float64) if key in ('joints', 'jointVel') else x for key, x in v.items()}
-        elif k == 'boxCost':
-            v = num(v)
+        elif k in ('boxCost', 'searchAt'):
+            v = num(v) if v is not None else -math.inf
         setattr(c, k, copy.deepcopy(v))
     b.set_state((S['b']['active'], S['b']['frame'], S['b']['frac'], S['b']['loco']))
     W = S['w']
     w.boxes = copy.deepcopy(W['boxes'])
+    w.tables = copy.deepcopy(W['tables'])
     w.next_id, w.pick_id, w.holding_id = W['nextId'], W['pickId'], W['holdingId']
     w.place_target, w.regrasp = copy.deepcopy(W['placeTarget']), W['regrasp']
     s = S['s']
@@ -67,6 +75,7 @@ def load_state(sim, S):
     sim.sim_time, sim.stats, sim.force_search = s['simTime'], dict(s['stats']), s['forceSearch']
     sim.grip, sim.parked, sim.held_pose = copy.deepcopy(s['grip']), copy.deepcopy(s['parked']), copy.deepcopy(s['heldPose'])
     sim.render_joints = None if s['renderJoints'] is None else np.asarray(s['renderJoints'])
+    sim.supports = dict(s['supports'])
     feet = copy.deepcopy(S['f']['feet'])
     for f in feet:
         f.setdefault('final', None)
@@ -85,6 +94,8 @@ def flat(prefix, v, out):
     elif isinstance(v, (list, tuple)):
         for i, x in enumerate(v):
             flat(f'{prefix}[{i}]', x, out)
+    elif isinstance(v, float) and v == -math.inf:
+        out[prefix] = None
     else:
         out[prefix] = num(v) if isinstance(v, str) and v == 'inf' else v
     return out
@@ -92,15 +103,13 @@ def flat(prefix, v, out):
 
 def py_state(sim):
     c, b, w = sim.controller, sim.controller.backend, sim.world
-    S = {'c': {k: getattr(c, k) for k in ('mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer',
-                                         'forceSearch', 'holdSwitchTime', 'commit', 'target', 'boxCost', 'calledOff',
-                                         'engaged', 'reapproach', 'leaveBox', 'missed', 'walkIn', 'navigating',
-                                         'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'events', 'semantics')},
+    S = {'c': {k: getattr(c, k) for k in C_KEYS},
          'b': {'active': b.active, 'frame': int(b.frame), 'frac': b.frac, 'loco': b.loco},
-         'w': {'boxes': w.boxes, 'nextId': w.next_id, 'pickId': w.pick_id, 'holdingId': w.holding_id,
+         'w': {'boxes': w.boxes, 'tables': w.tables, 'nextId': w.next_id, 'pickId': w.pick_id, 'holdingId': w.holding_id,
                'placeTarget': w.place_target, 'regrasp': w.regrasp},
          's': {'scenario': sim.scenario, 'simTime': sim.sim_time, 'stats': sim.stats, 'forceSearch': sim.force_search,
-               'grip': sim.grip, 'parked': sim.parked, 'heldPose': sim.held_pose, 'renderJoints': sim.render_joints},
+               'grip': sim.grip, 'parked': sim.parked, 'heldPose': sim.held_pose, 'renderJoints': sim.render_joints,
+               'supports': sim.supports},
          'f': {'feet': [{k: v for k, v in f.items() if not (k == 'final' and v is None)} for f in sim.foot_lock.feet],
                'skate': sim.foot_lock.skate}}
     return flat('', S, {})
@@ -188,7 +197,9 @@ def main():
     for k, ref in enumerate(js):
         sim.step()
         s = frame_state(sim, k)
-        bad = [key for key in ('step', 'mode', 'tag', 'db', 'row', 'holding', 'pick', 'target') if s[key] != ref[key]]
+        bad = [key for key in ('step', 'mode', 'tag', 'db', 'row', 'holding', 'pick', 'target', 'fsm') if s[key] != ref[key]]
+        if (s['play'] is None) != (ref['play'] is None) or (s['play'] is not None and abs(s['play'] - ref['play']) > 1e-6):
+            bad.append('play')
         d = {'root': max(abs(x - y) for x, y in zip(s['root'], ref['root'])),
              'hip': max(abs(x - y) for x, y in zip(s['hip'], ref['hip'])),
              'joints': float(np.max(np.abs(np.asarray(s['joints']) - np.asarray(ref['joints'])))),

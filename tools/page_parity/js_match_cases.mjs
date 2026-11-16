@@ -15,9 +15,9 @@ if (!repo || !out) throw new Error('usage: js_match_cases.mjs <lmm-g1-box> <out.
 const { serveWebFetch, webImport } = await import(pathToFileURL(path.join(path.resolve(repo), 'physics/node_env.mjs')).href);
 serveWebFetch();
 const { Controller, MMBackend, loadMMData, loadLoco } = await webImport('js/controller.js');
-const { VARIANTS } = await webImport('js/variants.js');
+const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/variants.js');
 
-const variant = 'holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60';
+const variant = DEFAULT_VARIANT;
 const DATA = VARIANTS[variant].data;
 const cfg = await (await fetch(`${DATA}/config.json`)).json();
 const robot = await (await fetch('data/robot.json')).json();

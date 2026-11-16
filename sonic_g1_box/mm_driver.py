@@ -1,11 +1,13 @@
 """The box task: lmm-g1-box's motion generation and tracking, streamed to the deploy node, with SLAM (the map server's
 pose) and live.sam3box's boxes (the map server's objects), on the real G1 or the deploy repo's sim.
 
-It runs the way of lmm-g1-box's page (variant holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60, Play tab,
-physical mode with the SONIC release tracker: the page's defaults since its tag v3.0), ported in mm_g1:
+It runs the way of lmm-g1-box's page (variant holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60, Play tab,
+physical mode with the SONIC release tracker: the page's defaults of its tag v4.0), ported in mm_g1:
   controller   exact Motion Matching over data/ (the Locomotion Matching Database 'emmboth', the page's default,
-               and the Box Matching Database of sbplace), inertialization, foot locking, root warping and the
-               moving-target rules
+               and the Box Matching Database of sbplace), inertialization, foot locking, root warping, the arrive
+               state and the moving-target rules
+  pick motion  the pick and the put-down solved again for the height under the box with the pick editor's
+               whole-body IK (pick_worker.py runs the solves beside the control loop)
   reference    60 Hz poses resampled to 50 Hz and made 0.2 s at a time, snap-xyyaw every 10 frames onto the
                measured pelvis, held back while the box controller is bent down
   grasp        while the reference holds a box, each palm pressed 40 N toward it (tau = J^T f at the measured
@@ -64,7 +66,12 @@ them from it), set live from UI 3's Settings tab:
   grasp heuristic  --palm-force, --palm-target, --shoulder-squeeze, --wrist-squeeze, --shoulder-open
   pick and place   --pick-speed, --pick-slow, --warp, --leave-moved, --box-entry, --rise, --transition-cost,
                    --upright-tilt, --box-db, --foot-lock
-  matching         --weights-loco, --weights-pick, --weights-place, --box-enter, --box-leave, --side-margin
+  walk to the box  --loco-target, --box-ahead
+  pick motion      --pick-height, --pick-size, --pick-box, --pick-forward, --pick-left, --pick-up, --pick-yaw,
+                   --pick-palms, --pick-grip-keep (the driver's own: --table-min)
+  transitions      --box-enter-pick, --box-enter-place, --box-leave-pick, --box-leave-place, --side-margin-pick,
+                   --side-margin-place, --take-over, --retry-lift, --shoulder-open-from
+  matching         --weights-loco, --weights-arrive, --weights-pick, --weights-place
   by distance      --engage-radius, --force-engage-radius, --place-engage-radius, --reapproach-time (constants of the
                    page's controller, not on its panel)
 The seed's own rules, none of them the page's, are live flags on the same card (SEED_FLAGS): --skip-stopped,
@@ -146,14 +153,19 @@ import zmq
 import operator_link as OP
 from db_page import DbPage
 from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED, BusPublisher, DeployLink, RobotState
-from mm_g1.controller import QUERY_DB, torso_tilt
+from mm_g1.controller import ARRIVE_GROUPS, QUERY_DB, fill_weights, query_weights, torso_tilt
+from mm_g1.database import DATA, TRAJ_VEL
+from mm_g1.pickmotion import PickMotion
 from mm_g1.mathq import hypot, qyaw
 from mm_g1.runner import (CONTROL_DT, GRIP_REF_DZ, HOLDS, GripCheck, StreamRunner, box_yaw_near, pelvis_yaw, sync_box,
                           to_present)
 from mm_g1.sim import Sim
+from pick_worker import PickWorker
 from route_follow import ROUTE_NAMES, RouteFollow, moving
 
 STATE_TOPIC = '/mm_driver/state'
+PICK_CLIP_TOPIC = '/mm_driver/pick_motion/'   # + pick | place: the Pick motion card's viewer clip, at each change
+PICK_CLIP_EVERY = 5.0                       # s: and again this often, for a page opened later
 REF_TOPIC = '/mm_driver/ref'      # the reference's whole body (and the box it holds) at the frame the robot plays: UI 3
 REF_HZ = 30.0
 # The settings of lmm-g1-box's Play panel (app.js), each with the page's default: the controller's (its `p`), the grasp
@@ -161,18 +173,26 @@ REF_HZ = 30.0
 CONTROLLER_FLAGS = {'pick_speed': 'pickPlaceSpeed', 'pick_slow': 'pickPlaceSlow', 'warp': 'warp',
                     'leave_moved': 'leaveMoved', 'box_entry': 'boxEntry', 'rise': 'rise',
                     'transition_cost': 'transitionCost', 'upright_tilt': 'uprightTilt', 'box_db': 'boxDb',
-                    'box_enter': 'boxEnter', 'box_leave': 'boxLeave', 'side_margin': 'sideMargin',
+                    'loco_target': 'locoTarget', 'box_ahead': 'boxAhead', 'take_over': 'takeOverRadius',
                     'engage_radius': 'engageRadius', 'force_engage_radius': 'forceEngageRadius',
                     'place_engage_radius': 'placeEngageRadius', 'reapproach_time': 'reapproachTime'}
-WEIGHT_FLAGS = {'weights_loco': 'loco', 'weights_pick': 'pick', 'weights_place': 'place'}
+# The page's cost thresholds, one for a pick and one for a place (Controller.thresholds).
+THRESHOLD_FLAGS = {f'{name}_{act}': (key, act) for name, key in (('box_enter', 'boxEnter'), ('box_leave', 'boxLeave'),
+                                                                 ('side_margin', 'sideMargin')) for act in ('pick', 'place')}
+WEIGHT_FLAGS = {'weights_loco': 'loco', 'weights_arrive': 'arrive', 'weights_pick': 'pick', 'weights_place': 'place'}
 GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze': 'squeeze_rad',
                'wrist_squeeze': 'wrist_rad', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp', 'wrist_kp': 'wrist_kp'}
-PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', *GRASP_FLAGS, *CONTROLLER_FLAGS, *WEIGHT_FLAGS)
+# The Pick motion tab: its two switches (PickMotion.settings) and its manual edit (PickMotion.manual).
+PICK_FLAGS = {'pick_height': 'autoHeight', 'pick_size': 'autoSize'}
+PICK_MANUAL = {'pick_forward': 'forward', 'pick_left': 'left', 'pick_up': 'up', 'pick_yaw': 'yaw', 'pick_box': 'box',
+               'pick_palms': 'grasp', 'pick_grip_keep': 'gripKeep'}
+PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', 'retry_lift', 'shoulder_open_from', *GRASP_FLAGS, *CONTROLLER_FLAGS,
+              *THRESHOLD_FLAGS, *WEIGHT_FLAGS, *PICK_FLAGS, *PICK_MANUAL)
 # The seed's rules that are not the page's, in the order a re-plan checks them (UI 3's Anchoring card).
 SEED_FLAGS = ('skip_stopped', 'skip_stale', 'max_seed_jump', 'keep_out', 'pre_pose_full', 'track_delay', 'strip_seed_turns')
 # When a report of the box may move the controller's box (UI 3's Box tab, BoxDriver.box_gate).
 BOX_LOCK_FLAGS = ('box_lock', 'box_lock_moving', 'box_freeze', 'box_lock_need', 'box_still_s', 'box_lock_wait')
-LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'empty_gap', *SEED_FLAGS,
+LIVE_FLAGS = ('run_scale', 'tour_speed', 'frame', 'place_ahead', 'place_left', *PAGE_FLAGS, 'empty_gap', 'table_min', *SEED_FLAGS,
               'objects_s', 'reach_fresh_s', 'sync_move', 'sync_turn', 'sync_search', 'sync_need',
               'sync_agree', *BOX_LOCK_FLAGS, 'follow_s', 'obstacle_radius')
 RESTART_FLAGS = ('loco', 'lookahead', 'box_size', 'assoc_radius', 'fresh_s', 'grip_phys_dz', 'grip_need',
@@ -192,6 +212,7 @@ COLUMN_R = 0.06            # m around the palm midpoint
 COLUMN_MARGIN = 0.05       # m: the scan's top between the palms this far below the palms disagrees with a hold
 COLUMN_AGREE_S = 0.3       # s of agreement that end a disagreement
 FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
+PAGE_FSM_HISTORY = 24
 FSM_HISTORY = 16
 LOCO_STATES = ('locomotion', 'to_box')                 # UI 3's Locomotion node: the Locomotion database plays
 STILL_M = 0.05             # m the measured pelvis stays within while the robot stands still (--box-still-s)
@@ -206,7 +227,14 @@ G1_XML = os.path.join(ROOT, 'assets', 'unitree_g1', 'g1.xml')
 MODEL_VERSION = 'lmm-g1-box sbplace, Locomotion emmboth'
 LOCO_NAMES = {0: 'IDLE', 1: 'SLOW_WALK', 2: 'WALK', 3: 'RUN'}
 TASK_STATES = {'pick-pre': 'PICK', 'pick-post': 'PICK', 'place-pre': 'PLACE', 'place-post': 'PLACE'}
+TABLE_MIN = 0.1
+PLACE_HEIGHT_R = 0.1      # m: the put-down height is read from the map cells within this of the marker
+PLACE_HEIGHT_S = 1.0      # s between two reads of the height under the put-down marker on the way there
+SUPPORT_STEP = 0.03       # m: a support height changes only by this much or more
+SUPPORT_NEAR = 0.3        # m: a report this near where the box was taken stands on what it stood on then
+TABLE_MAX = 1.2            # m: a box reported with its bottom higher than this is not at rest on anything
 HUD = {'locomotion': ('Locomotion', 'Carrying'), 'navigate': ('Walking to the box', 'Carrying the box to the marker'),
+       'arrive': ('Arriving at the box', 'Arriving at the marker'),
        'pick-pre': ('Picking up',) * 2, 'pick-post': ('Lifting the box',) * 2, 'place-pre': ('Putting down',) * 2,
        'place-post': ('Standing up',) * 2}
 
@@ -653,6 +681,11 @@ class BoxDriver:
         self.args = args
         self.sim = Sim.build(loco=args.loco)
         self.sim.box_size = list(args.box_size)
+        pm = PickMotion(self.sim.cfg, self.sim.controller.backend, os.path.join(DATA, 'physics', 'scene.xml'),
+                        os.path.join(DATA, 'physics', 'sonic.json'))
+        self.pick_worker = PickWorker(pm, self.say)
+        self.sim.pick_motion, self.sim.pick_motion_gate = pm, self.pick_worker
+        self.pick_clip_sent = {}
         self.sim.reset_robot()
         step = self.sim.step
         self.sim.step = lambda: step(*self.controller_input())
@@ -667,6 +700,7 @@ class BoxDriver:
         self.grasp = PalmGrasp(args.box_size[2] / 2, **{k: getattr(args, n) for n, k in GRASP_FLAGS.items()})
         c = self.sim.controller
         self.variant_defaults = {**{n: page_choice(n, c.p[k]) for n, k in CONTROLLER_FLAGS.items()},
+                                 **{n: c.p[k][act] for n, (k, act) in THRESHOLD_FLAGS.items()},
                                  **{n: list(c.p['weights'][k]) for n, k in WEIGHT_FLAGS.items()}}
         self.apply_page_settings()
         self.box_turn = 2 * math.pi / self.sim.cfg['box_sides']
@@ -687,7 +721,7 @@ class BoxDriver:
         self.seed_outcome = None        # the last re-plan: 'seeded' or the rule that skipped its seed
         self.pose_corr_yaw = 0.0        # the runner's seed yaw when POSE started
         self.last = {'heartbeat': -1.0, 'planner': -1.0, 'bus': -1.0, 'objects': -1.0, 'pose': -1.0, 'tau': None,
-                     'ref': -1.0, 'column': -1.0}
+                     'ref': -1.0, 'column': -1.0, 'place_h': -1.0}
         self.box_id = None
         self.move_seen = None
         self.stick = (np.zeros(3), np.zeros(3))     # (move, face): the loco driver's left and right sticks
@@ -716,6 +750,7 @@ class BoxDriver:
         self.release = None        # {'F': first re-plan's frame after the drop, 'regrasp'}: frames up to F still hold it
         self.fsm = {'state': None, 'since': time.time(), 'history': collections.deque(maxlen=FSM_HISTORY), 'why': None,
                     'engaged': None}
+        self.page_fsm = collections.deque(maxlen=PAGE_FSM_HISTORY)   # the controller's transitions the robot played
         self.phase = 'idle'
         self.trace = open(args.trace, 'w') if args.trace else None
         self.ui = None                  # 'window' | 'terminal' | 'no-window' | 'headless'
@@ -812,6 +847,7 @@ class BoxDriver:
         if self.box_id is not None:
             w.remove_box(self.box_id)
         b = w.add_box('A', [c[0], c[1]], yaw)
+        b['z'] = round(self.support_of(c[2]), 2)
         self.box_id = b['id']
         self.reports.link(o)
         self.move_seen = None
@@ -875,10 +911,39 @@ class BoxDriver:
             return False
         self.walking = False
         pos, yaw = self.sim.relative(self.args.place_ahead, self.args.place_left)
-        w.set_place(pos, yaw)
+        z, on = self.place_height(pos[0], pos[1])
+        w.set_place(pos, yaw, z)
         self.sim.force_search = True
-        self.say(f'place at ({pos[0]:.2f}, {pos[1]:.2f}) m, {self.args.place_ahead:.2f} m ahead of the controller')
+        self.say(f'place at ({pos[0]:.2f}, {pos[1]:.2f}) m{on}, {self.args.place_ahead:.2f} m ahead of the controller')
         return True
+
+    def place_height(self, x, y):
+        """(z, words): the height a box put down at (x, y) stands on, from the map server's global map: the median top
+        of the occupied cells within PLACE_HEIGHT_R when at least half the cells there are occupied and it is
+        --table-min or higher, else the floor."""
+        r = self.map.request({'op': 'height', 'points': [[float(x), float(y)]], 'r': PLACE_HEIGHT_R})
+        if r is None:
+            return 0.0, ' (on the floor: no height from the map server)'
+        h = r['heights'][0]
+        if h['seen'] == 0:
+            return 0.0, ' (on the floor: the map has not seen there yet)'
+        if h['h'] is None or h['occupied'] < 0.5 or not self.args.table_min <= h['h'] <= TABLE_MAX:
+            return 0.0, ''
+        return float(h['h']), f", on what stands there, {h['h']:.2f} m high"
+
+    def refresh_place_height(self):
+        """The height under the put-down marker read again while the robot carries the box there: from the marker's
+        first request the map may not have seen there (behind the box, a table seen from far)."""
+        w, c = self.sim.world, self.sim.controller
+        t = w.place_target
+        if t is None or w.holding_id is None or c.mode != 'loco':
+            return
+        z, on = self.place_height(t['pos'][0], t['pos'][1])
+        if abs(z - (t.get('z') or 0.0)) < SUPPORT_STEP:
+            return
+        t['z'] = z
+        self.sim.force_search = True
+        self.say(f"place at ({t['pos'][0]:.2f}, {t['pos'][1]:.2f}) m: the height under it is {z:.2f} m now{on}")
 
     def place_at(self, x, y, yaw=None, what='the put-down marker', quiet=False):
         """UI 1's put-down marker, a click on the floor or the marker dragged. No yaw: the box faces away from the
@@ -890,10 +955,11 @@ class BoxDriver:
             P = self.sim.controller.pose.rootPos
             yaw = math.atan2(y - P[1], x - P[0])
         self.walking = False
-        w.set_place([x, y], yaw)
+        z, on = self.place_height(x, y)
+        w.set_place([x, y], yaw, z)
         self.sim.force_search = True
         if not quiet:
-            self.say(f'place at ({x:.2f}, {y:.2f}) m, {what}')
+            self.say(f'place at ({x:.2f}, {y:.2f}) m{on}, {what}')
         return True
 
     def floor_click(self, x, y):
@@ -991,6 +1057,7 @@ class BoxDriver:
         except ValueError as e:
             return self.say(f'UI 3: {e}')
         if name in WEIGHT_FLAGS:
+            v = fill_weights(self.sim.cfg, WEIGHT_FLAGS[name], v)
             n = len(self.sim.controller.p['weights'][WEIGHT_FLAGS[name]])
             if len(v) != n:
                 return self.say(f'UI 3: {fl.flag(name)} takes {n} weights, not {len(v)}')
@@ -1019,22 +1086,43 @@ class BoxDriver:
                 setattr(a, name, page_choice(name, c.p[key]))
             else:
                 c.p[key] = page_value(name, v)
+        for name, (key, act) in THRESHOLD_FLAGS.items():
+            if only not in (None, name):
+                continue
+            if getattr(a, name) is None:
+                setattr(a, name, c.p[key][act])
+            else:
+                c.set_threshold(key, act, float(getattr(a, name)))
         for name, kind in WEIGHT_FLAGS.items():
             if only not in (None, name):
                 continue
             if getattr(a, name) is None:
                 setattr(a, name, list(c.p['weights'][kind]))
             else:
-                c.set_weights(kind, getattr(a, name))
+                c.set_weights(kind, fill_weights(self.sim.cfg, kind, getattr(a, name)))
+        if only in (None, 'retry_lift'):
+            self.sim.retry_lift = a.retry_lift == 'on'
+        pm = self.sim.pick_motion
+        for name, key in PICK_FLAGS.items():
+            if only in (None, name):
+                pm.settings[key] = getattr(a, name) == 'on'
+        for name, key in PICK_MANUAL.items():
+            if only not in (None, name):
+                continue
+            v = getattr(a, name)
+            pm.manual[key] = (v == 'on' if key == 'gripKeep' else None if key == 'box' and v == 'data' else
+                              [float(x) for x in v.split(',')] if key == 'box' else
+                              [[float(x) for x in v.split(',')[2 * h:2 * h + 2]] for h in (0, 1)] if key == 'grasp' else v)
         for name, key in GRASP_FLAGS.items():
             if only in (None, name):
                 setattr(self.grasp, key, getattr(a, name) if name == 'palm_target' else float(getattr(a, name)))
         if only in (None, 'foot_lock'):
             self.sim.foot_lock.enabled = a.foot_lock == 'on'
-        if self.runner is not None and only in (None, 'hold', 'yaw_gain'):
+        if self.runner is not None and only in (None, 'hold', 'yaw_gain', 'shoulder_open_from'):
             self.runner.hold = HOLDS[a.hold]
             self.runner.yaw_gain = a.yaw_gain
             self.runner.keep_out = a.keep_out == 'on'
+            self.runner.open_from = a.shoulder_open_from
         if only is not None:
             self.sim.force_search = True
 
@@ -1291,6 +1379,7 @@ class BoxDriver:
             self.replan(self.cur)
         self.flush()
         self.update_fsm(self.frame_now())
+        self.track_page_fsm(self.frame_now())
         self.rearm_pick()
         self.step_pick_wait()
         if self.mode in (MODE_PLANNER, MODE_POSE) and now - self.last['heartbeat'] >= 1.0:
@@ -1308,6 +1397,9 @@ class BoxDriver:
                 self.box_from_report()
         if self.last['tau'] is None or now - self.last['tau'] >= CONTROL_DT:
             self.send_arm_tau(now)
+        if now - self.last['place_h'] >= PLACE_HEIGHT_S:
+            self.last['place_h'] = now
+            self.refresh_place_height()
         if now - self.last['column'] >= COLUMN_S:
             self.last['column'] = now
             self.poll_column(now)
@@ -1382,12 +1474,12 @@ class BoxDriver:
         frame = self.frame_now()
         if w.holding_id == b['id']:
             self.move_seen = None
-            if self.mode == MODE_POSE and self.grip.update(frame, w.holding_id, meas):
+            if self.mode == MODE_POSE and self.grip.update(frame, w.holding_id, meas, self.support_at(meas, b)):
                 self.release_hold(f"grip check: the reference lifted the box but it is still on the floor at "
                                   f"({meas['pos'][0]:.2f}, {meas['pos'][1]:.2f}) m", True, meas, by='grip')
             return
         self.grip.update(frame, w.holding_id, None)
-        if w.regrasp == b['id'] and w.pick_id is None and meas['pos'][2] - self.args.box_size[2] / 2 < self.args.grip_phys_dz:
+        if w.regrasp == b['id'] and w.pick_id is None and self.rest_dz(meas, b) < self.args.grip_phys_dz:
             if self.args.box_freeze == 'on':           # seen on the floor, the pick goes on where the box was
                 self.lock.last = (time.time(), 'frozen')
                 self.lock.skipped['frozen'] += 1
@@ -1402,8 +1494,8 @@ class BoxDriver:
             return
         if self.runner.pending(self.cur, b['id']) or self.grasp.ramp > 0:
             return
-        if meas['pos'][2] - self.args.box_size[2] / 2 > 0.15:
-            return                                                     # off the floor: not a resting pose to take
+        if meas['pos'][2] - self.args.box_size[2] / 2 > TABLE_MAX:
+            return                                                     # too high to rest on anything: not a pose to take
         gate = self.box_gate()
         self.lock.last = (time.time(), gate)
         if gate is not None:
@@ -1430,6 +1522,7 @@ class BoxDriver:
             return
         moved = hypot(pos[0] - b['pos'][0], pos[1] - b['pos'][1])
         b['pos'], b['yaw'] = pos, yaw
+        self.take_support(b, meas['pos'][2])
         self.move_seen = None
         if search:
             self.sim.force_search = True
@@ -1482,11 +1575,12 @@ class BoxDriver:
             return
         if meas['stamp'] * 1e-9 < since - 0.05:
             return                                     # seen before the robot stood: neither counted nor a break
-        L.still.append((np.asarray(meas['pos'][:2], float), float(meas['yaw'])))
+        L.still.append((np.asarray(meas['pos'][:2], float), float(meas['yaw']), float(meas['pos'][2])))
         if len(L.still) < a.box_lock_need:
             return
-        xy = np.median([p for p, _ in L.still], axis=0)
-        yaws = [box_yaw_near(y, b['yaw'], self.box_turn) for _, y in L.still]
+        xy = np.median([p for p, _, _ in L.still], axis=0)
+        self.take_support(b, float(np.median([z for _, _, z in L.still])))
+        yaws = [box_yaw_near(y, b['yaw'], self.box_turn) for _, y, _ in L.still]
         yaw = box_yaw_near(float(np.median(yaws)), b['yaw'], self.box_turn)
         moved = hypot(xy[0] - b['pos'][0], xy[1] - b['pos'][1])
         turned = abs(math.remainder(yaw - b['yaw'], 2 * math.pi))
@@ -1599,7 +1693,7 @@ class BoxDriver:
         if self.hands_empty_s >= HANDS_EMPTY_S:
             self.hands_empty_s = 0.0
             self.release_hold(f'the palm gap fell below {thr:.3f} m {HANDS_EMPTY_S:g} s ago: no box between the hands',
-                              True, by='palms')
+                              frame.tag['semantics'] == 'pick-post', by='palms')
 
     def record_grasp(self, now, frame):
         g = self.grasp
@@ -1686,6 +1780,29 @@ class BoxDriver:
         return None if d is None else {'by': d['by'], 'why': d['why'], 'ago_s': round(time.time() - d['wall'], 1),
                                        'between_s': d.get('between_s')}
 
+    def support_of(self, z_centre):
+        """The height of what a box reported at centre height z_centre stands on: its bottom when that is --table-min or
+        higher (a table), else the floor."""
+        bottom = float(z_centre) - self.args.box_size[2] / 2
+        return bottom if bottom >= self.args.table_min else 0.0
+
+    def take_support(self, b, z_centre):
+        """A new report's support for the world's box, rounded to 1 cm. A change smaller than SUPPORT_STEP is noise of the
+        fit and is not taken: each new height is a new pick motion to solve, and a new motion while it plays."""
+        z, old = round(self.support_of(z_centre), 2), b.get('z') or 0.0
+        if abs(z - old) >= SUPPORT_STEP or (z == 0.0) != (old == 0.0):
+            b['z'] = z
+
+    def support_at(self, meas, b):
+        """What the reported box rests on where it is now: what the world's box stood on when it was taken, while it is
+        near that place (a held box stays there in the world), else the floor."""
+        near = hypot(meas['pos'][0] - b['pos'][0], meas['pos'][1] - b['pos'][1]) < SUPPORT_NEAR
+        return (b.get('z') or 0.0) if near else 0.0
+
+    def rest_dz(self, meas, b):
+        """m the reported box's bottom is above what it rests on."""
+        return float(meas['pos'][2]) - self.args.box_size[2] / 2 - self.support_at(meas, b)
+
     def release_hold(self, why, regrasp, meas=None, by='pose'):
         """The box left the hands: the world drops its hold and the palm force stops at once. A report of the box on
         the floor (meas, else a fresh one) puts it there, and with regrasp the controller picks it up again (the grip
@@ -1696,14 +1813,18 @@ class BoxDriver:
             return False
         if meas is None:
             meas = self.reports.fresh(self.args.reach_fresh_s)
-            if meas is not None and meas['pos'][2] - self.args.box_size[2] / 2 >= self.args.grip_phys_dz:
+            if meas is not None and self.rest_dz(meas, b) >= self.args.grip_phys_dz:
                 meas = None
+        regrasp = bool(regrasp) and self.args.retry_lift == 'on'
         if meas is not None:
             pos, yaw = [float(meas['pos'][0]), float(meas['pos'][1])], box_yaw_near(meas['yaw'], b['yaw'], self.box_turn)
+            z = self.support_of(meas['pos'][2])
         else:
             pos, yaw = self.palms_on_floor(), b['yaw']
-        if not self.sim.drop(b['id'], pos, yaw):
+            z = b.get('z') or 0.0 if hypot(pos[0] - b['pos'][0], pos[1] - b['pos'][1]) < SUPPORT_NEAR else 0.0
+        if not self.sim.drop(b['id'], pos, yaw, retry=regrasp):
             return False
+        b['z'] = z
         self.drops += 1
         lead = self.between_lead()
         self.last_drop = {'wall': time.time(), 'by': by, 'why': why, 'between_s': None if lead is None else round(lead, 2)}
@@ -1783,6 +1904,33 @@ class BoxDriver:
     def fsm_cause(self, why, by=None):
         self.fsm['why'] = (time.time(), why, by)
 
+    def track_page_fsm(self, frame):
+        """The controller's own state machine (the page's Controller states) at the frame the robot plays: each
+        transition once, when the robot plays it. A re-plan makes the frames after the played one again, so a
+        transition the stream made but the robot never played is not kept."""
+        st = frame.tag.get('status')
+        last = None if st is None else st['last']
+        if last is None or (self.page_fsm and self.page_fsm[-1]['t'] >= last['t']):
+            return
+        self.page_fsm.append(finite(last))
+
+    def controller_state(self, frame):
+        """UI 3's Controller states card: the controller's status at the played frame (the numbers its rules compare),
+        the transitions the robot played and the settings the rule texts name (the page's fsmContext)."""
+        st = frame.tag.get('status')
+        c, p = self.sim.controller, self.sim.controller.p
+        return {
+            'status': None if st is None else finite(st), 'history': list(self.page_fsm),
+            'ctx': finite({
+                'walk': p['locoTarget'] if c.stances else 'centre', 'reach': p['arriveReach'], 'search': p['engageRadius'],
+                'sides': self.sim.cfg['box_sides'], 'enter': dict(p['boxEnter']), 'leave': dict(p['boxLeave']),
+                'pickEngage': p['forceEngageRadius'], 'placeEngage': p['placeEngageRadius'], 'limit': p['takeOverRadius'],
+                'leaveMoved': p['leaveMoved'], 'reapproach': p['reapproachTime'], 'rise': p['rise'], 'tilt': p['uprightTilt'],
+                'zUp': p['zUpright'], 'zLow': p['zLow'], 'moved': p['movedTolerance'], 'angle': p['movedAngle'],
+                'graspOn': p['graspOn'], 'releaseOff': p['releaseOff'], 'graspReach': p['graspReach'], 'warp': p['warp'],
+                'entry': p['boxEntry'], 'transCost': p['transitionCost'], 'placeEntry': p['placeEntryFrames'],
+                'physical': True, 'check': 0, 'retryLift': self.args.retry_lift == 'on'})}
+
     def fsm_state(self, frame):
         """The task state at the frame the robot plays (FSM_STATES). 'lost': from a drop that picks the box up again
         until the frames made after it play, and while the box that left the hands is not seen on the floor."""
@@ -1794,7 +1942,7 @@ class BoxDriver:
         if sem in ('pick-pre', 'pick-post', 'place-pre', 'place-post'):
             return sem
         held = frame.held is not None
-        if sem == 'navigate':
+        if sem in ('navigate', 'arrive'):
             return 'to_place' if held else 'to_box'
         return 'carry' if held else 'locomotion'
 
@@ -1854,14 +2002,15 @@ class BoxDriver:
         c, w, cfg = self.sim.controller, self.sim.world, self.sim.cfg
         b = c.backend
         xyyaw = lambda p, yaw: [round(float(p[0]), 3), round(float(p[1]), 3), round(float(yaw), 3)]
-        last = {}
+        last, rows = {}, {k: weight_rows(cfg, c, k) for k in QUERY_DB}
         for kind, m in c.lastMatch.items():
-            sizes = cfg['controllers'][QUERY_DB[kind]]['group_sizes']
+            sizes = [r['size'] for r in rows[kind]]
             e = np.asarray(m['gain'], float) * (np.asarray(m['qn'], float) - np.asarray(m['features'], float)) ** 2   # (F,)
-            err = np.add.reduceat(e, np.cumsum([0] + sizes[:-1]))                                             # (G,)
+            err = np.add.reduceat(e, np.cumsum([0] + sizes[:-1]))                                             # (R,)
             total = float(err.sum())
             g = int(b.db[m['name']].idx[m['frame']])
             last[kind] = {'cost': round(float(m['cost']), 3), 'g': g, 'clip': self.clips.of(g), 'db': m['name'],
+                          'wcost': [round(float(x), 4) for x in err],
                           'share': [round(float(x) / total, 3) if total > 0 else 0.0 for x in err]}
         phase = c.box_phase()
         pre = phase in ('pick-pre', 'place-pre')
@@ -1877,7 +2026,8 @@ class BoxDriver:
         return {
             'robot': {'g': g, 'clip': robot, 'semantics': frame.tag['semantics'], 'holding': frame.held is not None},
             'controller': {'semantics': c.semantics, 'phase': phase, 'holding': w.holding_id is not None,
-                           'in_use': 'loco' if c.mode == 'loco' else c.boxTag, 'g': cg, 'clip': ctrl, 'db': b.active},
+                           'in_use': ('arrive' if c.arriving else 'loco') if c.mode == 'loco' else c.boxTag, 'g': cg,
+                           'clip': ctrl, 'db': b.active},
             'plan': {'g': pg, 'clip': plan},
             'views': {str(x['i']): self.clips.view(x['i']) for x in (robot, ctrl, plan) if x is not None},
             'db_of': {k: c.db_of(k) for k in QUERY_DB},
@@ -1886,10 +2036,11 @@ class BoxDriver:
             'engage': engage_view(c.engageCheck, p['reapproachTime']),
             'engaged': engage_view(c.engagedBy, p['reapproachTime']),
             'ahead_s': round(self.args.lookahead * CONTROL_DT, 2), 'last': last,
-            'groups': {k: cfg['controllers'][QUERY_DB[k]]['groups'] for k in QUERY_DB},
+            'groups': {k: cfg['controllers'][QUERY_DB[k]]['groups'] for k in QUERY_DB}, 'rows': rows,
             'weights': {k: [float(x) for x in c.p['weights'].get(k, [])] for k in QUERY_DB},
-            'side_costs': [round(float(x), 3) for x in c.lastCosts],
+            'side_costs': [round(float(x), 3) if math.isfinite(x) else None for x in c.lastCosts],
             'enter': c.p['boxEnter'], 'leave': c.p['boxLeave'], 'side_margin': c.p['sideMargin'],
+            'take_over': c.p['takeOverRadius'],
             'traj': [xyyaw(p, qyaw(q)) for p, q in zip(c.trajectory['pos'], c.trajectory['rot'])] if c.mode == 'loco' else None,
             'target': None if t is None else xyyaw(t['pos'], t['yaw']),
             'anim': None if a is None else xyyaw(a['pos'], math.atan2(a['dir'][1], a['dir'][0])),
@@ -1930,6 +2081,7 @@ class BoxDriver:
             self.db_page.live = {'ok': True, 'wall': round(time.time(), 2), 'mode': self.mode, 'loco': self.args.loco,
                                  'fsm': self.fsm['state'], 'phase': self.phase,
                                  'match': match}
+        self.publish_pick_clips()
         self.bus.publish(STATE_TOPIC, {
             'mode': self.mode, 'variant': 'box', 'model_version': MODEL_VERSION,
             'root_xy': None if cur is None else cur.qpos[0:2].tolist(),
@@ -1946,6 +2098,8 @@ class BoxDriver:
                 'outcome': self.seed_outcome, 'seeds': r.seeds,
                 'skipped': {**self.skips, 'hold': r.held_back, 'keep_out': r.kept_out}},
             'phase': self.phase, 'task': task, 'box_lock': self.box_lock_state(), 'match': match,
+            'controller': None if cur is None else self.controller_state(cur),
+            'pick_motion': finite(self.pick_worker.state(self.sim.supports)),
             'grasp_trace': self.grasp_trace_state(),
             'db_port': None if self.db_page is None else self.db_page.port,
             'box_route': None if self.box_route is None else self.box_route.state(),
@@ -1957,6 +2111,18 @@ class BoxDriver:
             'variant_defaults': self.variant_defaults,
             'argv': None if self.flags is None else self.flags.argv(),
             'notices': [] if self.flags is None else list(self.flags.notices)})
+
+    def publish_pick_clips(self):
+        """The Pick motion card's viewer: each kind's clip once it plays a new edit, and every PICK_CLIP_EVERY s."""
+        pm, now = self.sim.pick_motion, time.time()
+        for kind in ('pick', 'place'):
+            if pm.info[kind] is None:
+                continue
+            sent = self.pick_clip_sent.get(kind)
+            if sent is not None and sent[0] == pm.applied[kind] and now - sent[1] < PICK_CLIP_EVERY:
+                continue
+            self.bus.publish(PICK_CLIP_TOPIC + kind, finite(self.pick_worker.clip(kind)))
+            self.pick_clip_sent[kind] = (pm.applied[kind], now)
 
     def close(self):
         if self.trace is not None:
@@ -1986,6 +2152,12 @@ def run_headless(args):
         nonlocal step, t_step
         step, t_step, br.phase = name, time.monotonic(), phase
         print(f'[headless] {phase}', flush=True)
+
+    def put_down():
+        if args.place_at is None:
+            return br.place_ahead()
+        x, y = (float(v) for v in args.place_at.split(','))
+        return br.place_at(x, y, None, '--place-at')
 
     br.phase = 'waiting for the node' + (' and the anchor' if args.start_after_anchor else '')
     try:
@@ -2026,8 +2198,8 @@ def run_headless(args):
                         br.walk(True)
                         go('carry', f'carrying {args.carry_s:.0f} s forward')
                     else:
-                        br.place_ahead()
-                        go('place', 'putting the box down in front')
+                        put_down()
+                        go('place', 'putting the box down')
             elif step == 'carry':
                 if w.holding_id is None:
                     br.walk(False)
@@ -2036,8 +2208,8 @@ def run_headless(args):
                     br.walk(False)
                     go('carry-stop', 'stopping')
             elif step == 'carry-stop' and now - t_step > 1.5:
-                br.place_ahead()
-                go('place', 'putting the box down in front')
+                put_down()
+                go('place', 'putting the box down')
             elif step == 'place':
                 if w.holding_id is None and (w.pick_id is not None or w.regrasp is not None):
                     go('pick', 'the box left the hands: picking it up again')
@@ -2126,9 +2298,54 @@ def run_terminal(args, flags):
         br.close()
 
 
+FEATURES = {'foot_pos': 'Foot positions', 'foot_vel': 'Foot velocities', 'hip_vel': 'Hip velocity',
+            'traj_pos': 'Trajectory positions', 'traj_dir': 'Trajectory directions', 'loco_tag': 'Empty-handed or carrying tag',
+            'traj_vel': 'Trajectory velocity, 1 s', 'box_pos': 'Box position', 'box_dir': 'Box direction',
+            'box_tag': 'Pick or place tag', 'box_hold': 'Hold state'}
+ARRIVE_FEATURES = {'traj_pos': 'Trajectory position', 'traj_dir': 'Trajectory direction'}
+
+
+def weight_rows(cfg, c, kind):
+    """The page's rows of the Weights tab (App.weightRows): label, the features it covers (size), the flag and index
+    that set it (None: Locomotion's, not set here), its value and default."""
+    db, p = cfg['controllers'][QUERY_DB[kind]], c.p
+    dflt = query_weights(cfg, kind)
+    if kind != 'arrive':
+        return [{'label': FEATURES.get(g, g), 'size': n, 'flag': f'weights_{kind}', 'i': i, 'value': p['weights'][kind][i],
+                 'default': dflt[i]} for i, (g, n) in enumerate(zip(db['groups'], db['group_sizes']))]
+    vel, out = 3 * len(ARRIVE_GROUPS), []
+    fps = cfg['fps']
+    for i, (g, n) in enumerate(zip(db['groups'], db['group_sizes'])):
+        if g == TRAJ_VEL['group']:
+            out.append({'label': FEATURES[g], 'size': n, 'flag': 'weights_arrive', 'i': vel,
+                        'value': p['weights']['arrive'][vel], 'default': dflt[vel]})
+        elif g not in ARRIVE_GROUPS:
+            out.append({'label': f'{FEATURES.get(g, g)} (Locomotion)', 'size': n, 'flag': None, 'i': i,
+                        'value': p['weights']['loco'][i], 'default': db['weights'][i]})
+        else:
+            j = ARRIVE_GROUPS.index(g)
+            out += [{'label': f'{ARRIVE_FEATURES[g]}, {round(f / fps, 2):g} s', 'size': n // 3, 'flag': 'weights_arrive',
+                     'i': 3 * j + h, 'value': p['weights']['arrive'][3 * j + h], 'default': dflt[3 * j + h]}
+                    for h, f in enumerate(cfg['horizons'])]
+    return out
+
+
+def finite(v):
+    """v for the JSON bus: a number that is not finite becomes None (JSON has no Infinity)."""
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        return {k: finite(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [finite(x) for x in v]
+    if isinstance(v, np.generic):
+        return finite(v.item())
+    return v
+
+
 def page_value(name, v):
     """A page setting's flag value as the controller keeps it: 'off' is None, the menus' numbers are numbers."""
-    if name in ('leave_moved', 'upright_tilt'):
+    if name in ('leave_moved', 'upright_tilt', 'take_over'):
         return None if v == 'off' else float(v)
     return v
 
@@ -2165,7 +2382,7 @@ def engage_view(e, reapproach_time):
 
 
 def page_choice(name, pv):
-    if name in ('leave_moved', 'upright_tilt'):
+    if name in ('leave_moved', 'upright_tilt', 'take_over'):
         return 'off' if pv is None else f'{pv:g}'
     return pv
 
@@ -2175,6 +2392,22 @@ def weights(s):
     if not all(math.isfinite(x) and x >= 0 for x in v):
         raise argparse.ArgumentTypeError('weights are numbers of 0 or more, comma separated')
     return v
+
+
+def box_or_data(s):
+    if s == 'data':
+        return s
+    v = [float(x) for x in s.split(',')]
+    if len(v) != 3 or not all(0.05 < x < 1.0 for x in v):
+        raise argparse.ArgumentTypeError("'data' or three sizes in m, e.g. 0.3,0.38,0.3")
+    return ','.join(f'{x:g}' for x in v)
+
+
+def palms4(s):
+    v = [float(x) for x in s.split(',')]
+    if len(v) != 4 or not all(abs(x) <= 0.2 for x in v):
+        raise argparse.ArgumentTypeError('four shifts in m within 0.2, e.g. 0.02,0.01,0.02,0.01')
+    return ','.join(f'{x:g}' for x in v)
 
 
 def size3(s):
@@ -2246,13 +2479,51 @@ def main():
                         "is within this of vertical (default: the variant's)")
     g.add_argument('--box-db', choices=('same', 'different'), default='same',
                    help='one Box Matching Database for pick up and put down (with the tag), or one for each')
-    for kind, what in (('loco', 'Locomotion'), ('pick', 'pick up'), ('place', 'put down')):
+    for kind, what in (('loco', 'Locomotion'), ('arrive', 'Arriving'), ('pick', 'pick up'), ('place', 'put down')):
         g.add_argument(f'--weights-{kind}', type=weights, default=None,
                        help=f"the {what} query's feature group weights, comma separated (default: the variant's)")
-    g.add_argument('--box-enter', type=float, default=None, help='the box controller takes over below this cost')
-    g.add_argument('--box-leave', type=float, default=None, help='back to Locomotion above this cost')
-    g.add_argument('--side-margin', type=float, default=None,
-                   help='another side must cost less than the current side minus this')
+    for act, what in (('pick', 'pick up'), ('place', 'put down')):
+        g.add_argument(f'--box-enter-{act}', type=float, default=None,
+                       help=f"the box controller takes over a {what} below this cost (default: the variant's)")
+        g.add_argument(f'--box-leave-{act}', type=float, default=None,
+                       help=f"a {what} goes back to Locomotion above this cost (default: the variant's)")
+        g.add_argument(f'--side-margin-{act}', type=float, default=None,
+                       help=f"{what}: another side must cost less than the current side minus this")
+    g.add_argument('--take-over', choices=('off', '0.5', '0.75', '1', '1.5'), default='1',
+                   help='m: neither the cost nor the distance hands a pick or a place to the box controller farther than '
+                        'this from the box or marker centre (off: any distance)')
+    g.add_argument('--loco-target', choices=('arrive', 'stance', 'centre'), default='arrive',
+                   help="Locomotion walks to the box's stance, arriving there in 1 s (the Arriving query), to the stance "
+                        'along its axis, or to the box or marker centre')
+    g.add_argument('--box-ahead', type=float, default=0.0,
+                   help='m: the pick and place motions take the box this much farther from the robot than the data (0-0.1)')
+    g.add_argument('--retry-lift', choices=('on', 'off'), default='on',
+                   help='a box that leaves the hands while the robot rises with it (Lifting the box) is picked up again. '
+                        'Off: every drop ends the task')
+    g.add_argument('--shoulder-open-from', choices=('take', 'step'), default='take',
+                   help='the shoulders open toward the box from the take-over of the box controller, or from the last '
+                        'step of its clip')
+    g.add_argument('--pick-height', choices=('on', 'off'), default='on',
+                   help="the pick and the put-down are solved again (the pick editor's whole-body IK) for the height "
+                        'under the box: the table the box is taken from, the height of the map where it is put down')
+    g.add_argument('--pick-size', choices=('on', 'off'), default='off',
+                   help='... and for the box size (--box-size) when it differs from the data\'s box')
+    g.add_argument('--pick-box', type=box_or_data, default='data',
+                   help="m, W,D,H: with --pick-size off, the box the motion is solved for ('data': the data's box)")
+    g.add_argument('--pick-forward', type=float, default=0.0, help='m: the box at rest this much farther from the robot')
+    g.add_argument('--pick-left', type=float, default=0.0, help='m: the box at rest this much to the left')
+    g.add_argument('--pick-up', type=float, default=0.0,
+                   help='m: with --pick-height off, the box at rest this high for the pick and the put-down')
+    g.add_argument('--pick-yaw', type=float, default=0.0, help='rad: the box at rest turned this much')
+    g.add_argument('--pick-palms', type=palms4, default='0,0,0,0',
+                   help='m, LX,LZ,RX,RZ: each palm moved along and up its side face of the box')
+    g.add_argument('--pick-grip-keep', choices=('on', 'off'), default='off',
+                   help='the palms keep the grip of the grasp on the held box (only with an edit: the page skips it '
+                        'for a box on the floor with no other change)')
+    g.add_argument('--table-min', type=float, default=TABLE_MIN,
+                   help=f'm: a box reported with its bottom this high or higher stands on a table, else on the floor '
+                        f'(default {TABLE_MIN:g}: live.sam3box puts a bottom below 0.08 m on the floor). The table '
+                        "height goes to the pick motion and the grip check. Set live in UI 3's Pick motion card")
     g.add_argument('--engage-radius', type=float, default=None,
                    help='m: the box database is searched for each side of the box or the put-down marker within this '
                         "of it (the page's 3)")
@@ -2278,6 +2549,8 @@ def main():
                     help='s: the window camera eases toward the robot with this time constant (0 = locked on it)')
     ap.add_argument('--place-ahead', type=float, default=0.8, help='m in front of the controller b puts the box down')
     ap.add_argument('--place-left', type=float, default=0.0, help='m to the left, the same way')
+    ap.add_argument('--place-at', default=None, metavar='X,Y',
+                    help='headless: put the box down at this point of the map frame (m), not --place-ahead')
     g.add_argument('--yaw-gain', type=float, default=1.0,
                    help="POSE: share of the yaw gap between the SLAM pelvis and the reference a seed turns the "
                         "controller (the page's snap-xyyaw: 1, snap-xy: 0). The robot does not turn with a seed (see send)")

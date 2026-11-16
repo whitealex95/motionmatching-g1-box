@@ -28,6 +28,7 @@ SYNC_MOVE = 0.02
 SYNC_TURN = 0.05
 SYNC_SEARCH = 0.1
 GRIP_REF_DZ = 0.4
+GRIP_REF_DZ_TABLE = 0.15   # a box on a table rises about 0.2 m to the carry, so its reference counts as lifted sooner
 GRIP_PHYS_DZ = 0.04
 GRIP_TIME = 0.1
 KEEP_OUT_TOL = 0.05
@@ -100,6 +101,7 @@ class StreamRunner:
         self.yaw_gain = yaw_gain
         self.hold = HOLDS[hold]
         self.keep_out = keep_out
+        self.open_from = 'take'
         self.kin_dt = kin_dt
         self.keep = int(round(keep_s / CONTROL_DT))
         self.frames = []
@@ -129,11 +131,12 @@ class StreamRunner:
         k.qpos = np.asarray(s.kin_qpos(), dtype=np.float64)  # (36,)
         hp = s.held_pose if s.held_pose and s.held_pose.get('id') == w.holding_id else None
         k.held = w.holding_id
-        k.open = c.mode == 'box' and w.holding_id is None
+        k.open = c.mode == 'box' and w.holding_id is None and (self.open_from == 'take' or c.past_last_step())
         k.ghost_box = None if hp is None or w.holding_id is None else np.asarray([*hp['pos'], *hp['rot']], float)
         b = c.backend
         g = None if b.active is None else int(b.db[b.active].idx[b.frame])
-        k.tag = dict(s.check_tag(), step=c.box_phase() or c.mode, semantics=c.semantics, g=g, engaged=c.engagedBy)
+        k.tag = dict(s.check_tag(), step=c.box_phase() or c.mode, semantics=c.semantics, g=g, engaged=c.engagedBy,
+                     status=c.status())
         k.corr = list(self.corr)
         return k
 
@@ -244,9 +247,7 @@ class StreamRunner:
         co, sn, sp = math.cos(dyaw), math.sin(dyaw), c.sim['pos']
         moved = [ref[0] + co * (sp[0] - ref[0]) - sn * (sp[1] - ref[1]) + d[0],
                  ref[1] + sn * (sp[0] - ref[0]) + co * (sp[1] - ref[1]) + d[1], sp[2]]
-        half = [self.sim.box_size[0] / 2, self.sim.box_size[1] / 2]
-        boxes = [{'id': b['id'], 'pos': b['pos'], 'yaw': b['yaw'], 'half': half} for b in self.sim.world.floor_boxes()]
-        out = c.collide(moved, boxes)
+        out = c.collide(moved, self.sim.obstacles())
         return hypot(out[0] - moved[0], out[1] - moved[1]) > KEEP_OUT_TOL
 
     def pending(self, F, box_id):
@@ -261,19 +262,20 @@ def box_yaw_near(meas_yaw, world_yaw, turn):
 
 class GripCheck:
     """The grip check of the page (runner.js checkGrip): at the frame the robot plays, the reference's box has risen
-    GRIP_REF_DZ while the measured box is within phys_dz of the floor, for need reports in a row (the page reads the
-    physics every tick for GRIP_TIME; a camera reports a few times a second)."""
+    GRIP_REF_DZ (GRIP_REF_DZ_TABLE from a support) while the measured box is within phys_dz of what it stood on, for need
+    reports in a row (the page reads the physics every tick for GRIP_TIME; a camera reports a few times a second)."""
 
     def __init__(self, half_z, phys_dz=0.06, need=2):
-        self.rest = half_z + 0.001
+        self.half_z = half_z
         self.phys_dz = phys_dz
         self.need = need
         self.count = 0
         self.last_stamp = None
         self.held = None
 
-    def update(self, frame, holding_id, meas):
-        """meas: the measured box {'pos': (3,), 'yaw', 'stamp'} or None. Returns True when the hold failed."""
+    def update(self, frame, holding_id, meas, support=0.0):
+        """meas: the measured box {'pos': (3,), 'yaw', 'stamp'} or None. support: the height of what the measured box
+        stands on where it is (m). Returns True when the hold failed."""
         if frame.held != self.held:
             self.held, self.count = frame.held, 0
         if frame.held is None or frame.ghost_box is None or holding_id != frame.held or meas is None:
@@ -281,7 +283,9 @@ class GripCheck:
         if meas['stamp'] == self.last_stamp:
             return False
         self.last_stamp = meas['stamp']
-        failed = frame.ghost_box[2] - self.rest > GRIP_REF_DZ and meas['pos'][2] - self.rest < self.phys_dz
+        rest = support + self.half_z + 0.001
+        rise = GRIP_REF_DZ_TABLE if support > 0 else GRIP_REF_DZ
+        failed = frame.ghost_box[2] - rest > rise and meas['pos'][2] - rest < self.phys_dz
         self.count = self.count + 1 if failed else 0
         if self.count < self.need:
             return False
