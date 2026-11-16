@@ -30,11 +30,11 @@ export const DEFAULTS = {
   adjustPosHalflife: 0.1, adjustRotHalflife: 0.2, adjustPosMaxRatio: 0.5, adjustRotMaxRatio: 0.5,
   clampMaxDistance: 0.15, clampMaxAngle: 0.5 * Math.PI,
   // The cost thresholds of a pick and of a place, for each backend (thresholds).
-  boxEnter: { pick: { lmm: 2.5, mm: 2.5 }, place: { lmm: 2.5, mm: 2.5 } },
-  boxLeave: { pick: { lmm: 4.0, mm: 4.0 }, place: { lmm: 4.0, mm: 4.0 } },
+  boxEnter: { pick: { lmm: 1.5, mm: 1.5 }, place: { lmm: 1.5, mm: 1.5 } },
+  boxLeave: { pick: { lmm: 2.0, mm: 2.0 }, place: { lmm: 2.0, mm: 2.0 } },
   // Locomotion hands a pick to the box controller within this distance of the box even at a cost above boxEnter, and a
   // place within placeEngageRadius (variantDefaults) of the marker. 0: only by the cost.
-  forceEngageRadius: 1.1,
+  forceEngageRadius: 0.6,
   // Locomotion hands a pick or a place to the box controller, by the cost or by the distance above, only within this
   // distance of the box or marker centre. null: anywhere the box Matching Database is searched (engageRadius).
   takeOverRadius: 1.0,

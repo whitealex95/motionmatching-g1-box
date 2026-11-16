@@ -27,6 +27,8 @@ const pm = new PickMotion(cfg, backend, model);
 
 const DATA_BOX = cfg.box_size.slice();
 const SIZE = [0.30, 0.38, 0.30];
+// v4.0.1's box of the list standing 20 in high, 14 in between the palms (12 x 14 x 20 in).
+const TALL = [12, 14, 20].map((v) => +(v * 0.0254).toFixed(4));
 const CASES = [
   { name: 'floor', autoHeight: true, autoSize: false, support: 0, box: DATA_BOX },
   { name: 'support0.3', autoHeight: true, autoSize: false, support: 0.3, box: DATA_BOX },
@@ -34,6 +36,7 @@ const CASES = [
   { name: 'support0.7', autoHeight: true, autoSize: false, support: 0.7, box: DATA_BOX },
   { name: 'size30x38x30', autoHeight: true, autoSize: true, support: 0, box: SIZE },
   { name: 'size30x38x30+0.5', autoHeight: true, autoSize: true, support: 0.5, box: SIZE },
+  { name: 'size12x14x20in', autoHeight: true, autoSize: true, support: 0, box: TALL },
   // The manual palm shift on the side faces and the grip kept on the held box.
   { name: 'grasp+grip', autoHeight: true, autoSize: false, support: 0.5, box: DATA_BOX,
     manual: { grasp: [[0.02, 0.01], [0.02, 0.01]], gripKeep: true } },

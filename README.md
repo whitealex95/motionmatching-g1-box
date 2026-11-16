@@ -3,7 +3,7 @@
 The G1 walks to a box, picks it up, carries it and puts it down, the way of lmm-g1-box's page
 ([jhkim.me/lmm-g1-box](https://jhkim.me/lmm-g1-box/?physics=1&tracker=sonic_release&variant=holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60&tab=play):
 the variant `holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60`, the Play tab, physics on, the tracker
-`sonic_release`, the page's defaults of its tag `v4.0`, `51f3eae`). The page's controller and its pick motion (the pick
+`sonic_release`, the page's defaults of its tag `v4.0.1`, `114dcef`). The page's controller and its pick motion (the pick
 editor's whole-body IK, which solves the pick and the put-down again for the height under the box) are ported here
 from its JavaScript (lmm-g1-box `web/js/`) to Python in `mm_g1/`, and the page's motion data is copied into `data/`
 (`data/README.md` lists each file, its SHA-256 and its terms). Nothing here reads lmm-g1-box.
@@ -84,11 +84,11 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restar
 | Foot locking | `--foot-lock` | `on` |
 | Walk to, box farther than in the data | `--loco-target` (`arrive`: the stance, arriving there in 1 s; `stance`; `centre`), `--box-ahead` | `arrive`, 0 |
 | Matching weights | `--weights-loco`, `--weights-arrive`, `--weights-pick`, `--weights-place` | the variant's; Arriving: trajectory positions 1, directions 1.5, velocity 0 |
-| Transitions: by cost | `--box-enter-pick`, `--box-enter-place`, `--box-leave-pick`, `--box-leave-place` | 2.5, 2.5, 4.0, 4.0 |
+| Transitions: by cost | `--box-enter-pick`, `--box-enter-place`, `--box-leave-pick`, `--box-leave-place` | 1.5, 1.5, 2.0, 2.0 (2.5, 2.5, 4.0, 4.0 until v4.0.1) |
 | Transitions: side margin, only within | `--side-margin-pick`, `--side-margin-place`, `--take-over` | 0.25, 0.25, 1 m |
 | Transitions: a box that leaves the hands while lifting | `--retry-lift` | `on` |
 | Grasp: shoulder open from | `--shoulder-open-from` (`take`: the take-over, `step`: the last step) | `take` |
-| Taking the box controller by distance (constants of the page's controller, not on its panel) | `--force-engage-radius`, `--place-engage-radius`, `--engage-radius`, `--reapproach-time` | 1.1 m, the variant's 0.4 m, 3 m, 1 s |
+| Taking the box controller by distance (constants of the page's controller, not on its panel) | `--force-engage-radius`, `--place-engage-radius`, `--engage-radius`, `--reapproach-time` | 0.6 m (1.1 m until v4.0.1), the variant's 0.4 m, 3 m, 1 s |
 | Pick motion: adjust to the height under the box, to the box size | `--pick-height`, `--pick-size` | `on`, `off` |
 | Pick motion: the box solved for, the box at rest, the palms, the grip | `--pick-box`, `--pick-forward`, `--pick-left`, `--pick-up`, `--pick-yaw`, `--pick-palms`, `--pick-grip-keep` | `data`, 0, 0, 0, 0, `0,0,0,0`, `off` |
 
@@ -199,10 +199,15 @@ The forced check loads the page's whole state before each frame of the page's sc
 compares the state after it. A free run follows the page until rounding decides a near tie in the search, and from
 there it takes another path of the same controller. In one test the costs were 4.1112789 and 4.1112797 at frame 484.
 
-All checks pass against lmm-g1-box `v4.0` (`51f3eae`, 2026-11-16), as the first two did against `v3.0`. The pick
-motion check runs the page's `pickmotion.js` and `mm_g1/pickmotion.py` on the same boxes and table heights and compares
-the solved rows of the Animation Database: the pelvis position and the box are the same, the pelvis rotation within
-2.3e-13, the joints within 3.6e-15 and the velocities within 7.5e-9 (MuJoCo 3.14.0 in the page's WASM, 3.3.3 here).
+All checks pass against lmm-g1-box `v4.0.1` (`114dcef`, 2026-11-16), as they did against `v4.0` (`51f3eae`) and the first
+two against `v3.0`. v4.0.1 changed only the controller's defaults above (the enter and leave thresholds and the pick's
+engage radius) for this port: with the old ones the forced check differs from frame 231 on, where the old 1.1 m radius
+takes the pick at 0.92 m from the box. Its other changes are the page's own physics (a new box size at once in Play)
+and its box list, whose two new boxes (20 x 14 x 12 in standing 20 in high) are in UI 3's Pick motion card. The pick
+motion check runs the page's `pickmotion.js` and `mm_g1/pickmotion.py` on the same boxes and table heights (since
+v4.0.1 also the 12 x 14 x 20 in box solved for its size) and compares the solved rows of the Animation Database: the box
+is the same, the pelvis position within 9.1e-13, its rotation within 1.8e-12 (both 0 and 2.3e-13 without the tall box),
+the joints within 3.6e-15 and the velocities within 7.5e-9 (MuJoCo 3.14.0 in the page's WASM, 3.3.3 here).
 The scripted sequence of `v4.0` takes box C from the page's table, so it runs the pick motion too. There the search never jumps
 while a SceneBot pick or place plays before its grasp or release, so the rules for these frames are not checked by
 it. `--cases` checks `Controller.match` alone on 2,704 searches (3,424 with `v3.0`'s data) made around the SceneBot pick and place. The playing
@@ -217,6 +222,11 @@ tables): picking the box up and putting it down in front worked on the first try
 reliable: one run lifted it on the first regrasp, one on the second, four on the third to fifth crouch, and one not in
 300 s. The regrasp bends down 0.5 to 0.9 m from the box, and the hands reach it from about 0.5 m. One run of each
 scenario (pick9, shift7) ran the port of `1721681`, the others the port of `a41bd3f`. Untested on the robot.
+
+With lmm-g1-box v4.0.1's defaults (2026-11-16, `README_BOX_SIM.md` *Results*): the box controller takes a pick
+0.55 to 0.59 m from the box (1.0 m with v4.0's), and the floor pick, the pick from a 0.5 m stand with the put-down 1 m
+to the side (two runs, and two with v4.0's values) and the put-down on a 0.5 m table went as with v4.0. A put-down 0.8 m
+ahead of a box on a stand lies behind the stand, where the robot cannot stand: there the box dropped and the robot fell.
 
 With lmm-g1-box v4.0 (2026-11-16, `README_BOX_SIM.md` *Results*): the floor pick and put-down worked with SAM3. With
 the sim's true box, a box on a 0.5 m stand was picked with the pick motion solved for that height, and a box was put

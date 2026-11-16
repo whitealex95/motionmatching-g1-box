@@ -2,7 +2,7 @@
 pose) and live.sam3box's boxes (the map server's objects), on the real G1 or the deploy repo's sim.
 
 It runs the way of lmm-g1-box's page (variant holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60, Play tab,
-physical mode with the SONIC release tracker: the page's defaults of its tag v4.0), ported in mm_g1:
+physical mode with the SONIC release tracker: the page's defaults of its tag v4.0.1), ported in mm_g1:
   controller   exact Motion Matching over data/ (the Locomotion Matching Database 'emmboth', the page's default,
                and the Box Matching Database of sbplace), inertialization, foot locking, root warping, the arrive
                state and the moving-target rules

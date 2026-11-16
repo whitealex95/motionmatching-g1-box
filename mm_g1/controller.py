@@ -24,7 +24,7 @@ DEFAULTS = dict(
     walkFwd=0.8, walkSide=0.45, walkBack=0.4, slowScale=0.5,
     adjustPosHalflife=0.1, adjustRotHalflife=0.2, adjustPosMaxRatio=0.5, adjustRotMaxRatio=0.5,
     clampMaxDistance=0.15, clampMaxAngle=0.5 * math.pi,
-    boxEnter={'pick': 2.5, 'place': 2.5}, boxLeave={'pick': 4.0, 'place': 4.0}, forceEngageRadius=1.1,
+    boxEnter={'pick': 1.5, 'place': 1.5}, boxLeave={'pick': 2.0, 'place': 2.0}, forceEngageRadius=0.6,
     takeOverRadius=1.0, sideMargin={'pick': 0.25, 'place': 0.25},
     boxDb='same', loco='nsm', engageRadius=3.0, boxQueryRadius=3.0,
     warpHalflife=0.2, warpMaxRatio=0.8, warpMaxDist=0.7, warpMaxAngle=1.2,
