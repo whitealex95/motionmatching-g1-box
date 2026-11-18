@@ -3,11 +3,15 @@
 The databases that `mm_g1` (the box task's controller, `sonic_g1_box/mm_driver.py`) reads. They are copies of the files that
 lmm-g1-box's page loads for its default variant `holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60` (`sbplace`)
 with the Locomotion Matching Database `emmboth`, the page's default. Nothing here is regenerated: the files are
-copied byte for byte from lmm-g1-box `b2a0a84` (v4.2, 2026-11-18), so this repository runs without lmm-g1-box. Since
-`51f3eae` (v4.0) only `sbplace/config.json` changed: v4.2 took out its `nlatent`, the latent size of the Learned
-Motion Matching networks that the page removed. Before
+copied byte for byte from lmm-g1-box `121379f` (v4.2.1, 2026-11-18), so this repository runs without lmm-g1-box. Since
+`51f3eae` (v4.0) two things changed. v4.2 took `nlatent`, the latent size of the Learned Motion Matching networks that
+the page removed, out of `sbplace/config.json`. v4.2.1 left the EMM takes `strafe` and `turn_in_place` out of
+`emm_loco/`: 14 takes stay, 106,584 frames with their mirrors (119,996 before). The retargeting of the two has the
+pelvis about 19 deg back and the waist pitch about 27 deg forward in every frame, and SONIC release holds the waist
+pitch near 0 and follows the pelvis, so on them the robot stood, strafed and turned with its torso leaning back.
+Strafing and turning in place now play from the other takes. Before
 2026-11-16 `sbplace/` held the variant `holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60` (lmm-g1-box
-`a41bd3f`, ApproachPick v4 with the SceneBot pick). `emm_loco/`, `emm_carry/` and `robot.*` are the same in both.
+`a41bd3f`, ApproachPick v4 with the SceneBot pick). `emm_carry/` and `robot.*` are the same in both.
 
 | here | lmm-g1-box `web/data/` | what it holds |
 |---|---|---|
@@ -16,7 +20,7 @@ Motion Matching networks that the page removed. Before
 | `sbplace/mm_pose.bin` | `holosoma-v3-box338x335x360-apv5-good2-angle60/mm_pose.bin` | the Animation Database the variant shares with `apv5-good2-angle60` (`shares` in lmm-g1-box's `lmm/variants.py`) |
 | `sbplace/mm_loco.bin` | `holosoma-v3-box338x335x360-apv5-good2-angle60/mm_loco.bin` | the variant's own Locomotion Matching Database (`--loco nsm`), shared the same way |
 | `physics/scene.xml`, `physics/sonic.json` | `physics/scene.xml`, `physics/sonic.json` | the simulated G1 of the page's physical mode (GR00T-WholeBodyControl's), which the pick motion's whole-body IK solves on |
-| `emm_loco/` | `emm_loco/holosoma-v3/` | the EMM locomotion takes retargeted with holosoma v3: Locomotion Matching Database and its poses |
+| `emm_loco/` | `emm_loco/holosoma-v3/` | 14 of the 16 EMM locomotion takes retargeted with holosoma v3 (`strafe` and `turn_in_place` left out since v4.2.1): Locomotion Matching Database and its poses |
 | `emm_carry/` | `emm_carry/` | the EMM carry spans, the same way |
 | `robot.json` | `robot.json` | the G1's bodies and joints for forward kinematics and the foot locking |
 | `robot.bin` | `robot.bin` | the G1's meshes, which the database page (`web/`) draws |
@@ -36,9 +40,9 @@ b15661ed3c7a2e02c57adfa8de892ebab14043573a5962a1d425598461105d4f  sbplace/mm_loc
 04b246b6d9cc724a11d3d7bdff9b189508f54223c61985f26a490036f0f6a0cc  physics/scene.xml
 ea2d0abeaec9530bf0fb4f83db7ae24116723b19a44ed779880c8d2a77fbb745  physics/sonic.json
 24ab66be50d1aca4fc5e029ef76ce4ceaac6557ea21665caf4b140695a76ffee  physics/G1-SONIC-LICENSE.txt
-205b48451247bd70339668293440ab812c32a5a3cf452228acfd765847841f89  emm_loco/config.json
-5eb0b3fa516b0b8996856a04fd96153c8a6fa03b2d768d0e9d9c110c6c1a436e  emm_loco/mm_loco.bin
-896a59535ae16bfef7fabfc789b1066338b149daa6168f31cb62385369e4edcc  emm_loco/mm_pose.bin
+579c0cc361143d66de7886c0328095940035c750ecfec18e0a41bf57123a79f6  emm_loco/config.json
+7a17d3ec85b96f0124ed5cff824783c2fcd7da5e6cc054f0b55f9778934e356a  emm_loco/mm_loco.bin
+63a056d545fa64422ade19544a906c5d1402fd4cef761d7153fea3e906f64909  emm_loco/mm_pose.bin
 62ed3f56c5dde207976cd0fd411367cd04c451b96689da46c8aa693f628073ad  emm_carry/config.json
 480b0af91ffc75d9a6e33115f2e443cceb094d83a2c805729172b4b8ee95fcb0  emm_carry/mm_loco.bin
 4667537e84f730e8f0b2356835f6724175a8ad05b1018f9bbf7dcadde35984a1  emm_carry/mm_pose.bin

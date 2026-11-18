@@ -3,7 +3,7 @@
 The G1 walks to a box, picks it up, carries it and puts it down, the way of lmm-g1-box's page
 ([jhkim.me/lmm-g1-box](https://jhkim.me/lmm-g1-box/?physics=1&tracker=sonic_release&variant=holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60&tab=play):
 the variant `holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60`, the Play tab, physics on, the tracker
-`sonic_release`, the page's defaults of its tag `v4.2`, `b2a0a84`). The page's controller and its pick motion (the pick
+`sonic_release`, the page's defaults of its tag `v4.2.1`, `121379f`). The page's controller and its pick motion (the pick
 editor's whole-body IK, which solves the pick and the put-down again for the height under the box) are ported here
 from its JavaScript (lmm-g1-box `web/js/`) to Python in `mm_g1/`, and the page's motion data is copied into `data/`
 (`data/README.md` lists each file, its SHA-256 and its terms). Nothing here reads lmm-g1-box.
@@ -212,9 +212,11 @@ The forced check loads the page's whole state before each frame of the page's sc
 compares the state after it. A free run follows the page until rounding decides a near tie in the search, and from
 there it takes another path of the same controller. In one test the costs were 4.1112789 and 4.1112797 at frame 484.
 
-All checks pass against lmm-g1-box `v4.2` (`b2a0a84`, 2026-11-18), as they did against `v4.0.1` (`114dcef`) and
-`v4.0` (`51f3eae`) and the first two against `v3.0`. What each release changed for this port:
+All checks pass against lmm-g1-box `v4.2.1` (`121379f`, 2026-11-18), as they did against `v4.2` (`b2a0a84`),
+`v4.0.1` (`114dcef`) and `v4.0` (`51f3eae`) and the first two against `v3.0`. What each release changed for this port:
 
+- `v4.2.1` changed only the data of the empty-handed Locomotion: the EMM takes `strafe` and `turn_in_place` are left
+  out (`data/README.md`). No rule and no default changed, so the port's code is the same.
 - `v4.1` (`a59750d`, 2026-11-17) is the release with new rules: the two states before a grasp and before a release,
   the walk that plays on into its SceneBot clip (`walkOn`), the bend that ends only by its event or by a cancel
   (`bendOut`), the foot lock that waits for a foot still in the air (`landHeight`), the put down's own manual edit,
@@ -224,14 +226,14 @@ All checks pass against lmm-g1-box `v4.2` (`b2a0a84`, 2026-11-18), as they did a
   networks' latent size, is gone).
 - `v4.0.1` changed only the controller's defaults (the enter and leave thresholds and the pick's engage radius).
 
-The numbers against `v4.2`:
+The numbers against `v4.2.1` (the sequence is 42 frames longer than with the data of `v4.2`, 4,881 frames then):
 
-- The forced check: 4,881 frames, no discrete difference, the largest gap 1.1e-13 (a foot lock point). The sequence
-  plays *Stepping to the box* for 292 frames and *Bending down* for 595, and one pick and one put-down are cancelled
+- The forced check: 4,923 frames, no discrete difference, the largest gap 6.1e-14 (the box cost). The sequence
+  plays *Stepping to the box* for 292 frames and *Bending down* for 593, and one pick and one put-down are cancelled
   in it (`cancel-moved`: the pick rises as a put-down rises, the put-down as a pick). Each of its put-downs is taken
   by distance inside the bend, so *Stepping to the marker* does not play. It takes box C from the page's table, so it
   runs the pick motion too.
-- No foot waits in that sequence at the page's 0.02 m. With `--foot-land 0.002` on both sides 14 feet wait, 1.02 s
+- No foot waits in that sequence at the page's 0.02 m. With `--foot-land 0.002` on both sides 13 feet wait, 0.90 s
   in all, and the forced check passes the same way.
 - `--cases` checks `Controller.match` alone on 5,408 searches made around the SceneBot pick and place, each one as
   Locomotion and as the box controller before its event (2,704 with `v4.0.1`, which had one rule for both). The
@@ -252,6 +254,12 @@ tables): picking the box up and putting it down in front worked on the first try
 reliable: one run lifted it on the first regrasp, one on the second, four on the third to fifth crouch, and one not in
 300 s. The regrasp bends down 0.5 to 0.9 m from the box, and the hands reach it from about 0.5 m. One run of each
 scenario (pick9, shift7) ran the port of `1721681`, the others the port of `a41bd3f`. Untested on the robot.
+
+With lmm-g1-box v4.2.1 (2026-11-18, `README_BOX_SIM.md` *Results*): with empty hands the robot's torso stood 10 deg back
+after POSE started with the data before (on `turn_in_place`) and stands 4 deg forward with v4.2.1's (on
+`basic_locomotion_1`). It strafed with its torso 6 to 10 deg back (on `strafe`) and strafes with it 5 to 7 deg forward
+(on `locomotion_loops_2`), about as far in 3 s. The floor pick with a 3 s carry and the put-down worked in three runs of
+three, each pick on the first crouch and each box upright after the put-down.
 
 With lmm-g1-box v4.2 (2026-11-18, `README_BOX_SIM.md` *Results*): the floor pick with a 3 s carry and the put-down
 worked in three runs of three with the defaults and in three of three with the rules before (`--walk-on off --bend-out
