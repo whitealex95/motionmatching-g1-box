@@ -90,7 +90,8 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restar
 | Transitions: side margin, only within | `--side-margin-pick`, `--side-margin-place`, `--take-over` | 0.25, 0.25, 1 m |
 | Transitions: a box that leaves the hands while lifting | `--retry-lift` | `on` |
 | Grasp: shoulder open from | `--shoulder-open-from` (`take`: the take-over, `step`: the last step) | `take` |
-| Taking the box controller by distance (constants of the page's controller, not on its panel) | `--force-engage-radius`, `--place-engage-radius`, `--engage-radius`, `--reapproach-time` | 0.6 m (1.1 m until v4.0.1), the variant's 0.4 m, 3 m, 1 s |
+| Transitions: by distance, for a pick and for a put-down (0: by the cost only) | `--force-engage-radius`, `--place-engage-radius` | 0.6 m (1.1 m until v4.0.1), the variant's 0.4 m |
+| The distance rules' constants of the page's controller, not on its panel | `--engage-radius`, `--reapproach-time` | 3 m, 1 s |
 | Pick motion: adjust to the height under the box, to the box size | `--pick-height`, `--pick-size` | `on`, `off` |
 | Pick motion: the box solved for, the box at rest, the palms, the grip | `--pick-box`, `--pick-forward`, `--pick-left`, `--pick-up`, `--pick-yaw`, `--pick-palms`, `--pick-grip-keep` | `data`, 0, 0, 0, 0, `0,0,0,0`, `off` |
 | Pick motion: the put down has its own box at rest and palms | `--place-edit` (`pick`: the pick's, or `own`), `--place-edit-forward`, `--place-edit-left`, `--place-edit-up`, `--place-edit-yaw`, `--place-edit-palms`, `--place-edit-grip-keep` | `pick`, 0, 0, 0, 0, `0,0,0,0`, `off` |

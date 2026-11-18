@@ -95,13 +95,14 @@ class Capture:
 class StreamRunner:
     """sim: mm_g1.sim.Sim. Frames are indexed from 0 on the 50 Hz stream clock; frames before `base` are dropped."""
 
-    def __init__(self, sim, lookahead=25, hold='low', kin_dt=1 / 60, keep_s=3.0, yaw_gain=1.0, keep_out=True):
+    def __init__(self, sim, lookahead=25, hold='low', kin_dt=1 / 60, keep_s=3.0, yaw_gain=1.0, keep_out=True,
+                 open_from='take'):
         self.sim = sim
         self.lookahead = lookahead
         self.yaw_gain = yaw_gain
         self.hold = HOLDS[hold]
         self.keep_out = keep_out
-        self.open_from = 'take'
+        self.open_from = open_from
         self.kin_dt = kin_dt
         self.keep = int(round(keep_s / CONTROL_DT))
         self.frames = []

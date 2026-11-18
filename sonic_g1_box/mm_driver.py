@@ -74,10 +74,10 @@ them from it), set live from UI 3's Settings tab:
                    --pick-palms, --pick-grip-keep, --place-edit and its --place-edit-forward to
                    --place-edit-grip-keep (the driver's own: --table-min)
   transitions      --box-enter-pick, --box-enter-place, --box-leave-pick, --box-leave-place, --side-margin-pick,
-                   --side-margin-place, --take-over, --retry-lift, --shoulder-open-from
+                   --side-margin-place, --force-engage-radius, --place-engage-radius (by distance, 0: by the cost
+                   only), --take-over, --retry-lift, --shoulder-open-from
   matching         --weights-loco, --weights-arrive, --weights-pick, --weights-place
-  by distance      --engage-radius, --force-engage-radius, --place-engage-radius, --reapproach-time (constants of the
-                   page's controller, not on its panel)
+  by distance      --engage-radius, --reapproach-time (constants of the page's controller, not on its panel)
 The seed's own rules, none of them the page's, are live flags on the same card (SEED_FLAGS): --skip-stopped,
 --skip-stale, --max-seed-jump (0: off), --keep-out, --pre-pose-full, --track-delay (0: off), --strip-seed-turns. Each
 re-plan's outcome (seeded, or the rule that skipped the seed) and the counts are in the state's 'seed_rules'.
@@ -1286,7 +1286,7 @@ class BoxDriver:
         yaw = 0.0 if p is None else float(p['root_yaw'])
         self.sim.reset_robot([xy[0], xy[1], 0.0], yaw)
         self.runner = StreamRunner(self.sim, lookahead=self.args.lookahead, hold=self.args.hold, yaw_gain=self.args.yaw_gain,
-                                   keep_out=self.args.keep_out == 'on')
+                                   keep_out=self.args.keep_out == 'on', open_from=self.args.shoulder_open_from)
         self.say(f'the controller starts at ({xy[0]:.2f}, {xy[1]:.2f}) m, yaw {math.degrees(yaw):.0f} deg')
 
     def seed_pose(self):
@@ -2632,7 +2632,7 @@ def main():
                         "of it (the page's 3)")
     g.add_argument('--force-engage-radius', type=float, default=None,
                    help="m: the box controller takes over a pick within this of the box, whatever the cost, and leaves "
-                        "only beyond this + 0.3 m (the page's 1.1, 0: by the cost only)")
+                        "only beyond this + 0.3 m (the page's 0.6, 0: by the cost only)")
     g.add_argument('--place-engage-radius', type=float, default=None,
                    help="m: the same for a put-down, within this of the marker (default: the variant's)")
     g.add_argument('--reapproach-time', type=float, default=None,
