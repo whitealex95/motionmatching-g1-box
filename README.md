@@ -3,7 +3,7 @@
 The G1 walks to a box, picks it up, carries it and puts it down, the way of lmm-g1-box's page
 ([jhkim.me/lmm-g1-box](https://jhkim.me/lmm-g1-box/?physics=1&tracker=sonic_release&variant=holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60&tab=play):
 the variant `holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60`, the Play tab, physics on, the tracker
-`sonic_release`, the page's defaults of its tag `v4.0.1`, `114dcef`). The page's controller and its pick motion (the pick
+`sonic_release`, the page's defaults of its tag `v4.2`, `b2a0a84`). The page's controller and its pick motion (the pick
 editor's whole-body IK, which solves the pick and the put-down again for the height under the box) are ported here
 from its JavaScript (lmm-g1-box `web/js/`) to Python in `mm_g1/`, and the page's motion data is copied into `data/`
 (`data/README.md` lists each file, its SHA-256 and its terms). Nothing here reads lmm-g1-box.
@@ -17,18 +17,18 @@ MuJoCo sim. The robot's pose comes from the map server (the Mid-360 with FAST-LI
 
 | file | port of (lmm-g1-box `web/js/`) | what it holds |
 |---|---|---|
-| `mm_g1/database.py` | `controller.js` (`loadMMData`, `loadLoco`, `MMBackend`) | the Animation Database, the Box Matching Database and the Locomotion Matching Database (`emmboth` is built at load time from `emm_loco` and `emm_carry`), exact search |
-| `mm_g1/controller.py` | `controller.js` (`Controller`) | Locomotion and the box controller, inertialization, the simulation object and trajectory, root warping, the moving-target rules |
-| `mm_g1/ik.py` | `ik.js` | foot locking |
-| `mm_g1/pickmotion.py` | `pickmotion.js` | the pick motion: the pick and the put-down solved again for the height under the box, the box size and the Pick motion tab's edits, put into the Animation Database |
-| `mm_g1/pickedit.py`, `mm_g1/bodyik.py`, `mm_g1/mirror.py` | `edit/solve.js`, `edit/bodyik.js`, `edit/mirror.js` | the pick editor's solve: the whole-body IK on the simulated G1 of `data/physics/` (MuJoCo), the mirrored clips |
-| `mm_g1/sim.py` | `sim.js`, `scenario.js` | the boxes, the pick and place targets, the grasp and the release, the scripted sequence |
-| `mm_g1/mathq.py` | `math.js` | vectors, quaternions, springs |
+| `mm_g1/database.py` | `mm/controller.js` (`loadMMData`, `loadLoco`, `MMBackend`) | the Animation Database, the Box Matching Database and the Locomotion Matching Database (`emmboth` is built at load time from `emm_loco` and `emm_carry`), exact search, the tables of the walks that end in a SceneBot clip and of the frame each bend rises at |
+| `mm_g1/controller.py` | `mm/controller.js` (`Controller`) | Locomotion and the box controller, inertialization, the simulation object and trajectory, root warping, the moving-target rules, the walk that plays on into its SceneBot clip, the cancel of a bend |
+| `mm_g1/ik.py` | `mm/ik.js` | foot locking |
+| `mm_g1/pickmotion.py` | `mm/pickmotion.js` | the pick motion: the pick and the put-down solved again for the height under the box, the box size and the Pick motion tab's edits (the put-down's own, when it has one), put into the Animation Database |
+| `mm_g1/pickedit.py`, `mm_g1/bodyik.py`, `mm_g1/mirror.py` | `edit/pickedit.js`, `edit/bodyik.js`, `edit/mirror.js` | the pick editor's solve: the whole-body IK on the simulated G1 of `data/physics/` (MuJoCo), the mirrored clips |
+| `mm_g1/sim.py` | `mm/sim.js`, `mm/scenario.js` | the boxes, the pick and place targets, the grasp and the release, the scripted sequence |
+| `mm_g1/mathq.py` | `mm/math.js` | vectors, quaternions, springs |
 | `mm_g1/runner.py` | `phys/runner.js` | the stream for a tracked robot: 60 Hz poses resampled to 50 Hz frames, a re-plan every 10 frames with snap-xyyaw, no seed while bent down, the grip check, the box sync |
-| `sonic_g1_box/mm_driver.py` | `phys/engine.js` (`graspStep`), `app.js` | the driver: the SLAM pose, the box reports, the palm force, the keys, the headless sequence, the height under the box |
+| `sonic_g1_box/mm_driver.py` | `phys/engine.js` (`graspStep`), `pages/index.js` | the driver: the SLAM pose, the box reports, the palm force, the keys, the headless sequence, the height under the box |
 | `sonic_g1_box/pick_worker.py` | | the pick motion's solves on a thread of their own (0.6 to 1.7 s each), and the Pick motion card's numbers and clip |
-| `sonic_g1_box/box_window.py` | `app.js` (`bindUI`, the clicks) | the driver's window (UI 2): the loco driver's window and keys, plus the box task |
-| `sonic_g1_box/db_page.py`, `web/` | `motions.html`, `motions.js`, `states.js` | the database page (http 8790): the controller's state, the clip the robot plays and the last matches, live, above the page's database page. `web/` holds byte copies of the page's modules and three.js, and `db.js`, `index.html`, `db.css` and `variants.js` made from the page's |
+| `sonic_g1_box/box_window.py` | `pages/index.js` (`bindUI`, the clicks) | the driver's window (UI 2): the loco driver's window and keys, plus the box task |
+| `sonic_g1_box/db_page.py`, `web/` | `motions.html`, `pages/motions.js`, `ui/states.js` | the database page (http 8790): the controller's state, the clip the robot plays and the last matches, live, above the page's database page. `web/` is laid out as the page's (`js/mm/`, `js/ui/`, `js/pages/`, `css/`) and holds byte copies of the page's modules and three.js, and `js/pages/db.js`, `index.html`, `css/db.css` and `js/mm/variants.js` made from the page's |
 | `sonic_g1_box/route_follow.py` | | UI 1's trajectory, walked with `T`: a copy of the loco driver's `RouteFollow` |
 | `sonic_g1_box/operator_link.py` | | UI 3's link through the map server: its keys and commands, the driver's flags, the restart. The same file as the loco driver's |
 | `sonic_g1_box/deploy_link.py` | | the node's ZMQ topics and the desktop's JSON bus, mirrored from motionmatching-g1-deploy |
@@ -80,8 +80,10 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restar
 | Pick and place speed, slowed down | `--pick-speed`, `--pick-slow` | 1, `clip` |
 | Root warping, leave when moved | `--warp`, `--leave-moved` | `pickstep`, 0.5 m |
 | Box search, rising, transition cost | `--box-entry`, `--rise`, `--transition-cost` | `walk`, `finish`, 0 |
+| The end of a walk | `--walk-on` (`step`: from its last step a walk plays on into the SceneBot clip with no search. `start`: from the frame where that clip starts in it. `off`: the search goes on to the end of the walk) | `step` |
+| A bend ends | `--bend-out` (`cancel`: only by its grasp or release, or by a cancel, which rises at the frame of the other SceneBot clip with the same joints, with no search. `leave`: back to Locomotion while upright, a cancel only while bent, at the frame the search finds) | `cancel` |
 | Upright tilt, box database | `--upright-tilt`, `--box-db` | 30 deg, `same` |
-| Foot locking | `--foot-lock` | `on` |
+| Foot locking, a foot still in the air when its contact starts | `--foot-lock`, `--foot-land` (m above the playing frame's foot, `off`: locked at once) | `on`, 0.02 m |
 | Walk to, box farther than in the data | `--loco-target` (`arrive`: the stance, arriving there in 1 s; `stance`; `centre`), `--box-ahead` | `arrive`, 0 |
 | Matching weights | `--weights-loco`, `--weights-arrive`, `--weights-pick`, `--weights-place` | the variant's; Arriving: trajectory positions 1, directions 1.5, velocity 0 |
 | Transitions: by cost | `--box-enter-pick`, `--box-enter-place`, `--box-leave-pick`, `--box-leave-place` | 1.5, 1.5, 2.0, 2.0 (2.5, 2.5, 4.0, 4.0 until v4.0.1) |
@@ -91,11 +93,21 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restar
 | Taking the box controller by distance (constants of the page's controller, not on its panel) | `--force-engage-radius`, `--place-engage-radius`, `--engage-radius`, `--reapproach-time` | 0.6 m (1.1 m until v4.0.1), the variant's 0.4 m, 3 m, 1 s |
 | Pick motion: adjust to the height under the box, to the box size | `--pick-height`, `--pick-size` | `on`, `off` |
 | Pick motion: the box solved for, the box at rest, the palms, the grip | `--pick-box`, `--pick-forward`, `--pick-left`, `--pick-up`, `--pick-yaw`, `--pick-palms`, `--pick-grip-keep` | `data`, 0, 0, 0, 0, `0,0,0,0`, `off` |
+| Pick motion: the put down has its own box at rest and palms | `--place-edit` (`pick`: the pick's, or `own`), `--place-edit-forward`, `--place-edit-left`, `--place-edit-up`, `--place-edit-yaw`, `--place-edit-palms`, `--place-edit-grip-keep` | `pick`, 0, 0, 0, 0, `0,0,0,0`, `off` |
 
 The page's Transitions tab (lmm-g1-box v3.6.1) has one threshold for a pick and one for a place, so `--box-enter`,
 `--box-leave` and `--side-margin` of the driver before are each two flags now. The page's Pick motion tab has two
 more settings that are not the page's controller: the table height, below, and the box solved for, which the page
 takes from its Box tab.
+
+Since lmm-g1-box v4.1 the task has two states before a grasp and two before a release: *Stepping to the box* and
+*Bending down* (Picking up before), *Stepping to the marker* and *Lowering the box* (Putting down before). The step
+is the walk that ends in the SceneBot clip, the bend is that clip. With `--walk-on step` the search no longer jumps
+back into a walk next to the box, and with `--bend-out cancel` a bend that loses its target (the box moved, the
+target cleared, a walk key, the cost above Leave) plays the other SceneBot clip from the frame with the same
+joints: a cancelled pick rises as a put-down rises, empty-handed, and a cancelled put-down rises as a pick, with
+the box. While a bend plays, both SceneBot clips are solved for that bend's height and manual edit, so the palms
+stay where they are at the cancel. `--walk-on off --bend-out leave --foot-land off` are the rules before.
 
 The seed's own rules, none of them the page's, are switches on the same *Anchoring* card of UI 3, in the order a
 re-plan checks them, each on by default. UI 3 highlights the page's two (`--hold`, `--yaw-gain`), has a button that
@@ -199,20 +211,37 @@ The forced check loads the page's whole state before each frame of the page's sc
 compares the state after it. A free run follows the page until rounding decides a near tie in the search, and from
 there it takes another path of the same controller. In one test the costs were 4.1112789 and 4.1112797 at frame 484.
 
-All checks pass against lmm-g1-box `v4.0.1` (`114dcef`, 2026-11-16), as they did against `v4.0` (`51f3eae`) and the first
-two against `v3.0`. v4.0.1 changed only the controller's defaults above (the enter and leave thresholds and the pick's
-engage radius) for this port: with the old ones the forced check differs from frame 231 on, where the old 1.1 m radius
-takes the pick at 0.92 m from the box. Its other changes are the page's own physics (a new box size at once in Play)
-and its box list, whose two new boxes (20 x 14 x 12 in standing 20 in high) are in UI 3's Pick motion card. The pick
-motion check runs the page's `pickmotion.js` and `mm_g1/pickmotion.py` on the same boxes and table heights (since
-v4.0.1 also the 12 x 14 x 20 in box solved for its size) and compares the solved rows of the Animation Database: the box
-is the same, the pelvis position within 9.1e-13, its rotation within 1.8e-12 (both 0 and 2.3e-13 without the tall box),
-the joints within 3.6e-15 and the velocities within 7.5e-9 (MuJoCo 3.14.0 in the page's WASM, 3.3.3 here).
-The scripted sequence of `v4.0` takes box C from the page's table, so it runs the pick motion too. There the search never jumps
-while a SceneBot pick or place plays before its grasp or release, so the rules for these frames are not checked by
-it. `--cases` checks `Controller.match` alone on 2,704 searches (3,424 with `v3.0`'s data) made around the SceneBot pick and place. The playing
-frame is every 5th frame of each SceneBot range plus 60 random frames, and each query is a database frame's features
-plus noise. The rule for the place that `1721681` added decided 420 of them with `v3.0`'s data, so a port of `a41bd3f` fails this check.
+All checks pass against lmm-g1-box `v4.2` (`b2a0a84`, 2026-11-18), as they did against `v4.0.1` (`114dcef`) and
+`v4.0` (`51f3eae`) and the first two against `v3.0`. What each release changed for this port:
+
+- `v4.1` (`a59750d`, 2026-11-17) is the release with new rules: the two states before a grasp and before a release,
+  the walk that plays on into its SceneBot clip (`walkOn`), the bend that ends only by its event or by a cancel
+  (`bendOut`), the foot lock that waits for a foot still in the air (`landHeight`), the put down's own manual edit,
+  and a rise that ends at the end of its clip.
+- `v4.2` moved the page's scripts into folders (`web/js/mm/`, `ui/`, `pages/`) and removed its Learned Motion
+  Matching networks, which this port never ran. Of the data only `sbplace/config.json` changed (its `nlatent`, the
+  networks' latent size, is gone).
+- `v4.0.1` changed only the controller's defaults (the enter and leave thresholds and the pick's engage radius).
+
+The numbers against `v4.2`:
+
+- The forced check: 4,881 frames, no discrete difference, the largest gap 1.1e-13 (a foot lock point). The sequence
+  plays *Stepping to the box* for 292 frames and *Bending down* for 595, and one pick and one put-down are cancelled
+  in it (`cancel-moved`: the pick rises as a put-down rises, the put-down as a pick). Each of its put-downs is taken
+  by distance inside the bend, so *Stepping to the marker* does not play. It takes box C from the page's table, so it
+  runs the pick motion too.
+- No foot waits in that sequence at the page's 0.02 m. With `--foot-land 0.002` on both sides 14 feet wait, 1.02 s
+  in all, and the forced check passes the same way.
+- `--cases` checks `Controller.match` alone on 5,408 searches made around the SceneBot pick and place, each one as
+  Locomotion and as the box controller before its event (2,704 with `v4.0.1`, which had one rule for both). The
+  playing frame is every 5th frame of each SceneBot range plus 60 random frames, and each query is a database
+  frame's features plus noise. It also compares the tables the new rules read: the 200 frames where a SceneBot clip
+  starts in a walk, the 60 walk ranges, the 562 frames a walk hands over at, and the 2,098 frames a bend rises at.
+- The pick motion check runs the page's `mm/pickmotion.js` and `mm_g1/pickmotion.py` on the same boxes and table
+  heights (12 cases: 4 of them are the put down's own edit, a bend that lends its edit to the other clip, and the
+  manual edit read from its texts) and compares the solved rows of the Animation Database: the box is the same, the
+  pelvis position within 9.1e-13, its rotation within 1.8e-12, the joints within 3.6e-15 and the velocities within
+  7.5e-9 (MuJoCo 3.14.0 in the page's WASM, 3.3.3 here).
 
 ## Results
 
@@ -222,6 +251,16 @@ tables): picking the box up and putting it down in front worked on the first try
 reliable: one run lifted it on the first regrasp, one on the second, four on the third to fifth crouch, and one not in
 300 s. The regrasp bends down 0.5 to 0.9 m from the box, and the hands reach it from about 0.5 m. One run of each
 scenario (pick9, shift7) ran the port of `1721681`, the others the port of `a41bd3f`. Untested on the robot.
+
+With lmm-g1-box v4.2 (2026-11-18, `README_BOX_SIM.md` *Results*): the floor pick with a 3 s carry and the put-down
+worked in three runs of three with the defaults and in three of three with the rules before (`--walk-on off --bend-out
+leave --foot-land off`), every pick on the first crouch. One box of the six ended on its side (a run with the
+defaults), which three runs a side do not pin on the rules: the box hangs tilted in the hands in every run. `C` from
+UI 3 while bending down made the robot rise empty-handed in 1.0 s, and `C` while lowering the box made it rise still
+holding in 1.0 s, both with no search. The put-down on a 0.5 m table went as before (the box on the table, on its
+side). A box that jumps 0.2 m back at the grasp was lifted on the sixth crouch in one run and on the third in another,
+as unreliable as before. In both, one bend passed its grasp frame with no grasp, and the controller cancelled it and
+took the pick again (`cancel-missed`, which the driver prints).
 
 With lmm-g1-box v4.0.1's defaults (2026-11-16, `README_BOX_SIM.md` *Results*): the box controller takes a pick
 0.55 to 0.59 m from the box (1.0 m with v4.0's), and the floor pick, the pick from a 0.5 m stand with the put-down 1 m

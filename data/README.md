@@ -3,7 +3,9 @@
 The databases that `mm_g1` (the box task's controller, `sonic_g1_box/mm_driver.py`) reads. They are copies of the files that
 lmm-g1-box's page loads for its default variant `holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60` (`sbplace`)
 with the Locomotion Matching Database `emmboth`, the page's default. Nothing here is regenerated: the files are
-copied byte for byte from lmm-g1-box `51f3eae` (v4.0, 2026-11-16), so this repository runs without lmm-g1-box. Before
+copied byte for byte from lmm-g1-box `b2a0a84` (v4.2, 2026-11-18), so this repository runs without lmm-g1-box. Since
+`51f3eae` (v4.0) only `sbplace/config.json` changed: v4.2 took out its `nlatent`, the latent size of the Learned
+Motion Matching networks that the page removed. Before
 2026-11-16 `sbplace/` held the variant `holosoma-v3-box338x335x360-apv4-scenebox-sbplace-angle60` (lmm-g1-box
 `a41bd3f`, ApproachPick v4 with the SceneBot pick). `emm_loco/`, `emm_carry/` and `robot.*` are the same in both.
 
@@ -27,7 +29,7 @@ hands), as the page builds it.
 ## SHA-256
 
 ```
-f8a1c6ebafe0eac547ed37fcc1a03f1cbb721e17cd01e57c6c5be80ffe33daa5  sbplace/config.json
+bd837fb80b551af5f067bbd266d77b959523ca044b31eebc449ef2e16761250d  sbplace/config.json
 1e9fcc2d7a802dd0e0412529518f0b421704ce557d98d6d3c72c0382159e0e2a  sbplace/mm_box.bin
 b15661ed3c7a2e02c57adfa8de892ebab14043573a5962a1d425598461105d4f  sbplace/mm_loco.bin
 065ad6ead90cca2e5ff338875abe86987c7085dfefa3263fd0b20507d2e9f16a  sbplace/mm_pose.bin

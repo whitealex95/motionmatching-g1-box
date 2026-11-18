@@ -1,14 +1,14 @@
-// The box driver's database page (web/index.html): lmm-g1-box's motions.js (v4.0) with one data variant and, above it,
+// The box driver's database page (web/index.html): lmm-g1-box's pages/motions.js (v4.2) with one data variant and, above it,
 // the driver's controller now (GET /api/live of sonic_g1_box/db_page.py): the controller states, the clip the robot
 // plays and the last matches.
 
 import * as THREE from 'three';
-import { Scene } from './scene.js';
-import { BOX } from './sim.js';
-import { MMBackend, loadMMData, loadLoco, locoName, locoParts } from './controller.js';
-import { q, v3 } from './math.js';
-import { VARIANTS, VARIANT, DEFAULT_VARIANT } from './variants.js';
-import { StatePanel, KINDS, stateOf } from './states.js';
+import { Scene } from '../ui/scene.js';
+import { BOX } from '../mm/sim.js';
+import { MMBackend, loadMMData, loadLoco, locoName, locoParts } from '../mm/controller.js';
+import { q, v3 } from '../mm/math.js';
+import { VARIANTS, VARIANT, DEFAULT_VARIANT } from '../mm/variants.js';
+import { StatePanel, KINDS, stateOf } from '../ui/states.js';
 
 const FPS = 60;
 const EMM_CARRY_DIR = 'data/emm_carry';

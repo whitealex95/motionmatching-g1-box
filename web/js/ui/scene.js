@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
-import { BOX, TABLE } from './sim.js';
+import { BOX, TABLE } from '../mm/sim.js';
 
 export { BOX };
 
@@ -538,15 +538,6 @@ export class Scene {
       boxId: top.boxId ?? null, marker: !!top.placeMarker, tableId: top.tableId ?? null,
       point: at ? [at.x, at.y, at.z] : null, ground: onGround ? [g.x, g.y] : null,
     };
-  }
-
-  // The point at height z under a screen point, as pick's ground is at the floor.
-  pointAt(clientX, clientY, z) {
-    const r = this.canvas.getBoundingClientRect();
-    const ndc = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
-    this.raycaster.setFromCamera(ndc, this.camera);
-    const g = new THREE.Vector3();
-    return this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -z), g) ? [g.x, g.y] : null;
   }
 
   cameraYaw() {

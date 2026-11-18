@@ -1,5 +1,5 @@
 // The kinematic side without the page: the boxes, the scripted sequence and the controller step with the
-// grasp and the release. The page (app.js) and the headless evaluation (tools/eval_physical.mjs) both drive it.
+// grasp and the release. The page (pages/index.js) and the headless evaluation (tools/eval_physical.mjs) both drive it.
 
 import { SCENARIO, INITIAL_BOXES, INITIAL_TABLES } from './scenario.js';
 import { q, v3, wrapAngle } from './math.js';
@@ -15,7 +15,6 @@ export const TABLE = { size: [0.6, 0.9, 0.5], inset: 0.02, top: 0.03 };
 // The robot takes a box on a table from a side whose stance, STANCE_OUT from the box, is STANCE_CLEAR off the table.
 const STANCE_OUT = 0.45;
 const STANCE_CLEAR = 0.15;
-export const SUPPORT_MIN = 0.005;
 
 export const PLAY_BOXES = [
   { label: 'A', pos: [1.8, 0.5], yaw: 0.2 },
@@ -23,7 +22,7 @@ export const PLAY_BOXES = [
   { label: 'C', pos: [0.8, -2.0], yaw: -0.4 },
   { label: 'D', table: 'T1', edge: 2 },
 ];
-export const PLAY_TABLES = [{ label: 'T1', pos: [-1.2, -2.2], yaw: 0.3 }];
+const PLAY_TABLES = [{ label: 'T1', pos: [-1.2, -2.2], yaw: 0.3 }];
 
 const smoothstep = (x) => { const t = Math.min(1, Math.max(0, x)); return t * t * (3 - 2 * t); };
 
@@ -57,7 +56,7 @@ const SIM_STATE = ['controller', 'footLock', 'world', 'scenario', 'simTime', 'st
 // physics (the grasp, the release and the boxes fed back from the physics) never teleport a box.
 // A box rests on the floor or on a table: z is the height of what it stands on, table the id of that table or null.
 // Tables carry one revision for all of them, which the physical mode follows.
-export class World {
+class World {
   constructor() { this.reset([]); }
   reset(boxes, tables = []) {
     this.boxes = [];
@@ -300,10 +299,10 @@ export class Sim {
   }
 
   // The replan modes of the physical mode (phys/runner.js) run the controller ahead and then back to a saved
-  // state. The networks, databases and settings are shared, not copied.
+  // state. The databases and settings are shared, not copied.
   saveState() {
     const c = this.controller, b = c.backend;
-    const keep = new Set([this.cfg, c.cfg, c.p, b.cfg, b.ctrl, b.nets, b.db, b.pose, b.L, b.steps, b.edits, this.footLock.legs].filter(Boolean));
+    const keep = new Set([this.cfg, c.cfg, c.p, b.cfg, b.ctrl, b.db, b.pose, b.L, b.steps, b.starts, b.walkRangesOf, b.edits, this.footLock.legs].filter(Boolean));
     return copyState(Object.fromEntries(SIM_STATE.map((k) => [k, this[k]])), keep);
   }
 
@@ -425,17 +424,19 @@ export class Sim {
     return this.world.groundBoxes().map((b) => ({ id: b.id, pos: b.pos, yaw: b.yaw, half })).concat(this.tableObstacles());
   }
 
-  // The pick and place motions for what the box to pick up and the place target stand on (pickmotion.js). A change of
-  // the clip that plays is blended in as a transition.
+  // The pick and place motions for what the box to pick up and the place target stand on (pickmotion.js). While a bend
+  // plays, both clips get its height and its manual edit (Controller.bendOf). A change of the clip that plays is blended
+  // in as a transition.
   syncPickMotion() {
     const w = this.world, pb = w.pickBox(), pm = this.pickMotion, c = this.controller;
     if (pb) this.supports.pick = pb.z ?? 0;
     if (w.placeTarget) this.supports.place = w.placeTarget.z ?? 0;
     if (!pm) return;
-    const changed = pm.sync(this.supports, BOX.size);
+    const bend = c.bendOf(), s = this.supports;
+    const changed = pm.sync(s, BOX.size, bend);
     c.boxEdit = pm.offsets();
     const b = c.backend;
-    if (!changed.length || b.kind !== 'mm' || !b.active || b.active === 'loco') return;
+    if (!changed.length || !b.active || b.active === 'loco') return;
     const clip = pm.clipOf(b.db[b.active].idx[b.frame]);
     if (clip && changed.includes(clip.kind)) c.transition(b.matchPose({ name: b.active, frame: b.frame }, c.curr.rootPos, c.curr.rootRot, c.dt));
   }
@@ -476,7 +477,7 @@ export class Sim {
     }
     if (c.events.release && w.holdingId !== null) {
       // The box comes to rest on the place target, as in the data, where the rest pose after the
-      // release is the target. The Decompressor's box output is least accurate at this moment.
+      // release is the target.
       const box = w.find(w.holdingId);
       const hb = c.heldBoxWorld();
       const t = c.commit || c.target;
@@ -521,9 +522,8 @@ export class Sim {
     return { state, retry };
   }
 
-  // At a release the box Stepper can overshoot the hold state, and the Decompressor's box output then dips
-  // below the floor for a few frames. The drawn box is lifted until its lowest corner is on the floor, or on the
-  // table under its centre.
+  // At a release the box pose of the playing frames can dip below the floor for a few frames. The drawn box is
+  // lifted until its lowest corner is on the floor, or on the table under its centre.
   aboveFloor(pose) {
     if (!pose) return pose;
     const half = BOX.size.map((s) => s / 2);

@@ -1,4 +1,4 @@
-"""Port of lmm-g1-box's web/js/ik.js: foot locking after contact_update of orangeduck/Motion-Matching. The G1 leg
+"""Port of lmm-g1-box's web/js/mm/ik.js: foot locking after contact_update of orangeduck/Motion-Matching. The G1 leg
 is not a two-bone chain, so the ankle position is solved by damped least squares on hip pitch, roll, yaw and
 knee, and the ankle pitch and roll then restore the foot orientation of the animation."""
 import math
@@ -87,23 +87,28 @@ class Leg:
 
 
 def new_foot():
-    return {'state': False, 'lock': False, 'pos': None, 'vel': [0.0, 0.0, 0.0], 'point': [0.0, 0.0, 0.0], 'target': None,
+    return {'state': False, 'lock': False, 'wait': False, 'pos': None, 'vel': [0.0, 0.0, 0.0], 'point': [0.0, 0.0, 0.0], 'target': None,
             'offPos': [0.0, 0.0, 0.0], 'offVel': [0.0, 0.0, 0.0], 'final': None}
 
 
 class FootLock:
-    def __init__(self, bodies, unlock_radius=0.2, halflife=0.1):
+    def __init__(self, bodies, unlock_radius=0.2, halflife=0.1, land_height=0.02):
         self.legs = [Leg(bodies, 'left'), Leg(bodies, 'right')]
         self.unlock_radius = unlock_radius
         self.halflife = halflife
+        # A foot whose contact starts while a transition still holds it more than this (m) above where the playing
+        # frame has it is locked once it has come down. None: it is locked at once, in the air.
+        self.land_height = land_height
         self.enabled = True
         self.reset()
 
     def reset(self):
         self.skate = {'dist': 0.0, 'time': 0.0}
+        self.waits = {'count': 0, 'time': 0.0}
         self.feet = [new_foot(), new_foot()]
 
-    def update_contact(self, c, inp, input_state, dt):
+    def update_contact(self, c, inp, input_state, dt, above=0.0):
+        """above: how far the foot is above where the playing frame has it (m)."""
         if c['pos'] is None:
             c['pos'], c['target'] = list(inp), list(inp)
         input_vel = scale(sub(inp, c['target']), 1 / dt)
@@ -113,15 +118,26 @@ class FootLock:
         c['pos'] = add(goal, c['offPos'])
         c['vel'] = add(goal_vel, c['offVel'])
         unlock = c['lock'] and length(sub(c['point'], inp)) > self.unlock_radius
-        if not c['state'] and input_state:
+        start = input_state and (not c['state'] or c['wait'])
+        if start and self.land_height is not None and above > self.land_height:
+            if not c['wait']:
+                self.waits['count'] += 1
+            self.waits['time'] += dt
+            c['wait'] = True
+        elif start:
             c['lock'] = True
             c['point'] = list(c['pos'])
+            if c['wait']:
+                c['point'][2] -= max(0.0, above)
+            c['wait'] = False
             c['offPos'] = sub(add(inp, c['offPos']), c['point'])
             c['offVel'] = add(input_vel, c['offVel'])
         elif (c['lock'] and c['state'] and not input_state) or unlock:
             c['lock'] = False
             c['offPos'] = sub(add(c['point'], c['offPos']), inp)
             c['offVel'] = sub(c['offVel'], input_vel)
+        if not input_state:
+            c['wait'] = False
         c['state'] = input_state
 
     def shift(self, d):
@@ -143,11 +159,15 @@ class FootLock:
         """state: render_state() of the controller. Returns the joint angles (29,) with the feet fixed."""
         joints = [float(v) for v in state['joints']]
         pR = m3_from_quat(state['hipRot'])
+        U = None if self.land_height is None else state.get('unblended')
+        uR = m3_from_quat(U['hipRot']) if U else None
+        u_joints = [float(v) for v in U['joints']] if U else None
         for s in range(2):
             leg = self.legs[s]
             foot = leg.fk(state['hipPos'], pR, joints)[5]
             c = self.feet[s]
-            self.update_contact(c, foot[0], state['contacts'][s], dt)
+            above = foot[0][2] - leg.fk(U['hipPos'], uR, u_joints)[5][0][2] if U else 0.0
+            self.update_contact(c, foot[0], state['contacts'][s], dt, above)
             if self.enabled and length(sub(c['pos'], foot[0])) > 1e-4:
                 leg.solve(state['hipPos'], pR, joints, c['pos'], foot[1])
             final = leg.fk(state['hipPos'], pR, joints)[5][0]

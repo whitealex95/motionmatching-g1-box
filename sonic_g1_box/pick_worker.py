@@ -26,19 +26,26 @@ class PickWorker:
         self.asked = set()
         self.busy = None            # (support, box) being solved
         self.solved_n = 0
-        self.ranges = None          # the palm shift ranges for the box solved last, [[lx, lz], [rx, rz]] as [lo, hi]
+        # the palm shift ranges for the box solved last, with the pick's and with the put-down's manual edit:
+        # {'pick' | 'place': [[lx, lz], [rx, rz]] as [lo, hi]}
+        self.ranges = None
         threading.Thread(target=self.loop, daemon=True).start()
 
-    def key(self, support, box_size):
-        return self.pm.key(self.pm.edit(support, box_size))
+    def key(self, support, box_size, as_='pick'):
+        return self.pm.key(self.pm.edit(support, box_size, as_))
 
-    def ready(self, kind, support, box_size):
-        """True when the edit of this kind for this support is solved. Else it is asked for and False."""
+    def cached(self, kind, k):
         pm = self.pm
-        k = self.key(support, box_size)
-        if all(f"{c['row']} {k}" in pm.cache for c in pm.clips if c['kind'] == kind):
+        return all(f"{c['row']} {k}" in pm.cache for c in pm.clips if c['kind'] == kind)
+
+    def ready(self, kind, support, box_size, as_=None):
+        """True when the edit of this kind for this support, with the manual edit of as_ (the kind's own without it),
+        is solved. Else it is asked for and False."""
+        as_ = as_ or kind
+        k = self.key(support, box_size, as_)
+        if self.cached(kind, k):
             return True
-        job = (round(float(support), 3), tuple(box_size))
+        job = (round(float(support), 3), tuple(box_size), as_)
         if (k, job) not in self.asked:
             self.asked.add((k, job))
             self.jobs.put((k, job))
@@ -46,13 +53,14 @@ class PickWorker:
 
     def loop(self):
         while True:
-            k, (support, box) = self.jobs.get()
+            k, (support, box, as_) = self.jobs.get()
             self.busy = (support, list(box))
             t0 = time.perf_counter()
             with self.lock:
-                self.pm.prepare([support], list(box))
-                self.ranges = [[self.pm.palm_range(h, a, list(box)) for a in (0, 1)] for h in (0, 1)]
-            self.asked.discard((k, (support, box)))
+                self.pm.prepare([support], list(box), as_)
+                self.ranges = {kind: [[self.pm.palm_range(h, a, list(box), kind) for a in (0, 1)] for h in (0, 1)]
+                               for kind in ('pick', 'place')}
+            self.asked.discard((k, (support, box, as_)))
             self.busy = None
             self.solved_n += 1
             if time.perf_counter() - t0 > 0.1:
@@ -61,7 +69,8 @@ class PickWorker:
     def state(self, supports):
         """The Pick motion card's numbers: the settings, the supports, what plays for each kind and what is solving."""
         pm = self.pm
-        out = {'settings': dict(pm.settings), 'manual': pm.manual, 'supports': dict(supports),
+        out = {'settings': dict(pm.settings), 'manual': pm.manual, 'manual_place': pm.manualPlace,
+               'supports': dict(supports),
                'data_box': list(pm.dataBox), 'available': pm.available and pm.model is not None,
                'solving': None if self.busy is None else {'support': self.busy[0], 'box': self.busy[1]},
                'queued': self.jobs.qsize(), 'solved': self.solved_n, 'ranges': self.ranges, 'kinds': {}}
@@ -71,7 +80,9 @@ class PickWorker:
                 'key': pm.applied[kind], 'edit': info['edit'], 'failed': info['failed'], 'solved': info['solved'] is not None,
                 'pelvis_min': info['pelvisMin'], 'base_pelvis_min': info['basePelvisMin'],
                 'palm_miss': None if info['palmMiss'] is None else list(info['palmMiss']), 'offset': list(info['offset']),
-                'ms': round(info.get('ms', 0.0)), 'frames': info['clip']['stop'] - info['clip']['start']}
+                'ms': round(info.get('ms', 0.0)), 'frames': info['clip']['stop'] - info['clip']['start'],
+                # while a bend plays, the other clip has the edit of that bend, not its own
+                'borrowed': pm.borrowed(kind)}
         return out
 
     def clip(self, kind):

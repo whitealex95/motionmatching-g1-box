@@ -1,4 +1,4 @@
-"""The Matching Databases and the Animation Database of lmm-g1-box (web/js/controller.js: loadMMData, boxPart,
+"""The Matching Databases and the Animation Database of lmm-g1-box (web/js/mm/controller.js: loadMMData, boxPart,
 loadExtra, buildLoco, normalizedDb, lastSteps and the MMBackend), read from the copies in data/.
 
 The page keeps features in float32 and computes costs in float64. The search here takes the squared distance from
@@ -143,6 +143,41 @@ def last_steps(cfg, pose):
     return clips, planted
 
 
+SAME_POSE = 0.02
+
+
+def scene_bot_starts(cfg, pose):
+    """sceneBotStarts of the page. A walk of the ApproachPick augmentation ends in the SceneBot pick or place clip from
+    that clip's first frame on. Per clip row: [{kind, event, start}] in frames of the clip, start being the frame where
+    the SceneBot clip of the same mirror starts in it. Only a clip whose joints are the SceneBot clip's from there to
+    the event is listed."""
+    names, rows = cfg['clips']['names'], cfg['clips']['rows']
+    W, J = cfg['pose_width'], cfg['pose_layout']['joints'][0]
+    joints = pose.reshape(-1, W)[:, J:J + NDOF].astype(np.float64)      # (rows, 29)
+    sb = {'pick': {}, 'place': {}}
+    for n, mirror, start, _, attach, release in rows:
+        if names[n] == 'SceneBotPick' and attach is not None:
+            sb['pick'][mirror] = (start, attach)
+        if names[n] == 'SceneBotPlace' and release is not None:
+            sb['place'][mirror] = (start, release)
+
+    def same(a, b):
+        return not (np.abs(joints[a] - joints[b]) > SAME_POSE).any()
+
+    out = []
+    for _, mirror, start, stop, attach, release in rows:
+        found = []
+        for kind, e in (('pick', attach), ('place', release)):
+            s = sb[kind].get(mirror)
+            if s is None or e is None or not (s[1] < e < stop - start):
+                continue
+            at = e - s[1]
+            if all(same(start + at + k, s[0] + k) for k in (0, s[1] >> 1, s[1])):
+                found.append({'kind': kind, 'event': e, 'start': at})
+        out.append(found)
+    return out
+
+
 def load_db_file(path, c):
     n = c.get('stored', c['nfeatures'])
     buf = np.fromfile(path, dtype=np.uint8)
@@ -263,6 +298,7 @@ class MMBackend:
         self.frame = 0
         self.frac = 0.0
         self.steps, self.planted_rows = last_steps(cfg, pose)
+        self.starts = scene_bot_starts(cfg, pose)
         self.emm = self.emm_carry = None
         empty, carry = loco_parts(loco)
         parts = [pose]
@@ -281,6 +317,9 @@ class MMBackend:
         self.planted_rows = planted
         self._masks = {}
         self.edits = None
+        # with the rows of the data, before any edit of the pick motion
+        for name in ('box', 'pick', 'place'):
+            self.rise_of(name)
         if loco != 'nsm':
             self.build_loco(loco)
 
@@ -502,6 +541,142 @@ class MMBackend:
                     out[a:b][self.planted_rows[d.idx[a:b]] == 1] = 1
             return out
         return self._mask('walk_in', name, make)
+
+    def _box_ranges(self, name):
+        """Every range of a box Matching Database that lies in the variant's clips and has a grasp or a release."""
+        d, rows, out = self.db[name], self.cfg['clips']['rows'], []
+        for r, (a, b) in enumerate(d.ranges):
+            clip, start, stop, event, row = self.range_clip(name, r)
+            if d.idx[a] >= stop or not event >= 0:
+                continue
+            is_place = d.range_kind[r] if d.range_kind is not None else name == 'place'
+            out.append({'a': int(a), 'b': int(b), 'kind': 'place' if is_place else 'pick', 'name': clip, 'start': start,
+                        'stop': stop, 'event': event, 'row': row, 'mirror': rows[row][1],
+                        'holds': bool(d.idx[b - 1] - start >= event), 'first': int(d.idx[a]) - start})
+        return out
+
+    def walk_ranges(self, name):
+        """walkRanges of the page: the ranges of a box Matching Database that are walks ending in a SceneBot clip. Such
+        a range stops before its clip's grasp or release but not before frame `bend`, from which its clip has the
+        SceneBot clip (scene_bot_starts), and a range of that SceneBot clip, of the same mirror when there is one, holds
+        the event. a, b: its frames in the database, start: its clip's first row, step: the clip's last step, to: the
+        SceneBot range (a, b, first), first being the frame of the SceneBot clip at a."""
+        def make(name):
+            d, ranges, out = self.db[name], self._box_ranges(name), []
+            for w in ranges:
+                s = None if w['holds'] else next((x for x in self.starts[w['row']] if x['kind'] == w['kind']), None)
+                if s is None or d.idx[w['b'] - 1] - w['start'] < s['start']:
+                    continue
+                ends = [x for x in ranges if x['holds'] and x['kind'] == w['kind'] and x['name'].startswith('SceneBot')
+                        and x['event'] == w['event'] - s['start']]
+                to = next((x for x in ends if x['mirror'] == w['mirror']), ends[0] if ends else None)
+                if to is None:
+                    continue
+                step = next((x for x in self.steps[w['row']] if x['event'] == w['event']), None)
+                out.append({'a': w['a'], 'b': w['b'], 'kind': w['kind'], 'start': w['start'], 'bend': s['start'],
+                            'step': step['step'] if step else s['start'],
+                            'to': {'a': to['a'], 'b': to['b'], 'first': to['first']}})
+            return out
+        return self._mask('walk_ranges', name, make)
+
+    def walk_on(self, name, frm):
+        """walkOn of the page: 1 in a walk that ends in a SceneBot clip, from its last step on (frm 'step') or from the
+        frame where the SceneBot clip starts in it (frm 'start')."""
+        def make(name):
+            d, out = self.db[name], np.zeros(len(self.db[name].idx), dtype=np.uint8)
+            for w in self.walk_ranges(name):
+                f0 = min(w['step'], w['bend']) if frm == 'step' else w['bend']
+                out[w['a']:w['b']] = d.idx[w['a']:w['b']] - w['start'] >= f0
+            return out
+        return self._mask('walk_on ' + frm, name, make)
+
+    def hand_off(self, name):
+        """handOff of the page: per frame, the frame of the SceneBot range that a walk ending in that SceneBot clip
+        plays on at, or -1. It is the frame the two share, once the SceneBot range has it. A walk range that stops
+        before the SceneBot range starts goes from its last frame to the first of the SceneBot range."""
+        def make(name):
+            d, out = self.db[name], np.full(len(self.db[name].idx), -1, dtype=np.int32)
+            for w in self.walk_ranges(name):
+                to = w['to']
+                for i in range(w['a'], w['b']):
+                    f = int(d.idx[i]) - w['start'] - w['bend']
+                    if f < 0:
+                        continue
+                    j = to['a'] + f - to['first']
+                    if to['a'] <= j < to['b']:
+                        out[i] = j
+                    elif j < to['a'] and i == w['b'] - 1:
+                        out[i] = to['a']
+            return out
+        return self._mask('hand_off', name, make)
+
+    def scenebot_ranges(self, name):
+        """sceneBotRanges of the page: the ranges that are a SceneBot pick or place with its grasp or release."""
+        return [x for x in self._box_ranges(name) if x['name'].startswith('SceneBot') and x['holds']]
+
+    @staticmethod
+    def rise_db(name):
+        """The box Matching Database with the frames of rise_of(name): the other one of 'pick' and 'place'."""
+        return 'place' if name == 'pick' else 'pick' if name == 'place' else name
+
+    def rise_of(self, name):
+        """riseOf of the page: per frame, the frame of rise_db(name) where the robot rises from the pose of that frame,
+        or -1. The SceneBot place is the SceneBot pick backward, so a frame of one before its event has its joints
+        again in the other after its event: the frame there with the nearest joints, of the same mirror when the
+        database has it. A frame at or past the event has the event frame of the other. A walk that ends in a SceneBot
+        clip has the frames of that clip from where it starts in the walk."""
+        def make(name):
+            d, to = self.db[name], self.rise_db(name)
+            out = np.full(len(d.idx), -1, dtype=np.int32)
+            J = self.L['joints'][0]
+            targets = self.scenebot_ranges(to) if to in self.db else []
+            for s in self.scenebot_ranges(name):
+                ends = [x for x in targets if x['kind'] != s['kind']]
+                t = next((x for x in ends if x['mirror'] == s['mirror']), ends[0] if ends else None)
+                if t is None:
+                    continue
+                n, m = s['stop'] - s['start'], t['stop'] - t['start']
+                near = np.full(n, t['event'], dtype=np.int64)                              # (n,) frames of t's clip
+                nb = min(n, s['event'])
+                if nb > 0 and m > t['event']:
+                    A = self.pose[s['start']:s['start'] + nb, J:J + NDOF].astype(np.float64)   # (nb, 29)
+                    B = self.pose[t['start'] + t['event']:t['stop'], J:J + NDOF].astype(np.float64)  # (m - event, 29)
+                    e = np.zeros((nb, len(B)))
+                    for j in range(NDOF):       # summed joint by joint, as the page sums them
+                        e += (A[:, None, j] - B[None, :, j]) ** 2
+                    near[:nb] = t['event'] + e.argmin(1)
+
+                def at(f):
+                    return np.maximum(t['a'], np.minimum(t['b'] - 2, t['a'] + near[f] - t['first']))
+
+                out[s['a']:s['b']] = at(d.idx[s['a']:s['b']] - s['start'])
+                for w in self.walk_ranges(name):
+                    if w['to']['a'] != s['a']:
+                        continue
+                    f = d.idx[w['a']:w['b']] - w['start'] - w['bend']
+                    ok = (f >= 0) & (f < n)
+                    out[w['a']:w['b']][ok] = at(f[ok])
+            return out
+        return self._mask('rise_of', name, make)
+
+    def every_frame(self, name):
+        """1 on every frame: the mask of a search that may jump to no frame."""
+        return self._mask('every_frame', name, lambda name: np.ones(len(self.db[name].idx), dtype=np.uint8))
+
+    def from_bend(self, name):
+        """fromBend of the page: 1 from where the frame's clip goes down for the grasp or the release. That is every
+        frame of a SceneBot clip, the frame where the SceneBot clip starts in a walk that ends in one, and the last
+        step in any other clip (from_last_step)."""
+        def make(name):
+            d, out = self.db[name], self.from_last_step(name).copy()
+            for r, (a, b) in enumerate(d.ranges):
+                clip, _, stop, _, _ = self.range_clip(name, r)
+                if d.idx[a] < stop and clip.startswith('SceneBot'):
+                    out[a:b] = 1
+            for w in self.walk_ranges(name):
+                out[w['a']:w['b']] = d.idx[w['a']:w['b']] - w['start'] >= w['bend']
+            return out
+        return self._mask('from_bend', name, make)
 
     # ---- search and playback ----
 

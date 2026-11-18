@@ -5,7 +5,11 @@
 // --states also writes the whole state of the sequence before each frame (one JSON line per frame), for the
 // teacher-forced comparison of check_parity.py --forced.
 //
+// --foot-land M sets the foot lock's landHeight (the page's 0.02 m). The scripted sequence has no foot that waits at
+// 0.02 m, so a small height (0.002) is the way to check that rule: give check_parity.py the same --foot-land.
+//
 // Run: node tools/page_parity/js_trace.mjs <lmm-g1-box checkout> <out.jsonl> [--frames N] [--states states.jsonl]
+//                                           [--foot-land M]
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,13 +21,15 @@ const fi = process.argv.indexOf('--frames');
 const maxFrames = fi > 0 ? +process.argv[fi + 1] : 9000;
 const si = process.argv.indexOf('--states');
 const statesOut = si > 0 ? process.argv[si + 1] : null;
+const li = process.argv.indexOf('--foot-land');
+const footLand = li > 0 ? { landHeight: +process.argv[li + 1] } : {};
 const { serveWebFetch, webImport } = await import(pathToFileURL(path.join(path.resolve(repo), 'physics/node_env.mjs')).href);
 serveWebFetch();
-const { Controller, MMBackend, loadMMData, loadLoco } = await webImport('js/controller.js');
-const { FootLock } = await webImport('js/ik.js');
-const { Sim, BOX } = await webImport('js/sim.js');
-const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/variants.js');
-const { q } = await webImport('js/math.js');
+const { Controller, MMBackend, loadMMData, loadLoco } = await webImport('js/mm/controller.js');
+const { FootLock } = await webImport('js/mm/ik.js');
+const { Sim, BOX } = await webImport('js/mm/sim.js');
+const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/mm/variants.js');
+const { q } = await webImport('js/mm/math.js');
 
 const variant = DEFAULT_VARIANT;
 const DATA = VARIANTS[variant].data;
@@ -34,11 +40,11 @@ const backend = new MMBackend(cfg, await loadMMData(DATA, cfg, VARIANTS[variant]
 const controller = new Controller(cfg, backend, { bodies: robot.bodies });
 await loadLoco('emmboth', cfg, backend, cfg.emm_loco.dir, 'data/emm_carry');
 controller.setLoco('emmboth');
-const sim = new Sim(controller, new FootLock(robot.bodies), cfg);
+const sim = new Sim(controller, new FootLock(robot.bodies, footLand), cfg);
 sim.startScripted();
 
 // The controller's state that the next frame depends on, and what the page shows of it (navSide to fsm).
-const C_KEYS = ['mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch', 'holdSwitchTime',
+const C_KEYS = ['mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch', 'risesFrom', 'riseWalkIn',
   'commit', 'target', 'navSide', 'stance', 'boxCost', 'calledOff', 'engaged', 'reapproach', 'leaveBox', 'missed', 'walkIn',
   'navigating', 'arriving', 'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'events', 'semantics', 'searchAt', 'matchAt',
   'finishing', 'clock', 'lastEvent', 'fsm'];
@@ -51,7 +57,7 @@ const stateOf = () => {
     b: pick(b, ['active', 'frame', 'frac', 'loco']),
     w: pick(w, ['boxes', 'tables', 'nextId', 'pickId', 'holdingId', 'placeTarget', 'regrasp']),
     s: pick(sim, ['scenario', 'simTime', 'stats', 'forceSearch', 'grip', 'parked', 'heldPose', 'renderJoints', 'supports']),
-    f: { feet: sim.footLock.feet, skate: sim.footLock.skate },
+    f: { feet: sim.footLock.feet, skate: sim.footLock.skate, waits: sim.footLock.waits },
   };
 };
 const plain = (k, v) => (ArrayBuffer.isView(v) ? Array.from(v) : v === Infinity ? 'inf' : v);

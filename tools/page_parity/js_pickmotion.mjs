@@ -1,4 +1,4 @@
-// The page's own web/js/pickmotion.js run in node on the default variant, for a few boxes and table heights. It
+// The page's own web/js/mm/pickmotion.js run in node on the default variant, for a few boxes and table heights. It
 // writes the solved rows of the Animation Database (float32, one file per case) and the info of each solve.
 // check_pickmotion.py runs mm_g1/pickmotion.py on the same cases and compares.
 //
@@ -13,10 +13,10 @@ if (!repo || !out) throw new Error('usage: js_pickmotion.mjs <lmm-g1-box> <out d
 const REPO = path.resolve(repo);
 const { serveWebFetch, webImport, loadPhysics } = await import(pathToFileURL(path.join(REPO, 'physics/node_env.mjs')).href);
 serveWebFetch();
-const { MMBackend, loadMMData } = await webImport('js/controller.js');
-const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/variants.js');
+const { MMBackend, loadMMData } = await webImport('js/mm/controller.js');
+const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/mm/variants.js');
 const { BodyModel } = await webImport('js/edit/bodyik.js');
-const { PickMotion, MANUAL } = await webImport('js/pickmotion.js');
+const { PickMotion, MANUAL, ownManual } = await webImport('js/mm/pickmotion.js');
 
 const V = VARIANTS[DEFAULT_VARIANT];
 const cfg = await (await fetch(`${V.data}/config.json`)).json();
@@ -40,6 +40,17 @@ const CASES = [
   // The manual palm shift on the side faces and the grip kept on the held box.
   { name: 'grasp+grip', autoHeight: true, autoSize: false, support: 0.5, box: DATA_BOX,
     manual: { grasp: [[0.02, 0.01], [0.02, 0.01]], gripKeep: true } },
+  // The put down with a manual edit of its own, on a table of its own height (lmm-g1-box a59750d).
+  { name: 'place own', autoHeight: true, autoSize: false, supports: { pick: 0, place: 0.3 }, box: DATA_BOX,
+    manual: { forward: 0.03 }, manualPlace: { forward: 0.05, left: -0.02, up: 0, yaw: 0.1, grasp: [[-0.02, 0.02], [0.01, 0]], gripKeep: false } },
+  // While a bend plays, both clips get that bend's height and manual edit.
+  { name: 'bend place', autoHeight: true, autoSize: false, supports: { pick: 0, place: 0.3 }, box: DATA_BOX, bend: 'place',
+    manual: { forward: 0.03 }, manualPlace: { forward: 0.05, left: -0.02, up: 0, yaw: 0.1, grasp: [[-0.02, 0.02], [0.01, 0]], gripKeep: false } },
+  { name: 'bend pick', autoHeight: true, autoSize: false, supports: { pick: 0.5, place: 0 }, box: DATA_BOX, bend: 'pick',
+    manualPlace: { forward: 0.05, left: -0.02, up: 0, yaw: 0.1, grasp: [[-0.02, 0.02], [0.01, 0]], gripKeep: false } },
+  // The manual edit from the texts of the page's address, values outside their ranges among them.
+  { name: 'texts', autoHeight: true, autoSize: false, support: 0, box: DATA_BOX,
+    texts: { rest: '4,-3,0,60', palms: '1.5,2', grip: 'keep', placeRest: '30,0,0,-10', placePalms: '-40,1,2,40', placeGrip: 'data' } },
 ];
 
 fs.mkdirSync(out, { recursive: true });
@@ -75,9 +86,15 @@ for (const [i, cs] of CASES.entries()) {
   pm.settings.autoHeight = cs.autoHeight;
   pm.settings.autoSize = cs.autoSize;
   Object.assign(pm.manual, { ...MANUAL, grasp: MANUAL.grasp.map((g) => g.slice()) }, cs.manual ?? {});
-  pm.clearCache();
+  pm.manualPlace = cs.manualPlace ? ownManual(cs.manualPlace) : null;
+  if (cs.texts) pm.setManual(cs.texts, cs.box);
+  pm.cache.clear();
+  pm.applied = { pick: '', place: '' };
   pm.solveMs = 0;
-  const changed = pm.sync({ pick: cs.support, place: cs.support }, cs.box);
+  const supports = cs.supports ?? { pick: cs.support, place: cs.support };
+  const changed = pm.sync(supports, cs.box, cs.bend ?? null);
+  const shown = Object.fromEntries(['pick', 'place'].map((k) => { const i = pm.shown(k); return [k, { borrowed: i.borrowed, offset: i.offset, up: i.edit.up, forward: i.edit.forward }]; }));
+  const ranges = Object.fromEntries(['pick', 'place'].map((as) => [as, [0, 1].map((h) => [0, 1].map((x) => pm.palmRange(h, x, cs.box, as)))]));
   const bin = Buffer.alloc(dataBin.length);
   let o = 0;
   for (const c of clips) {
@@ -88,7 +105,9 @@ for (const [i, cs] of CASES.entries()) {
   const file = `case${i}.bin`;
   fs.writeFileSync(path.join(out, file), bin);
   cases.push({
-    ...cs, manual: cs.manual ?? null, bin: file, changed, offsets: pm.offsets(), solveMs: pm.solveMs,
+    ...cs, manual: cs.manual ?? null, manualPlace: cs.manualPlace ?? null, texts: cs.texts ?? null, bend: cs.bend ?? null, supports,
+    after: { manual: ownManual(pm.manual), manualPlace: pm.manualPlace, texts: pm.manualTexts() }, shown, ranges,
+    bin: file, changed, offsets: pm.offsets(), solveMs: pm.solveMs,
     info: { pick: slim(pm.info.pick), place: slim(pm.info.place) },
     lift: Object.fromEntries(liftRows.map((g) => [g, pm.lift(g)])),
   });

@@ -1,4 +1,4 @@
-"""Port of lmm-g1-box's web/js/math.js (vectors [x, y, z], quaternions [w, x, y, z], Z-up, +X forward).
+"""Port of lmm-g1-box's web/js/mm/math.js (vectors [x, y, z], quaternions [w, x, y, z], Z-up, +X forward).
 The springs and inertializers port spring.h of orangeduck/Motion-Matching. Plain floats and lists: these
 run on single 3- and 4-vectors many times per step, where numpy's call overhead costs more than the math."""
 import math

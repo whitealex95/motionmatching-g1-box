@@ -1,7 +1,7 @@
 // Vectors are [x, y, z] arrays, quaternions [w, x, y, z]. The world is Z-up, +X forward.
 // Springs and inertializers are ports of spring.h from orangeduck/Motion-Matching.
 
-export const LN2 = Math.LN2;
+const LN2 = Math.LN2;
 
 export const v3 = {
   add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
@@ -84,7 +84,7 @@ export const q = {
   },
 };
 
-export const halflifeToDamping = (h, eps = 1e-5) => (4 * LN2) / (h + eps);
+const halflifeToDamping = (h, eps = 1e-5) => (4 * LN2) / (h + eps);
 export const dampFactor = (h, dt, eps = 1e-5) => 1 - Math.exp(-(LN2 * dt) / (h + eps));
 
 export function simpleSpringDamperQuat(state, goal, halflife, dt) {

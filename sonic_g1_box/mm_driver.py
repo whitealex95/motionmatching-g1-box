@@ -2,10 +2,13 @@
 pose) and live.sam3box's boxes (the map server's objects), on the real G1 or the deploy repo's sim.
 
 It runs the way of lmm-g1-box's page (variant holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60, Play tab,
-physical mode with the SONIC release tracker: the page's defaults of its tag v4.0.1), ported in mm_g1:
+physical mode with the SONIC release tracker: the page's defaults of its tag v4.2), ported in mm_g1:
   controller   exact Motion Matching over data/ (the Locomotion Matching Database 'emmboth', the page's default,
                and the Box Matching Database of sbplace), inertialization, foot locking, root warping, the arrive
-               state and the moving-target rules
+               state and the moving-target rules. Before a grasp and before a release the task has two states
+               (Stepping to the box, Bending down. Stepping to the marker, Lowering the box): the walk plays on
+               into its SceneBot clip with no search (--walk-on), and a bend ends only by its grasp or release or
+               by a cancel, which rises at the frame of the other SceneBot clip with the same joints (--bend-out)
   pick motion  the pick and the put-down solved again for the height under the box with the pick editor's
                whole-body IK (pick_worker.py runs the solves beside the control loop)
   reference    60 Hz poses resampled to 50 Hz and made 0.2 s at a time, snap-xyyaw every 10 frames onto the
@@ -64,11 +67,12 @@ The page's Play panel settings are flags with the page's defaults (the data vari
 them from it), set live from UI 3's Settings tab:
   anchoring        --yaw-gain, --hold
   grasp heuristic  --palm-force, --palm-target, --shoulder-squeeze, --wrist-squeeze, --shoulder-open
-  pick and place   --pick-speed, --pick-slow, --warp, --leave-moved, --box-entry, --rise, --transition-cost,
-                   --upright-tilt, --box-db, --foot-lock
+  pick and place   --pick-speed, --pick-slow, --warp, --leave-moved, --box-entry, --walk-on, --bend-out, --rise,
+                   --transition-cost, --upright-tilt, --box-db, --foot-lock, --foot-land
   walk to the box  --loco-target, --box-ahead
   pick motion      --pick-height, --pick-size, --pick-box, --pick-forward, --pick-left, --pick-up, --pick-yaw,
-                   --pick-palms, --pick-grip-keep (the driver's own: --table-min)
+                   --pick-palms, --pick-grip-keep, --place-edit and its --place-edit-forward to
+                   --place-edit-grip-keep (the driver's own: --table-min)
   transitions      --box-enter-pick, --box-enter-place, --box-leave-pick, --box-leave-place, --side-margin-pick,
                    --side-margin-place, --take-over, --retry-lift, --shoulder-open-from
   matching         --weights-loco, --weights-arrive, --weights-pick, --weights-place
@@ -112,7 +116,8 @@ POSE). The window's held keys go before UI 3's. `--no-window` runs without the w
 
 UI 3's Box tab: when a report of the box moves the controller's box (box_gate, BoxLock). With --box-lock the median of
 --box-lock-need reports seen while the robot stands still in Locomotion locks it; then no report moves it until the
-task leaves Locomotion (--box-lock-moving), none during Pick up, Lift and the rest of the task, and back in Locomotion
+task leaves Locomotion (--box-lock-moving), none during the pick (Stepping to the box, Bending down, Lifting the box)
+and the rest of the task, and back in Locomotion
 the next stand measures it again. A pick asked for before the lock waits for it (--box-lock-wait). --box-freeze stops
 every update; the box stays.
 
@@ -168,10 +173,11 @@ PICK_CLIP_TOPIC = '/mm_driver/pick_motion/'   # + pick | place: the Pick motion 
 PICK_CLIP_EVERY = 5.0                       # s: and again this often, for a page opened later
 REF_TOPIC = '/mm_driver/ref'      # the reference's whole body (and the box it holds) at the frame the robot plays: UI 3
 REF_HZ = 30.0
-# The settings of lmm-g1-box's Play panel (app.js), each with the page's default: the controller's (its `p`), the grasp
+# The settings of lmm-g1-box's Play panel (pages/index.js), each with the page's default: the controller's (its `p`), the grasp
 # heuristic's (PalmGrasp) and the anchoring's (StreamRunner).
 CONTROLLER_FLAGS = {'pick_speed': 'pickPlaceSpeed', 'pick_slow': 'pickPlaceSlow', 'warp': 'warp',
-                    'leave_moved': 'leaveMoved', 'box_entry': 'boxEntry', 'rise': 'rise',
+                    'leave_moved': 'leaveMoved', 'box_entry': 'boxEntry', 'walk_on': 'walkOn', 'bend_out': 'bendOut',
+                    'rise': 'rise',
                     'transition_cost': 'transitionCost', 'upright_tilt': 'uprightTilt', 'box_db': 'boxDb',
                     'loco_target': 'locoTarget', 'box_ahead': 'boxAhead', 'take_over': 'takeOverRadius',
                     'engage_radius': 'engageRadius', 'force_engage_radius': 'forceEngageRadius',
@@ -186,8 +192,11 @@ GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze
 PICK_FLAGS = {'pick_height': 'autoHeight', 'pick_size': 'autoSize'}
 PICK_MANUAL = {'pick_forward': 'forward', 'pick_left': 'left', 'pick_up': 'up', 'pick_yaw': 'yaw', 'pick_box': 'box',
                'pick_palms': 'grasp', 'pick_grip_keep': 'gripKeep'}
-PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', 'retry_lift', 'shoulder_open_from', *GRASP_FLAGS, *CONTROLLER_FLAGS,
-              *THRESHOLD_FLAGS, *WEIGHT_FLAGS, *PICK_FLAGS, *PICK_MANUAL)
+# The put down's own manual edit (PickMotion.manualPlace), used with --place-edit own. The box is the pick's.
+PLACE_MANUAL = {'place_edit_forward': 'forward', 'place_edit_left': 'left', 'place_edit_up': 'up',
+                'place_edit_yaw': 'yaw', 'place_edit_palms': 'grasp', 'place_edit_grip_keep': 'gripKeep'}
+PAGE_FLAGS = ('hold', 'yaw_gain', 'foot_lock', 'foot_land', 'retry_lift', 'shoulder_open_from', *GRASP_FLAGS,
+              *CONTROLLER_FLAGS, *THRESHOLD_FLAGS, *WEIGHT_FLAGS, *PICK_FLAGS, *PICK_MANUAL, 'place_edit', *PLACE_MANUAL)
 # The seed's rules that are not the page's, in the order a re-plan checks them (UI 3's Anchoring card).
 SEED_FLAGS = ('skip_stopped', 'skip_stale', 'max_seed_jump', 'keep_out', 'pre_pose_full', 'track_delay', 'strip_seed_turns')
 # When a report of the box may move the controller's box (UI 3's Box tab, BoxDriver.box_gate).
@@ -211,7 +220,10 @@ COLUMN_S = 0.1             # s between the map server's `column` requests (the L
 COLUMN_R = 0.06            # m around the palm midpoint
 COLUMN_MARGIN = 0.05       # m: the scan's top between the palms this far below the palms disagrees with a hold
 COLUMN_AGREE_S = 0.3       # s of agreement that end a disagreement
-FSM_STATES = ('locomotion', 'to_box', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-pre', 'place-post', 'lost')
+FSM_STATES = ('locomotion', 'to_box', 'pick-step', 'pick-pre', 'pick-post', 'carry', 'to_place', 'place-step', 'place-pre',
+              'place-post', 'lost')
+BOX_STATES = ('pick-step', 'pick-pre', 'pick-post', 'place-step', 'place-pre', 'place-post')
+BEFORE_EVENT = ('pick-step', 'pick-pre', 'place-step', 'place-pre')        # the box controller before its grasp or release
 PAGE_FSM_HISTORY = 24
 FSM_HISTORY = 16
 LOCO_STATES = ('locomotion', 'to_box')                 # UI 3's Locomotion node: the Locomotion database plays
@@ -220,7 +232,7 @@ STILL_RAD = 0.06           # rad, the same for its yaw (3.4 deg)
 LOCK_EVENTS = 8            # the Box tab's list of locks and releases
 CLIP_FPS = 60
 CLIP_VIEW_POINTS = 160                                 # samples of a clip's pelvis and torso curves sent to UI 3
-WALK_DONE_M = 0.25         # app.js playStick: a walk to a clicked point ends this near it, slows down within 1 m
+WALK_DONE_M = 0.25         # pages/index.js playInput: a walk to a clicked point ends this near it, slows down within 1 m
 SHOULDER_ROLL_KP = 14.251                              # the node's default shoulder roll kp (the page's SONIC kp too)
 WRIST_YAW_KP = 16.778                                  # the node's default wrist yaw kp (policy_parameters.hpp STIFFNESS_4010)
 G1_XML = os.path.join(ROOT, 'assets', 'unitree_g1', 'g1.xml')
@@ -235,8 +247,9 @@ SUPPORT_NEAR = 0.3        # m: a report this near where the box was taken stands
 TABLE_MAX = 1.2            # m: a box reported with its bottom higher than this is not at rest on anything
 HUD = {'locomotion': ('Locomotion', 'Carrying'), 'navigate': ('Walking to the box', 'Carrying the box to the marker'),
        'arrive': ('Arriving at the box', 'Arriving at the marker'),
-       'pick-pre': ('Picking up',) * 2, 'pick-post': ('Lifting the box',) * 2, 'place-pre': ('Putting down',) * 2,
-       'place-post': ('Standing up',) * 2}
+       'pick-step': ('Stepping to the box',) * 2, 'pick-pre': ('Bending down',) * 2,
+       'pick-post': ('Lifting the box',) * 2, 'place-step': ('Stepping to the marker',) * 2,
+       'place-pre': ('Lowering the box',) * 2, 'place-post': ('Standing up',) * 2}
 
 
 def quat_yaw(q):
@@ -506,10 +519,13 @@ class ClipTable:
             return [[a, e, int(v[a])] for a, e in zip(edges[:-1], edges[1:]) if v[a]]
 
         steps = b.steps[i] if i < len(b.steps) else []
+        starts = b.starts[i] if i < len(b.starts) else []
         event = lambda f: int(f) if f is not None and 0 <= f < n else None
         return {'i': i, 'name': name, 'mirror': mirror, 'n': n, 'fps': CLIP_FPS, 'k': k, 'pelvis': pelvis, 'lean': lean,
                 'loco': runs(self.lanes[0]), 'box': runs(self.lanes[1]),
                 'steps': [[s['step'], s['lift'], s['kind'], s['event']] for s in steps],
+                # where the SceneBot pick or place starts in a walk that ends in it: the page's "pick start" line
+                'starts': [[s['start'], s['kind']] for s in starts],
                 'attach': event(attach), 'release': event(release)}
 
 
@@ -963,7 +979,7 @@ class BoxDriver:
         return True
 
     def floor_click(self, x, y):
-        """The page's click on the floor (app.js): with the box held, put it down there. With empty hands, clear the
+        """The page's click on the floor (pages/index.js): with the box held, put it down there. With empty hands, clear the
         targets and walk there. It ends UI 1's box task."""
         w = self.sim.world
         if self.box_route is not None and self.box_route.active():
@@ -981,7 +997,7 @@ class BoxDriver:
         return True
 
     def walk_stick(self):
-        """(3,) app.js playStick toward the clicked point: full stick down to 1 m, then slower (0.3 at least). From the
+        """(3,) pages/index.js playInput toward the clicked point: full stick down to 1 m, then slower (0.3 at least). From the
         controller in POSE (the robot follows it), from the robot in planner mode."""
         w = self.sim.world
         P = self.sim.controller.pose.rootPos if self.mode == MODE_POSE else self.robot_xy()
@@ -1113,11 +1129,23 @@ class BoxDriver:
             pm.manual[key] = (v == 'on' if key == 'gripKeep' else None if key == 'box' and v == 'data' else
                               [float(x) for x in v.split(',')] if key == 'box' else
                               [[float(x) for x in v.split(',')[2 * h:2 * h + 2]] for h in (0, 1)] if key == 'grasp' else v)
+        if only == 'place_edit' and a.place_edit == 'own':
+            # as the page's switch: the put down's own edit starts as the pick's
+            for name in PLACE_MANUAL:
+                setattr(a, name, getattr(a, name.replace('place_edit_', 'pick_')))
+                self.flags.note_live(name, getattr(a, name))
+        if only in (None, 'place_edit', *PLACE_MANUAL):
+            palms = lambda v: [[float(x) for x in v.split(',')[2 * h:2 * h + 2]] for h in (0, 1)]
+            pm.manualPlace = None if a.place_edit != 'own' else {
+                key: (getattr(a, name) == 'on' if key == 'gripKeep' else palms(getattr(a, name)) if key == 'grasp'
+                      else getattr(a, name)) for name, key in PLACE_MANUAL.items()}
         for name, key in GRASP_FLAGS.items():
             if only in (None, name):
                 setattr(self.grasp, key, getattr(a, name) if name == 'palm_target' else float(getattr(a, name)))
         if only in (None, 'foot_lock'):
             self.sim.foot_lock.enabled = a.foot_lock == 'on'
+        if only in (None, 'foot_land'):
+            self.sim.foot_lock.land_height = None if a.foot_land == 'off' else float(a.foot_land)
         if self.runner is not None and only in (None, 'hold', 'yaw_gain', 'shoulder_open_from'):
             self.runner.hold = HOLDS[a.hold]
             self.runner.yaw_gain = a.yaw_gain
@@ -1533,7 +1561,7 @@ class BoxDriver:
     # -- when a report may move the box (UI 3's Box tab) ----------------------------------------------------------
     def box_gate(self):
         """None when a new report of the box on the floor may move the controller's box, else the rule that holds
-        it: 'frozen' (--box-freeze), and with --box-lock 'pick' (Pick up, Lift), 'task' (any state but Locomotion)
+        it: 'frozen' (--box-freeze), and with --box-lock 'pick' (the pick's states), 'task' (any state but Locomotion)
         and 'locked' (in Locomotion after the lock, with --box-lock-moving)."""
         a = self.args
         if a.box_freeze == 'on':
@@ -1541,7 +1569,7 @@ class BoxDriver:
         if a.box_lock != 'on':
             return None
         s = self.fsm['state']
-        if s in ('pick-pre', 'pick-post'):
+        if s in ('pick-step', 'pick-pre', 'pick-post'):
             return 'pick'
         if s not in LOCO_STATES:
             return 'task'
@@ -1847,6 +1875,7 @@ class BoxDriver:
         c = self.sim.controller
         if regrasp and c.mode == 'box' and c.boxTag == 'pick':
             c.boxTag = 'place'
+            c.risesFrom = 'pick'
         self.regrasp_wait = None if not regrasp else 'loco' if meas is not None else 'seen'
         if not regrasp:
             w.regrasp = None
@@ -1913,6 +1942,11 @@ class BoxDriver:
         if last is None or (self.page_fsm and self.page_fsm[-1]['t'] >= last['t']):
             return
         self.page_fsm.append(finite(last))
+        by = str(last.get('by') or '')
+        if by.startswith('cancel-'):
+            pick = str(last.get('from', '')).endswith(':pick')
+            self.say(f"the {'pick is cancelled before its grasp' if pick else 'put-down is cancelled before its release'} "
+                     f"({by}): the robot rises {'with empty hands' if pick else 'still holding'}")
 
     def controller_state(self, frame):
         """UI 3's Controller states card: the controller's status at the played frame (the numbers its rules compare),
@@ -1929,7 +1963,37 @@ class BoxDriver:
                 'zUp': p['zUpright'], 'zLow': p['zLow'], 'moved': p['movedTolerance'], 'angle': p['movedAngle'],
                 'graspOn': p['graspOn'], 'releaseOff': p['releaseOff'], 'graspReach': p['graspReach'], 'warp': p['warp'],
                 'entry': p['boxEntry'], 'transCost': p['transitionCost'], 'placeEntry': p['placeEntryFrames'],
+                'walkOn': c.walk_on_from(), 'walks': self.walks_to_scenebot(), 'bendOut': c.bend_out_by(), **self.bends_of(),
                 'physical': True, 'check': 0, 'retryLift': self.args.retry_lift == 'on'})}
+
+    def walks_to_scenebot(self):
+        """The page's walksToSceneBot: whether a walk of the variant ends in the SceneBot pick, and in the place."""
+        c = self.sim.controller
+        b = c.backend
+        return {kind: any(w['kind'] == kind for w in b.walk_ranges(c.db_of(kind))) for kind in ('pick', 'place')}
+
+    def bends_of(self):
+        """The page's bendsOf. rises: whether a SceneBot pick and a SceneBot place of the variant have a frame to rise
+        at (MMBackend.rise_of). owns: whether another clip has a pick or a place of its own in the Box Matching
+        Database."""
+        c = self.sim.controller
+        b = c.backend
+
+        def rises(kind):
+            name = c.db_of(kind)
+            return any(s['kind'] == kind and b.rise_of(name)[s['a']] >= 0 for s in b.scenebot_ranges(name))
+
+        def owns(kind):
+            name = c.db_of(kind)
+            d = b.db[name]
+            for r, (a, e) in enumerate(d.ranges):
+                clip, start, stop, event, _ = b.range_clip(name, r)
+                k = 'place' if (d.range_kind[r] if d.range_kind is not None else name == 'place') else 'pick'
+                if k == kind and d.idx[a] < stop and not clip.startswith('SceneBot') and event >= 0 and d.idx[e - 1] - start >= event:
+                    return True
+            return False
+
+        return {'rises': {k: bool(rises(k)) for k in ('pick', 'place')}, 'owns': {k: owns(k) for k in ('pick', 'place')}}
 
     def fsm_state(self, frame):
         """The task state at the frame the robot plays (FSM_STATES). 'lost': from a drop that picks the box up again
@@ -1939,7 +2003,7 @@ class BoxDriver:
                 w.holding_id is None and w.regrasp is not None and self.regrasp_wait == 'seen'):
             return 'lost'
         sem = frame.tag['semantics']
-        if sem in ('pick-pre', 'pick-post', 'place-pre', 'place-post'):
+        if sem in BOX_STATES:
             return sem
         held = frame.held is not None
         if sem in ('navigate', 'arrive'):
@@ -1957,7 +2021,7 @@ class BoxDriver:
             why = ('the frames made after the drop play: the pick clip rises with empty hands' if s == 'place-post'
                    else 'the frames made after the drop play')
         e, by = frame.tag.get('engaged'), None if cause is None else cause[2]
-        if s in ('pick-pre', 'place-pre') and e is not None and e['id'] != f['engaged']:
+        if s in BEFORE_EVENT and e is not None and e['id'] != f['engaged']:
             f['engaged'], by = e['id'], engage_by(e)
             words = engage_words(e, self.sim.controller.p['reapproachTime'])
             self.say(f'the box controller takes over the {"pick" if e["kind"] == "pick" else "put-down"} {words}')
@@ -2387,6 +2451,18 @@ def page_choice(name, pv):
     return pv
 
 
+def foot_land(s):
+    if s == 'off':
+        return s
+    try:
+        v = float(s)
+    except ValueError:
+        v = -1.0
+    if not (math.isfinite(v) and v >= 0):
+        raise argparse.ArgumentTypeError('off, or a height in m of 0 or more')
+    return f'{v:g}'
+
+
 def weights(s):
     v = [float(x) for x in s.split(',')]
     if not all(math.isfinite(x) and x >= 0 for x in v):
@@ -2458,6 +2534,9 @@ def main():
                    help='pause the anchoring: low (while the reference is low), box (while the box controller runs), '
                         'step (from the last step of the box clip), none (never)')
     g.add_argument('--foot-lock', choices=('on', 'off'), default='on', help='foot locking (IK) of the reference')
+    g.add_argument('--foot-land', type=foot_land, default='0.02',
+                   help='m: a foot whose contact starts while a transition still holds it more than this above where the '
+                        'playing frame has it is locked only once it has come down (off: locked at once, in the air)')
     g.add_argument('--pick-speed', type=float, default=1.0,
                    help='the box clips (walk in, bend, grasp or release, rise) play at this share of their speed')
     g.add_argument('--pick-slow', choices=('clip', 'step'), default='clip',
@@ -2469,11 +2548,22 @@ def main():
                    help="m: back to Locomotion when the target moves this far before the bend (default: the variant's)")
     g.add_argument('--box-entry', choices=('walk', 'any'), default='walk',
                    help='box search: not into the end of a walk or the middle of a SceneBot clip, or every frame')
+    g.add_argument('--walk-on', choices=('step', 'start', 'off'), default='step',
+                   help='a walk that ends in a SceneBot pick or place plays on in that clip with no search, and the search '
+                        'jumps to no frame before the grasp or the release: from its last step (step), from the frame '
+                        'where the SceneBot clip starts in it (start), or not at all, the search going on to the end of '
+                        'the walk (off)')
+    g.add_argument('--bend-out', choices=('cancel', 'leave'), default='cancel',
+                   help='how Bending down and Lowering the box end without their grasp or release. cancel: only by a '
+                        'cancel (a moved or cleared target, a walk key, the cost above Leave, a clip past its event), '
+                        'which rises at the frame of the other SceneBot clip with the same joints, with no search. '
+                        'leave: back to Locomotion while upright, and a cancel only while bent, at the frame the search '
+                        'finds')
     g.add_argument('--rise', choices=('finish', 'search'), default=None,
                    help="rising after a grasp or a release: with the same clip, or searching every 0.1 s "
                         "(default: the variant's)")
     g.add_argument('--transition-cost', type=float, default=None,
-                   help="added to the cost of every frame but the playing one (default: the variant's)")
+                   help="added to the cost of every frame but the playing one (the page's 0)")
     g.add_argument('--upright-tilt', choices=('off', '45', '30', '20'), default=None,
                    help="deg: back to Locomotion after a pick or a place once the pelvis is above 0.72 m and the torso "
                         "is within this of vertical (default: the variant's)")
@@ -2520,6 +2610,19 @@ def main():
     g.add_argument('--pick-grip-keep', choices=('on', 'off'), default='off',
                    help='the palms keep the grip of the grasp on the held box (only with an edit: the page skips it '
                         'for a box on the floor with no other change)')
+    g.add_argument('--place-edit', choices=('pick', 'own'), default='pick',
+                   help="the put down's manual edit: the pick up's (--pick-forward to --pick-grip-keep), or its own "
+                        "(--place-edit-forward to --place-edit-grip-keep). The box is one for both. While a bend "
+                        'plays, both clips have that bend\'s height and manual edit, so a cancel keeps the palms '
+                        'where they are')
+    g.add_argument('--place-edit-forward', type=float, default=0.0, help='m, with --place-edit own: as --pick-forward')
+    g.add_argument('--place-edit-left', type=float, default=0.0, help='m, with --place-edit own: as --pick-left')
+    g.add_argument('--place-edit-up', type=float, default=0.0, help='m, with --place-edit own: as --pick-up')
+    g.add_argument('--place-edit-yaw', type=float, default=0.0, help='rad, with --place-edit own: as --pick-yaw')
+    g.add_argument('--place-edit-palms', type=palms4, default='0,0,0,0',
+                   help='m, LX,LZ,RX,RZ, with --place-edit own: as --pick-palms')
+    g.add_argument('--place-edit-grip-keep', choices=('on', 'off'), default='off',
+                   help='with --place-edit own: as --pick-grip-keep')
     g.add_argument('--table-min', type=float, default=TABLE_MIN,
                    help=f'm: a box reported with its bottom this high or higher stands on a table, else on the floor '
                         f'(default {TABLE_MIN:g}: live.sam3box puts a bottom below 0.08 m on the floor). The table '
@@ -2589,14 +2692,14 @@ def main():
     ap.add_argument('--sync-agree', type=float, default=0.06, help='m two reports of a move agree within')
     ap.add_argument('--box-lock', choices=('on', 'off'), default='on',
                     help="on: the box's place is measured while the robot stands still in Locomotion (the median of "
-                         "--box-lock-need reports) and then held: no report moves the box during Pick up and Lift, nor "
+                         "--box-lock-need reports) and then held: no report moves the box during the pick's states, nor "
                          "in any other state but Locomotion, and with --box-lock-moving none until the task leaves "
                          "Locomotion. Back in Locomotion from another state, the next stand measures it again. Until "
                          "the lock the reports move it as before. Set on again: measure again. off: every report "
                          "moves the box, as before 2026-11-09")
     ap.add_argument('--box-lock-moving', choices=('on', 'off'), default='on',
                     help='on: after the lock no report moves the box in Locomotion, walking or standing. off: in '
-                         'Locomotion the reports move it again after the lock; Pick up and Lift still hold it')
+                         "Locomotion the reports move it again after the lock; the pick's states still hold it")
     ap.add_argument('--box-freeze', choices=('on', 'off'), default='off',
                     help="on: no report moves the box, whatever --box-lock says, nor after a drop: it stays where it "
                          "is, in the controller's world and in UI 1 / UI 3. X, a click or UI 1's Go still take a box "

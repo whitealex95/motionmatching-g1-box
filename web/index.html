@@ -7,7 +7,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='5' width='12' height='10' rx='1' fill='%23c99a62'/%3E%3Crect x='7' y='5' width='2' height='10' fill='%23a87a45'/%3E%3C/svg%3E">
   <meta name="description" content="The box driver's controller states, the clip the robot plays now and the last matches, and every motion of its databases played on the G1.">
   <link rel="stylesheet" href="css/style.css">
-  <link rel="stylesheet" href="css/pick.css">
+  <link rel="stylesheet" href="css/subpage.css">
   <link rel="stylesheet" href="css/motions.css">
   <link rel="stylesheet" href="css/db.css">
   <script type="importmap">
@@ -39,13 +39,13 @@
             <div class="flow">
               <div class="st k-loco" style="grid-area: a"><span data-state="locomotion:loco">Locomotion</span><span data-state="navigate:loco">Walking to the box</span><span data-state="arrive:loco">Arriving at the box</span></div>
               <div class="to" style="grid-area: ab">→</div>
-              <div class="st k-pick" style="grid-area: b"><span data-state="pick-pre:pick">Picking up</span></div>
+              <div class="st k-pick" style="grid-area: b"><span data-state="pick-step:pick">Stepping to the box</span><span data-state="pick-pre:pick">Bending down</span></div>
               <div class="to" style="grid-area: bc"><small>grasp</small>→</div>
               <div class="st k-pick" style="grid-area: c"><span data-state="pick-post:pick">Lifting the box</span></div>
               <div class="to" style="grid-area: cf">↓</div>
               <div class="st k-carry" style="grid-area: f"><span data-state="locomotion:carry">Carrying</span><span data-state="navigate:carry">Carrying the box to the marker</span><span data-state="arrive:carry">Arriving at the marker</span></div>
               <div class="to" style="grid-area: fe">←</div>
-              <div class="st k-place" style="grid-area: e"><span data-state="place-pre:place">Putting down</span></div>
+              <div class="st k-place" style="grid-area: e"><span data-state="place-step:place">Stepping to the marker</span><span data-state="place-pre:place">Lowering the box</span></div>
               <div class="to" style="grid-area: ed"><small>release</small>←</div>
               <div class="st k-place" style="grid-area: d"><span data-state="place-post:place">Standing up</span></div>
               <div class="to" style="grid-area: da">↑</div>
@@ -118,7 +118,7 @@
               <svg role="img" aria-label="Pelvis height and torso lean over the clip, and which of its frames are in the Locomotion and Box databases"></svg>
               <div class="clip-tip" hidden></div>
             </div>
-            <p class="muted small">The outlined span is the motion that plays. Click the graph to jump there: outside the motion this plays the whole clip. Gaps in the Locomotion and Box lanes are frames in no Matching Database. A paler part of the Box lane is the end of a walk, from 0.5 s before its last step, or the middle of a SceneBot pick or place, before its grasp or release, which the search of the demo does not jump into, though a clip already playing goes on through it.</p>
+            <p class="muted small">The outlined span is the motion that plays. Click the graph to jump there: outside the motion this plays the whole clip. Gaps in the Locomotion and Box lanes are frames in no Matching Database. A paler part of the Box lane is the end of a walk, from 0.5 s before its last step, or the middle of a SceneBot pick or place, before its grasp or release, which the search of the demo does not jump into, though a clip already playing goes on through it. The solid line is the last step before the grasp or the release. The dashed line named pick start is the frame where the SceneBot pick clip starts in a walk that ends in it: from there the two clips have the same frames, and the controller changes from Stepping to the box to Bending down.</p>
             <div class="db-totals"></div>
           </div>
         </div>
@@ -155,6 +155,6 @@
     </section>
   </main>
   <div class="tip" id="tip" hidden></div>
-  <script type="module" src="js/db.js"></script>
+  <script type="module" src="js/pages/db.js"></script>
 </body>
 </html>

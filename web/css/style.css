@@ -244,6 +244,8 @@ table.results tbody tr.group th { text-align: left; padding-top: 14px; border-bo
 .clip-svg rect.planted { opacity: 0.55; }
 .clip-svg rect.noentry { opacity: 0.4; }
 .clip-svg .step { stroke: var(--text); stroke-width: 1.5; opacity: 0.7; }
+.clip-svg .start { stroke-width: 1.5; stroke-dasharray: 5 2; }
+.clip-svg .start.k-pick { stroke: var(--k-pick); } .clip-svg .start.k-place { stroke: var(--k-place); }
 .clip-svg .playhead { stroke: var(--text); stroke-width: 2; }
 .clip-svg .hair { stroke: var(--muted); }
 .clip-tip {
@@ -260,7 +262,7 @@ table.results tbody tr.group th { text-align: left; padding-top: 14px; border-bo
 .db-num { grid-column: 2; color: var(--muted); font-size: 0.78rem; }
 body.recording .states, body[data-mode="video"] .states, body[data-mode="video"] .fsm { display: none; }
 
-/* One floating description for the page (js/tips.js). */
+/* One floating description for the page (js/ui/tips.js). */
 .tip {
   position: fixed; z-index: 60; pointer-events: none; max-width: min(380px, calc(100vw - 12px)); padding: 7px 10px; border-radius: 8px;
   background: var(--card); color: var(--text); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
@@ -270,7 +272,7 @@ body.recording .states, body[data-mode="video"] .states, body[data-mode="video"]
 .tip b { display: block; margin-bottom: 2px; }
 .tip .by { margin-right: 2px; }
 .tip hr { border: 0; border-top: 1px solid var(--line); margin: 5px 0; }
-/* The causes of a rule as a list (rich of js/fsm.js). */
+/* The causes of a rule as a list (rich of js/ui/fsm.js). */
 ul.any { margin: 3px 0 4px; padding-left: 1.15em; }
 ul.any li { margin: 2px 0; }
 ul.any li::marker { color: var(--muted); }
@@ -314,7 +316,7 @@ details.more { margin-top: 8px; }
 details.more > summary { font-weight: 400; color: var(--muted); }
 .steps { margin: 4px 0 12px; }
 
-/* The state machine under the viewer (js/fsm.js). */
+/* The state machine under the viewer (js/ui/fsm.js). */
 .fsm { container-type: inline-size; display: grid; gap: 10px; margin-top: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
 .fsm h3 { margin: 0; font-size: 0.95rem; }
 .fsm h4 { margin: 0 0 4px; font-size: 0.82rem; font-weight: 650; color: var(--muted); }
@@ -334,6 +336,8 @@ details.more > summary { font-weight: 400; color: var(--muted); }
   grid-template-areas: "L . PU . LI" "SU . PD . C";
 }
 .fsm-flow .st { display: grid; gap: 4px; }
+/* A node of two states: an arrow that ends at the frame enters either state. */
+.fsm-flow .st.group { padding: 5px; border: 1px dashed color-mix(in srgb, var(--k) 60%, transparent); border-radius: 11px; }
 .fsm[data-view="full"] .fsm-main { grid-template-columns: minmax(0, 1fr); }
 .fsm[data-view="full"] .fsm-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 340px); gap: 4px 20px; align-items: start; }
 .fsm[data-view="full"] .plots { margin-top: 0; }
@@ -471,3 +475,5 @@ mark { background: color-mix(in srgb, var(--accent) 26%, transparent); color: in
 #pm-stats { line-height: 1.5; }
 #table-size { margin-top: 6px; }
 #pm-kind { display: inline-flex; }
+#pm-for { margin: 2px 0 8px; }
+#pm-for[hidden] { display: none; }

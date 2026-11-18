@@ -1,8 +1,12 @@
-"""Port of lmm-g1-box's web/js/pickmotion.js: the pick motion that plays. The SceneBot pick and place of the data
+"""Port of lmm-g1-box's web/js/mm/pickmotion.js: the pick motion that plays. The SceneBot pick and place of the data
 variant, solved again by the pick editor's whole-body IK (pickedit.py) for the box the robot goes for. The Matching
 Databases, the costs and the search stay as they are. Only the rows of the Animation Database that play these clips
 change: the pelvis, the joints, the box and their velocities. The root, the contacts and the hold state stay the
 data's.
+
+The put down uses the manual edit of the pick up, the default, or its own box at rest and palms (manualPlace). The box
+is one for both. While a bend plays, Sim.sync_pick_motion gives both clips the edit of that bend, so a cancel that goes
+on in the other clip keeps the palms where they are.
 
 The source of an edit is the clip as the database has it, at 60 fps, from the frame where the walk ends. A place is
 solved as a pick: its rows played backward are a pick, and the solved frames go back in the place's order.
@@ -10,7 +14,7 @@ solved as a pick: its rows played backward are a pick, and the solved frames go 
 Threads: an instance has no global state and may run off the control loop, but it is not itself thread safe. One
 lock has to cover
   * every call that writes backend.pose, that is use(), sync() and restore(), against the control loop reading it,
-  * solved(), prepare() and palm_range(), which share the one BodyModel and the caches (cache, sources, roots),
+  * solved(), prepare(), shown(), set_manual() and palm_range(), which share the one BodyModel and the caches (cache, sources, roots),
   * the caller's own reads of info / offsets() / lift().
 A worker that solves ahead can hold the lock for prepare() only, and then take it again for the short sync().
 """
@@ -27,6 +31,10 @@ from .pickedit import PickEdit, edit_of, is_no_edit
 
 MANUAL = {'forward': 0, 'left': 0, 'up': 0, 'yaw': 0, 'grasp': [[0, 0], [0, 0]], 'gripKeep': False, 'box': None}
 PICK_MOTION = {'autoHeight': True, 'autoSize': False}
+# The limits of the box at rest, in the units of the page's sliders and of its address: cm, cm, cm, degrees.
+REST_LIMITS = {'forward': (-15, 25), 'left': (-20, 20), 'up': (0, 70), 'yaw': (-45, 45)}
+REST_KEYS = ('forward', 'left', 'up', 'yaw')
+DEG = 180 / math.pi
 # A support lower than this is the floor. Support heights are rounded to this for the cache.
 SUPPORT_MIN = 0.005
 SIZE_TOL = 1e-4
@@ -53,6 +61,27 @@ def scene_bot_clips(cfg, box_db):
             out.append({'kind': kind, 'row': row, 'mirror': mirror, 'start': start, 'stop': stop,
                         'attach': attach, 'release': release})
     return out
+
+
+def own_manual(m):
+    """The part of a manual edit that the put down can have of its own."""
+    return {'forward': m['forward'], 'left': m['left'], 'up': m['up'], 'yaw': m['yaw'],
+            'grasp': [list(g) for g in m['grasp']], 'gripKeep': m['gripKeep']}
+
+
+def _numbers(text, counts, what):
+    try:
+        v = [float(t) for t in str(text).split(',')]
+    except ValueError:
+        v = None
+    if v is None or len(v) not in counts or not all(math.isfinite(x) for x in v):
+        raise ValueError(f'bad {what} "{text}"')
+    return v
+
+
+def _round1(v):
+    """+v.toFixed(1) of JS."""
+    return float('%.1f' % v) if v >= 0 else -float('%.1f' % -v)
 
 
 def central_diff(x, fps):
@@ -139,6 +168,8 @@ class PickMotion:
             self.model = BodyModel(xml, meta)
         self.settings = dict(PICK_MOTION)
         self.manual = dict(MANUAL, grasp=[list(g) for g in MANUAL['grasp']])
+        # None: the put down uses the manual edit of the pick up.
+        self.manualPlace = None
         self.dataBox = list(cfg['box_size'])
         self.clips = scene_bot_clips(cfg, backend.db['box'])
         # The rows as the data has them, kept for the comparison and to go back.
@@ -148,6 +179,8 @@ class PickMotion:
         self.cache = {}
         self.applied = {'pick': '', 'place': ''}
         self.info = {'pick': None, 'place': None}
+        self.last = None
+        self.shownMemo = {}
         self.solveMs = 0.0
         backend.edits = self
 
@@ -221,24 +254,31 @@ class PickMotion:
         self.roots[row] = root
         return root
 
-    def palm_range(self, hand, axis, box_size):
-        """The range (m) of a palm's shift on its side face, as the pick editor limits it."""
-        clip = next((c for c in self.clips if c['kind'] == 'pick'), None)
+    def manual_of(self, kind):
+        """The manual edit of the pick up or of the put down ('pick' | 'place')."""
+        return self.manualPlace if kind == 'place' and self.manualPlace else self.manual
+
+    def palm_range(self, hand, axis, box_size, as_='pick'):
+        """The range (m) of a palm's shift on its side face, hand 0 left or 1 right, axis 0 along the face or 1 up it,
+        for the box of the pick up or of the put down, as the pick editor limits it."""
+        clip = (next((c for c in self.clips if c['kind'] == as_), None)
+                or next((c for c in self.clips if c['kind'] == 'pick'), None))
         if not clip or not self.model:
             return [-0.1, 0.1]
         S = self.source(clip)
         editor = S['editor']
-        c = editor.context(self.edit(0, box_size))
+        c = editor.context(self.edit(0, box_size, as_))
         p = editor.palm_in_box(c, editor.attach, hand, {'size': 1, 'sym': 1})['p'][2 if axis else 0]
         half = c['half'][2 if axis else 0]
         return [-half + FACE_MARGIN - p, half - FACE_MARGIN - p]
 
-    def edit(self, support, box_size):
-        """The edit of a pick or a place for a box resting `support` m above the floor."""
-        s, m = self.settings, self.manual
+    def edit(self, support, box_size, as_='pick'):
+        """The edit for a box resting `support` m above the floor, with the manual edit of the pick up or of the put
+        down (as_)."""
+        s, m = self.settings, self.manual_of(as_)
         size = box_size if (s['autoSize'] and box_size
                             and any(abs(v - self.dataBox[i]) > SIZE_TOL for i, v in enumerate(box_size))) \
-            else m['box']
+            else self.manual['box']
         up = support if s['autoHeight'] else m['up']
         return edit_of({
             'alignBox': False, 'forward': m['forward'], 'left': m['left'], 'yaw': m['yaw'],
@@ -344,9 +384,10 @@ class PickMotion:
         turn = math.atan2(math.sin(d), math.cos(d))
         return [math.cos(h) * dx + math.sin(h) * dy, -math.sin(h) * dx + math.cos(h) * dy, turn]
 
-    def use(self, kind, support, box_size):
-        """Puts the rows of the edit for a pick or a place in the Animation Database. Returns whether they changed."""
-        edit = self.edit(support, box_size)
+    def use(self, kind, support, box_size, as_=None):
+        """Puts the rows of the edit for a pick or a place in the Animation Database, for a box `support` m up, with
+        the manual edit of as_ (the kind's own without it). Returns whether the rows changed."""
+        edit = self.edit(support, box_size, as_ or kind)
         k = self.key(edit)
         if self.applied[kind] == k:
             return False
@@ -363,9 +404,105 @@ class PickMotion:
         self.info[kind] = info
         return True
 
-    def sync(self, supports, box_size):
-        """The edits for the supports {pick, place} (m) and the page's box size. Returns the kinds that changed."""
-        return [kind for kind in ('pick', 'place') if self.use(kind, supports.get(kind) or 0, box_size)]
+    def note(self, supports, box_size):
+        """What the last sync was asked for, which shown() reads."""
+        self.last = {'supports': dict(supports), 'boxSize': list(box_size) if box_size else box_size}
+
+    def sync(self, supports, box_size, bend=None):
+        """The edits for the supports {pick, place} (m) and the page's box size. bend: the bend that plays ('pick' or
+        'place'), whose height and manual edit both clips get, or None, where each has its own. Returns the kinds whose
+        rows changed."""
+        self.note(supports, box_size)
+        out = []
+        for kind in ('pick', 'place'):
+            as_ = bend or kind
+            if self.use(kind, supports.get(as_) or 0, box_size, as_):
+                out.append(kind)
+        return out
+
+    def own_key(self, kind):
+        """The key of a kind's own edit for the last sync, or None before one."""
+        l = self.last
+        return None if l is None else self.key(self.edit(l['supports'].get(kind) or 0, l['boxSize'], kind))
+
+    def borrowed(self, kind):
+        """The kind plays with the edit of the other kind's bend, not with its own."""
+        k = self.own_key(kind)
+        return k is not None and self.applied[kind] != '' and self.applied[kind] != k
+
+    def shown(self, kind):
+        """The pick or the place with its own edit, as info has it, for the Pick motion tab: while a bend plays, the
+        other clip has the edit of that bend, and `borrowed` says so. Solves the kind's own edit if it is not cached."""
+        l = self.last
+        clip = (next((c for c in self.clips if c['kind'] == kind and c['mirror'] == 0), None)
+                or next((c for c in self.clips if c['kind'] == kind), None))
+        if l is None or clip is None:
+            return self.info[kind]
+        edit = self.edit(l['supports'].get(kind) or 0, l['boxSize'], kind)
+        k = self.key(edit)
+        memo = self.shownMemo.get(kind)
+        if memo is None or memo['key'] != k:
+            self.shownMemo[kind] = {'key': k, 'info': dict(self.solved(clip, edit), clip=clip)}
+        return dict(self.shownMemo[kind]['info'], borrowed=self.applied[kind] != '' and self.applied[kind] != k)
+
+    def set_manual(self, texts, box_size):
+        """Sets the manual edit from texts, as the page's address gives them. rest: "forward,left,up,yaw" (cm, cm, cm,
+        degrees). palms: "along,up" for both palms or "left along,left up,right along,right up" (cm). grip: "keep" or
+        "data". A text of the put down (placeRest, placePalms, placeGrip) gives it an edit of its own, which starts as
+        the pick's. A value outside its range is brought to the range."""
+        def read(m, rest, palms, grip):
+            if rest is not None:
+                for k, v in zip(REST_KEYS, _numbers(rest, (4,), 'box at rest')):
+                    lo, hi = REST_LIMITS[k]
+                    c = min(hi, max(lo, v))
+                    m[k] = c / DEG if k == 'yaw' else c / 100
+            if palms is not None:
+                v = _numbers(palms, (2, 4), 'palms')
+                m['grasp'] = [[v[0] / 100, v[1] / 100], [v[2] / 100, v[3] / 100] if len(v) == 4 else [v[0] / 100, v[1] / 100]]
+            if grip is not None:
+                if grip not in ('keep', 'data'):
+                    raise ValueError(f'bad grip "{grip}"')
+                m['gripKeep'] = grip == 'keep'
+
+        pick = own_manual(self.manual)
+        read(pick, texts.get('rest'), texts.get('palms'), texts.get('grip'))
+        place = own_manual(self.manualPlace) if self.manualPlace else None
+        if any(texts.get(k) is not None for k in ('placeRest', 'placePalms', 'placeGrip')):
+            if place is None:
+                place = own_manual(pick)
+            read(place, texts.get('placeRest'), texts.get('placePalms'), texts.get('placeGrip'))
+        for as_, m in (('pick', pick), ('place', place)):
+            if m is None:
+                continue
+            for h in range(2):
+                for x in range(2):
+                    r = self.palm_range(h, x, box_size, as_)
+                    m['grasp'][h][x] = min(math.floor(200 * r[1]) / 200, max(math.ceil(200 * r[0]) / 200, m['grasp'][h][x]))
+        # Nothing is set before every text was read, so a bad text leaves the edit as it was.
+        self.manual.update(pick)
+        self.manualPlace = place
+
+    def manual_texts(self):
+        """The texts of set_manual for the manual edit now, None where it is the default (the put down: the pick's)."""
+        def num(v):
+            return '%g' % (v + 0.0)
+
+        def rest(m):
+            return ','.join(num(_round1(m[k] * DEG if k == 'yaw' else 100 * m[k])) for k in REST_KEYS)
+
+        def palms(m):
+            v = [_round1(100 * x) for g in m['grasp'] for x in g]
+            return ','.join(num(x) for x in (v[:2] if v[0] == v[2] and v[1] == v[3] else v))
+
+        def grip(m):
+            return 'keep' if m['gripKeep'] else 'data'
+
+        m, pl, d = self.manual, self.manualPlace, MANUAL
+        differs = lambda f: pl is not None and f(pl) != f(m)
+        return {'rest': rest(m) if rest(m) != rest(d) else None, 'palms': palms(m) if palms(m) != palms(d) else None,
+                'grip': 'keep' if m['gripKeep'] else None,
+                'placeRest': rest(pl) if differs(rest) else None, 'placePalms': palms(pl) if differs(palms) else None,
+                'placeGrip': grip(pl) if differs(grip) else None}
 
     def offsets(self):
         """The box at rest of the edited pick and place against the data's, [forward, left, yaw]."""
@@ -388,10 +525,10 @@ class PickMotion:
         self.applied = {'pick': '', 'place': ''}
         self.info = {'pick': None, 'place': None}
 
-    def prepare(self, supports, box_size):
+    def prepare(self, supports, box_size, as_='pick'):
         """Solves ahead the edits of these supports, so a table the robot goes to does not wait for the solve."""
         for s in supports:
-            edit = self.edit(s, box_size)
+            edit = self.edit(s, box_size, as_)
             for clip in self.clips:
                 self.solved(clip, edit)
 

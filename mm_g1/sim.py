@@ -1,4 +1,4 @@
-"""Port of lmm-g1-box's web/js/sim.js and scenario.js: the boxes, the scripted sequence and the controller step
+"""Port of lmm-g1-box's web/js/mm/sim.js and scenario.js: the boxes, the scripted sequence and the controller step
 with the grasp and the release."""
 import copy
 import math
@@ -319,14 +319,14 @@ class Sim:
 
     def save(self):
         state = {k: copy.deepcopy(getattr(self, k)) for k in self.STATE}
-        feet = copy.deepcopy((self.foot_lock.feet, self.foot_lock.skate))
+        feet = copy.deepcopy((self.foot_lock.feet, self.foot_lock.skate, self.foot_lock.waits))
         return state, feet, self.controller.save()
 
     def restore(self, s):
         state, feet, ctrl = s
         for k, v in state.items():
             setattr(self, k, v)
-        self.foot_lock.feet, self.foot_lock.skate = feet
+        self.foot_lock.feet, self.foot_lock.skate, self.foot_lock.waits = feet
         self.controller.restore(ctrl)
 
     def check_tag(self):
@@ -344,8 +344,9 @@ class Sim:
         return [{'id': b['id'], 'pos': b['pos'], 'yaw': b['yaw'], 'half': half} for b in self.world.ground_boxes()] + self.table_obstacles()
 
     def sync_pick_motion(self):
-        """The pick and place motions for what the box to pick up and the place target stand on. A change of the clip
-        that plays is blended in as a transition."""
+        """The pick and place motions for what the box to pick up and the place target stand on. While a bend plays,
+        both clips get its height and its manual edit (Controller.bend_of). A change of the clip that plays is blended
+        in as a transition."""
         w, pm, c = self.world, self.pick_motion, self.controller
         pb = w.pick_box()
         if pb:
@@ -354,16 +355,21 @@ class Sim:
             self.supports['place'] = w.place_target.get('z') or 0.0
         if pm is None:
             return
-        gate = self.pick_motion_gate
+        bend, gate = c.bend_of(), self.pick_motion_gate
         if gate is None:
-            changed = pm.sync(self.supports, self.box_size)
+            changed = pm.sync(self.supports, self.box_size, bend)
         elif not gate.lock.acquire(blocking=False):
             return
         else:
             # The box driver solves off the control loop: an edit not solved yet leaves the one that plays.
             try:
-                changed = [k for k in ('pick', 'place') if gate.ready(k, self.supports.get(k) or 0, self.box_size)
-                           and pm.use(k, self.supports.get(k) or 0, self.box_size)]
+                pm.note(self.supports, self.box_size)
+                changed = []
+                for k in ('pick', 'place'):
+                    as_ = bend or k
+                    support = self.supports.get(as_) or 0
+                    if gate.ready(k, support, self.box_size, as_) and pm.use(k, support, self.box_size, as_):
+                        changed.append(k)
             finally:
                 gate.lock.release()
         c.boxEdit = pm.offsets()

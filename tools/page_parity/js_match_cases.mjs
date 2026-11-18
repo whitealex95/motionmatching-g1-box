@@ -2,7 +2,9 @@
 // 'emmboth'), for check_parity.py --cases. The page's scripted sequence never makes these searches jump, so the
 // rules for a SceneBot clip before its grasp (lmm-g1-box a41bd3f) or its release (1721681) are checked here: the playing frame every 5th
 // frame of each SceneBot range and 60 random frames, pick and place queries with and without walkIn, each the
-// features of a database frame plus noise.
+// features of a database frame plus noise. Each case is also searched as the box controller before its event (bend),
+// where a SceneBot clip that goes down and a walk that plays on in one jump to no frame (lmm-g1-box a59750d). The
+// per-frame tables of that release (walkOn, handOff, riseOf, fromBend) are written too.
 //
 // Run: node tools/page_parity/js_match_cases.mjs <lmm-g1-box checkout> <out.json>
 
@@ -14,8 +16,8 @@ const [repo, out] = process.argv.slice(2);
 if (!repo || !out) throw new Error('usage: js_match_cases.mjs <lmm-g1-box> <out.json>');
 const { serveWebFetch, webImport } = await import(pathToFileURL(path.join(path.resolve(repo), 'physics/node_env.mjs')).href);
 serveWebFetch();
-const { Controller, MMBackend, loadMMData, loadLoco } = await webImport('js/controller.js');
-const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/variants.js');
+const { Controller, MMBackend, loadMMData, loadLoco } = await webImport('js/mm/controller.js');
+const { VARIANTS, DEFAULT_VARIANT } = await webImport('js/mm/variants.js');
 
 const variant = DEFAULT_VARIANT;
 const DATA = VARIANTS[variant].data;
@@ -49,10 +51,18 @@ for (const frame of frames) {
   for (const kind of ['pick', 'place']) for (const walkIn of [false, true]) for (const g of targets) {
     const raw = [];
     for (let j = 0; j < n; j++) raw.push((d.X[g * n + j] + 0.1 * gauss()) * C.scale[j] + C.offset[j]);
-    b.active = name; b.frame = frame; b.frac = 0; c.walkIn = walkIn;
-    const m = c.match(kind, raw);
-    cases.push({ frame, kind, walkIn, raw, js: { frame: m.frame, cost: m.cost } });
+    for (const bend of [false, true]) {
+      b.active = name; b.frame = frame; b.frac = 0; c.walkIn = walkIn;
+      c.mode = bend ? 'box' : 'loco'; c.boxTag = bend ? kind : null; c.holding = bend && kind === 'place';
+      const m = c.match(kind, raw);
+      cases.push({ frame, kind, walkIn, bend, raw, js: { frame: m.frame, cost: m.cost, same: !!m.same } });
+    }
   }
 }
-fs.writeFileSync(out, JSON.stringify({ sceneBotPre: Array.from(b.sceneBotPre(name)), beforeEvent: Array.from(b.beforeEventMask(name)), cases }));
+const tables = { sceneBotPre: b.sceneBotPre(name), beforeEvent: b.beforeEventMask(name), walkOnStep: b.walkOn(name, 'step'),
+  walkOnStart: b.walkOn(name, 'start'), handOff: b.handOff(name), fromBend: b.fromBend(name),
+  riseOfBox: b.riseOf('box'), riseOfPick: b.riseOf('pick'), riseOfPlace: b.riseOf('place'),
+  handOffPick: b.handOff('pick'), fromBendPlace: b.fromBend('place') };
+fs.writeFileSync(out, JSON.stringify({ ...Object.fromEntries(Object.entries(tables).map(([k, v]) => [k, Array.from(v)])),
+  starts: b.starts, walkRanges: b.walkRanges(name), cases }));
 console.log(`${cases.length} cases`);

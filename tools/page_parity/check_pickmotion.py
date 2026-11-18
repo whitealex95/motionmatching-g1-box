@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import mujoco  # noqa: E402
 
 from mm_g1.database import DATA, MMBackend  # noqa: E402
-from mm_g1.pickmotion import MANUAL, PickMotion  # noqa: E402
+from mm_g1.pickmotion import MANUAL, PickMotion, own_manual  # noqa: E402
 
 GROUPS = [
     ('pelvis pos', ['hip_pos']),
@@ -75,14 +75,40 @@ def main():
         pm.settings['autoSize'] = case['autoSize']
         pm.manual = dict(MANUAL, grasp=[list(g) for g in MANUAL['grasp']])
         pm.manual.update(case['manual'] or {})
+        pm.manualPlace = own_manual(case['manualPlace']) if case.get('manualPlace') else None
+        if case.get('texts'):
+            pm.set_manual(case['texts'], case['box'])
         pm.clear_cache()
         pm.solveMs = 0.0
         t0 = time.perf_counter()
-        changed = pm.sync({'pick': case['support'], 'place': case['support']}, case['box'])
+        changed = pm.sync(case['supports'], case['box'], case.get('bend'))
         wall = (time.perf_counter() - t0) * 1000.0
         py = [np.array(backend.pose[c['start']:c['stop']]) for c in clips]
 
-        print('\n=== %s  support %s  box %s  autoSize %s  manual %s ===' % (case['name'], case['support'], case['box'], case['autoSize'], case['manual']))
+        print('\n=== %s  supports %s  box %s  autoSize %s  manual %s  put down %s  bend %s ===' %
+              (case['name'], case['supports'], case['box'], case['autoSize'], case['manual'], case.get('manualPlace'), case.get('bend')))
+        after = {'manual': own_manual(pm.manual), 'manualPlace': pm.manualPlace, 'texts': pm.manual_texts()}
+        flat = lambda v: json.dumps(v, sort_keys=True)
+        num = lambda v: [x for g in v for x in (num(g) if isinstance(g, list) else [g])]
+        same_manual = all(
+            (a is None) == (b is None) and (a is None or (
+                max(abs(x - y) for x, y in zip(num([a[k] for k in ('forward', 'left', 'up', 'yaw')] + a['grasp']),
+                                               num([b[k] for k in ('forward', 'left', 'up', 'yaw')] + b['grasp']))) < 1e-12
+                and a['gripKeep'] == b['gripKeep']))
+            for a, b in ((after['manual'], case['after']['manual']), (after['manualPlace'], case['after']['manualPlace'])))
+        print('manual edit after: same %s, texts same %s%s' % (same_manual, after['texts'] == case['after']['texts'],
+              '' if after['texts'] == case['after']['texts'] else '\n  js %s\n  py %s' % (case['after']['texts'], after['texts'])))
+        shown = {k: pm.shown(k) for k in ('pick', 'place')}
+        ds = max(abs(x - y) for k in ('pick', 'place') for x, y in zip(case['shown'][k]['offset'], shown[k]['offset']))
+        print('shown(): borrowed js %s py %s, offset max abs diff %.3e' %
+              ([case['shown'][k]['borrowed'] for k in ('pick', 'place')], [shown[k]['borrowed'] for k in ('pick', 'place')], ds))
+        dr = max(abs(x - y) for as_ in ('pick', 'place') for h in (0, 1) for ax in (0, 1)
+                 for x, y in zip(case['ranges'][as_][h][ax], pm.palm_range(h, ax, case['box'], as_)))
+        print('palm_range() pick and place: max abs diff %.3e' % dr)
+        worst['shown, palm range'] = max(worst.get('shown, palm range', 0.0), ds, dr)
+        if not same_manual or after['texts'] != case['after']['texts'] or \
+                [case['shown'][k]['borrowed'] for k in ('pick', 'place')] != [shown[k]['borrowed'] for k in ('pick', 'place')]:
+            worst['manual edit (discrete)'] = 1.0
         print('changed: js %s, py %s' % (case['changed'], changed))
         print('solve: js %.0f ms, py %.0f ms (wall %.0f ms)' % (case['solveMs'], pm.solveMs, wall))
         if case['name'] == 'floor':
@@ -134,8 +160,8 @@ def main():
         print('lift() py %s' % ['%.4f' % pm.lift(g) for g in meta['liftRows']])
 
     print('\nworst over every case:')
-    for label, _ in GROUPS:
-        print('  %-20s %12.3e' % (label, worst.get(label, 0.0)))
+    for label in [g[0] for g in GROUPS] + ['shown, palm range', 'manual edit (discrete)']:
+        print('  %-22s %12.3e' % (label, worst.get(label, 0.0)))
     pm.restore()
 
 

@@ -1,20 +1,23 @@
 // The names of the controller states, and the clip that plays with what the two Matching Databases hold of it, drawn
-// under the viewer. The state machine itself is js/fsm.js.
+// under the viewer. The state machine itself is fsm.js.
 
-import { locoParts, torsoChain, torsoTilt } from './controller.js';
+import { locoParts, torsoChain, torsoTilt } from '../mm/controller.js';
 
 export const KINDS = {
   loco: 'Locomotion, empty-handed', carry: 'Locomotion, carrying', pick: 'Box, pick tag', place: 'Box, place tag',
 };
 
-// semantics of Controller.update, and for Locomotion whether the robot holds a box.
+// The label of a state: by the semantics of Controller.update and, for Locomotion, by whether the robot holds a box.
 const STATES = {
   locomotion: { loco: 'Locomotion', carry: 'Carrying' },
   navigate: { loco: 'Walking to the box', carry: 'Carrying the box to the marker' },
   arrive: { loco: 'Arriving at the box', carry: 'Arriving at the marker' },
-  'pick-pre': { pick: 'Picking up' }, 'pick-post': { pick: 'Lifting the box' },
-  'place-pre': { place: 'Putting down' }, 'place-post': { place: 'Standing up' },
+  'pick-step': { pick: 'Stepping to the box' }, 'pick-pre': { pick: 'Bending down' }, 'pick-post': { pick: 'Lifting the box' },
+  'place-step': { place: 'Stepping to the marker' }, 'place-pre': { place: 'Lowering the box' }, 'place-post': { place: 'Standing up' },
 };
+// A run recorded before the pick and the place had two states each before the event has these labels. They name no
+// state of now, so only the kind is known.
+const OLD_LABELS = { 'Picking up': 'pick', 'Putting down': 'place' };
 
 // The arrive state of a clicked walk with a facing, which has no box or marker to name.
 const ARRIVE_POINT = { loco: 'Arriving', carry: 'Arriving with the box' };
@@ -39,6 +42,7 @@ export function stateOfLabel(text) {
       if (text.startsWith(label) && (!best || label.length > best.label.length)) best = { key: `${semantics}:${kind}`, label, kind };
     }
   }
+  for (const [label, kind] of Object.entries(OLD_LABELS)) if (!best && text.startsWith(label)) best = { key: null, label, kind };
   return best || { key: null, label: text, kind: null };
 }
 
@@ -181,6 +185,11 @@ export class StatePanel {
       svg += `<rect class="k-${st.kind} planted" x="${a.toFixed(1)}" y="${sy}" width="${Math.max(1, e - a).toFixed(1)}" height="${sh}" rx="3"/>` +
         `<line class="step" x1="${a.toFixed(1)}" x2="${a.toFixed(1)}" y1="10" y2="${sy + sh}"/>`;
     }
+    this.starts = this.b.starts[i] ?? [];
+    for (const st of this.starts) {
+      const x = X(st.start).toFixed(1);
+      svg += `<line class="start k-${st.kind}" x1="${x}" x2="${x}" y1="10" y2="${sy + sh}"/><text class="event-label" x="${x}" y="8" text-anchor="middle">${st.kind} start</text>`;
+    }
     for (const [f, name] of [[c.attach, 'grasp'], [c.release, 'release']]) {
       if (f == null || f < 0 || f >= n) continue;
       svg += `<line class="event" x1="${X(f)}" x2="${X(f)}" y1="10" y2="${sy + sh}"/><text class="event-label" x="${X(f)}" y="8" text-anchor="middle">${name}</text>`;
@@ -211,8 +220,10 @@ export class StatePanel {
       bx && KINDS[bx % 2 ? 'pick' : 'place'] + (bx > 2 ? ', played on but not searched' : '')].filter(Boolean);
     const st = this.steps.find((x) => f >= x.step && f < x.lift);
     const step = st ? `<div>Feet down from the last step, ${((st.event - st.step) / 60).toFixed(2)} s before the ${st.kind === 'pick' ? 'grasp' : 'release'}, to the first step after it</div>` : '';
+    const sb = this.starts.find((x) => f >= x.start && f < x.event);
+    const start = sb ? `<div>The SceneBot ${sb.kind} clip from its first frame, since ${(sb.start / 60).toFixed(2)} s (${sb.kind} start)</div>` : '';
     this.tip.innerHTML = `<div class="t">${(f / 60).toFixed(2)} s</div><div>Pelvis ${s.pelvis.toFixed(3)} m · torso lean ${s.lean.toFixed(0)}°</div>` +
-      `<div>${dbs.length ? dbs.map(esc).join('<br>') : 'in no database'}</div>${step}`;
+      `<div>${dbs.length ? dbs.map(esc).join('<br>') : 'in no database'}</div>${step}${start}`;
     this.tip.hidden = false;
     const r = this.root.getBoundingClientRect();
     this.tip.style.left = `${Math.min(e.clientX - r.left + 12, r.width - 220)}px`;

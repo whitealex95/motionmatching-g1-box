@@ -9,7 +9,9 @@
 A free run follows the page bit for bit only until V8's sin, exp or atan2 rounds differently from the C library
 (1 ulp), and then until a decision of the page that depends on such a bit: the page steers around the target box
 itself, with a lateral offset of zero up to rounding. --forced loads the page's whole state before every frame,
-steps once and compares with the page's state after it, so every frame is checked from the same state."""
+steps once and compares with the page's state after it, so every frame is checked from the same state.
+
+--foot-land M: the foot lock's land height of a trace made with js_trace.mjs --foot-land M."""
 import argparse
 import copy
 import json
@@ -48,7 +50,7 @@ def num(v):
     return math.inf if v == 'inf' else v
 
 
-C_KEYS = ('mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch', 'holdSwitchTime',
+C_KEYS = ('mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch', 'risesFrom', 'riseWalkIn',
           'commit', 'target', 'navSide', 'stance', 'boxCost', 'calledOff', 'engaged', 'reapproach', 'leaveBox', 'missed',
           'walkIn', 'navigating', 'arriving', 'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'events', 'semantics',
           'searchAt', 'matchAt', 'finishing', 'clock', 'lastEvent', 'fsm')
@@ -79,7 +81,7 @@ def load_state(sim, S):
     feet = copy.deepcopy(S['f']['feet'])
     for f in feet:
         f.setdefault('final', None)
-    sim.foot_lock.feet, sim.foot_lock.skate = feet, dict(S['f']['skate'])
+    sim.foot_lock.feet, sim.foot_lock.skate, sim.foot_lock.waits = feet, dict(S['f']['skate']), dict(S['f']['waits'])
 
 
 def flat(prefix, v, out):
@@ -111,12 +113,14 @@ def py_state(sim):
                'grip': sim.grip, 'parked': sim.parked, 'heldPose': sim.held_pose, 'renderJoints': sim.render_joints,
                'supports': sim.supports},
          'f': {'feet': [{k: v for k, v in f.items() if not (k == 'final' and v is None)} for f in sim.foot_lock.feet],
-               'skate': sim.foot_lock.skate}}
+               'skate': sim.foot_lock.skate, 'waits': sim.foot_lock.waits}}
     return flat('', S, {})
 
 
-def forced(states_path, tol):
+def forced(states_path, tol, foot_land=None):
     sim = Sim.build(loco='emmboth')
+    if foot_land is not None:
+        sim.foot_lock.land_height = foot_land
     sim.box_size = [sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][2]]
     sim.start_scripted()
     with open(states_path) as f:
@@ -140,7 +144,8 @@ def forced(states_path, tol):
             worst[group] = max(worst.get(group, (0.0, -1)), (abs(a - b), k))
         n += 1
     big = {g: v for g, v in worst.items() if v[0] > tol}
-    print(f'{n} frames stepped from the page\'s state')
+    waits = states[-1]['f']['waits']
+    print(f"{n} frames stepped from the page's state, {waits['count']} feet waited for {waits['time']:.2f} s in all")
     for g, (d, k) in sorted(worst.items(), key=lambda x: -x[1][0])[:12]:
         print(f'  {g:40s} max |py - js| {d:.2e} (frame {k})')
     frames = sorted({d[0] for d in discrete})
@@ -156,13 +161,25 @@ def cases(path, tol):
     J = json.load(open(path))
     sim = Sim.build(loco='emmboth')
     c, b = sim.controller, sim.controller.backend
-    bad = [key for key, m in (('sceneBotPre', b.scenebot_pre('box')), ('beforeEvent', b.before_event_mask('box')))
-           if not np.array_equal(m, J[key])]
+    tables = (('sceneBotPre', b.scenebot_pre('box')), ('beforeEvent', b.before_event_mask('box')),
+              ('walkOnStep', b.walk_on('box', 'step')), ('walkOnStart', b.walk_on('box', 'start')),
+              ('handOff', b.hand_off('box')), ('fromBend', b.from_bend('box')), ('riseOfBox', b.rise_of('box')),
+              ('riseOfPick', b.rise_of('pick')), ('riseOfPlace', b.rise_of('place')), ('handOffPick', b.hand_off('pick')),
+              ('fromBendPlace', b.from_bend('place')))
+    bad = [key for key, m in tables if not np.array_equal(m, J[key])]
+    if [[dict(x) for x in row] for row in b.starts] != J['starts']:
+        bad.append('starts')
+    if b.walk_ranges('box') != J['walkRanges']:
+        bad.append('walkRanges')
+    print(f"{len(tables)} per-frame tables, {sum(len(r) for r in b.starts)} SceneBot starts, {len(J['walkRanges'])} walk ranges, "
+          f"{int((np.asarray(J['handOff']) >= 0).sum())} hand-off frames, {int((np.asarray(J['riseOfBox']) >= 0).sum())} frames to rise at")
     worst = 0.0
     for k, cs in enumerate(J['cases']):
         b.active, b.frame, b.frac, c.walkIn = 'box', cs['frame'], 0.0, cs['walkIn']
+        bend = cs.get('bend', False)
+        c.mode, c.boxTag, c.holding = ('box', cs['kind'], cs['kind'] == 'place') if bend else ('loco', None, False)
         m = c.match(cs['kind'], np.asarray(cs['raw'], dtype=np.float64))
-        if m['frame'] != cs['js']['frame']:
+        if m['frame'] != cs['js']['frame'] or bool(m['same']) != cs['js'].get('same', bool(m['same'])):
             bad.append((k, cs['kind'], cs['walkIn'], cs['frame'], m['frame'], cs['js']['frame']))
         else:
             worst = max(worst, abs(m['cost'] - cs['js']['cost']))
@@ -180,14 +197,17 @@ def main():
     ap.add_argument('--tol', type=float, default=1e-3, help='position (m) and joint (rad) tolerance')
     ap.add_argument('--forced', metavar='STATES', help="js_trace.mjs --states output: step from the page's state each frame")
     ap.add_argument('--cases', action='store_true', help="the trace is js_match_cases.mjs's output: compare Controller.match")
+    ap.add_argument('--foot-land', type=float, default=None, help="m: the foot lock's land height the trace was made with")
     a = ap.parse_args()
     if a.cases:
         return cases(a.trace, 1e-9)
     if a.forced:
-        return forced(a.forced, 1e-9)
+        return forced(a.forced, 1e-9, a.foot_land)
     js = [json.loads(l) for l in open(a.trace)]
     t0 = time.time()
     sim = Sim.build(loco='emmboth')
+    if a.foot_land is not None:
+        sim.foot_lock.land_height = a.foot_land
     sim.box_size = [sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][2]]
     print(f'loaded in {time.time() - t0:.1f} s')
     sim.start_scripted()

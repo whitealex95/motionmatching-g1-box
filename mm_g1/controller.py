@@ -1,4 +1,4 @@
-"""Port of the Controller of lmm-g1-box's web/js/controller.js (exact search only): Locomotion with its arrive state, the
+"""Port of the Controller of lmm-g1-box's web/js/mm/controller.js: Locomotion with its arrive state, the
 box controller, inertialization, the simulation object and trajectory, root warping and the moving-target rules.
 
 The box controller has four states, set by its tag and by whether the robot holds the box:
@@ -29,12 +29,12 @@ DEFAULTS = dict(
     boxDb='same', loco='nsm', engageRadius=3.0, boxQueryRadius=3.0,
     warpHalflife=0.2, warpMaxRatio=0.8, warpMaxDist=0.7, warpMaxAngle=1.2,
     pickPlaceSpeed=1.0, pickPlaceSlow='clip', warp='always', leaveMoved=None, reapproachTime=1.0,
-    boxEntry='walk', entryLead=30, rise='search',
+    boxEntry='walk', entryLead=30, walkOn='step', bendOut='cancel', rise='search',
     locoTarget='arrive', stanceSwitch=0.05, axisLead=1.0, axisLook=0.5, arriveReach=0.75,
     transitionCost=0.0,
     zLow=0.66, zUpright=0.72, uprightTilt=None,
     graspOn=0.6, releaseOff=0.4, graspReach=0.25, floorBoxLift=0.15,
-    holdSwitchMax=0.5, movedTolerance=0.12, movedAngle=0.35, collisionRadius=0.36,
+    movedTolerance=0.12, movedAngle=0.35, collisionRadius=0.36,
     standOff=0.36, approachClearance=0.3, approachFallback=0.6,
     boxAhead=0.0,
 )
@@ -111,13 +111,13 @@ def zero_offsets():
 
 def variant_defaults(cfg):
     return {'warp': cfg.get('warp', DEFAULTS['warp']), 'leaveMoved': cfg.get('leave_moved_m', DEFAULTS['leaveMoved']),
-            'rise': cfg.get('rise', DEFAULTS['rise']), 'transitionCost': cfg.get('transition_cost', DEFAULTS['transitionCost']),
+            'rise': cfg.get('rise', DEFAULTS['rise']),
             'placeEngageRadius': cfg.get('place_engage_radius', DEFAULTS['forceEngageRadius'])}
 
 
 class Controller:
     STATE = ('mode', 'boxTag', 'holding', 'sim', 'desiredRot', 'desiredVel', 'searchTimer', 'forceSearch',
-             'holdSwitchTime', 'commit', 'target', 'navSide', 'stance', 'nav', 'boxCost', 'lastCosts', 'matchAt',
+             'risesFrom', 'riseWalkIn', 'commit', 'target', 'navSide', 'stance', 'nav', 'boxCost', 'lastCosts', 'matchAt',
              'searchAt', 'finishing', 'calledOff', 'engaged', 'reapproach', 'engageCheck', 'engagedBy', 'leaveBox',
              'missed', 'walkIn', 'arriving', 'semantics', 'clock', 'why', 'lastEvent', 'activity', 'goalDist', 'fsm',
              'events', 'trajectory', 'curr', 'pose', 'off', 'tsrc', 'tdst', 'navigating', 'goalBoxId', 'boxEdit')
@@ -186,13 +186,13 @@ class Controller:
         rot = qfrom_yaw(yaw)
         self.mode = 'loco'
         self.boxTag = None
+        self.risesFrom = None
         self.holding = holding
         self.sim = {'pos': list(pos), 'vel': [0.0, 0.0, 0.0], 'acc': [0.0, 0.0, 0.0], 'rot': list(rot), 'ang': [0.0, 0.0, 0.0]}
         self.desiredRot = list(rot)
         self.desiredVel = [0.0, 0.0, 0.0]
         self.searchTimer = 0.0
         self.forceSearch = True
-        self.holdSwitchTime = 0.0
         self.commit = None
         self.target = None
         self.navSide = None
@@ -212,6 +212,7 @@ class Controller:
         self.leaveBox = False
         self.missed = False
         self.walkIn = False
+        self.riseWalkIn = False
         self.arriving = False
         self.semantics = 'none'
         # For display only (trace, status): nothing the controller does reads them.
@@ -688,6 +689,77 @@ class Controller:
             return 'pick-post' if self.holding else 'pick-pre'
         return 'place-pre' if self.holding else 'place-post'
 
+    def box_state(self):
+        """box_phase with the part before the event split in two: 'pick-step' and 'place-step' are the steps to the
+        target, and 'pick-pre' and 'place-pre' start where the clip goes down for the event (MMBackend.from_bend)."""
+        ph, b = self.box_phase(), self.backend
+        if ph not in ('pick-pre', 'place-pre') or b.active == 'loco' or b.from_bend(b.active)[b.frame] == 1:
+            return ph
+        return 'pick-step' if ph == 'pick-pre' else 'place-step'
+
+    def walk_on_from(self):
+        return self.p['walkOn'] if self.p['boxEntry'] == 'walk' else 'off'
+
+    def hand_over(self):
+        """A walk that ends in a SceneBot clip plays on in that clip, at the frame the two share (MMBackend.hand_off).
+        The two have the same poses there, so the transition blends nothing unless the pick motion is edited."""
+        b, ph = self.backend, self.box_phase()
+        if ph not in ('pick-pre', 'place-pre') or self.walk_on_from() == 'off' or b.active == 'loco':
+            return
+        frame = int(b.hand_off(b.active)[b.frame])
+        if frame < 0:
+            return
+        m = {'name': b.active, 'frame': frame}
+        self.transition(b.match_pose(m, self.curr.rootPos, self.curr.rootRot, self.dt, self.clip_speed(m['name'], m['frame'])))
+        b.commit(m)
+
+    def bend_out_by(self):
+        return self.p['bendOut'] if self.p['boxEntry'] == 'walk' else 'leave'
+
+    def rise_frame(self):
+        """Where the robot rises when the bend of now is cancelled: {name, frame} of MMBackend.rise_of, or None when
+        the clip does not go down for a grasp or a release, has no such frame, or bendOut is 'leave'."""
+        b, ph = self.backend, self.box_phase()
+        if ph not in ('pick-pre', 'place-pre') or self.bend_out_by() != 'cancel' or b.active == 'loco':
+            return None
+        frame = int(b.rise_of(b.active)[b.frame])
+        return None if frame < 0 else {'name': b.rise_db(b.active), 'frame': frame}
+
+    def bend_plays(self):
+        """A SceneBot pick or place that goes down plays with no jump of the search, and so does a walk that plays on
+        in one."""
+        b = self.backend
+        return (self.rise_frame() is not None and not b.end_of_anim()
+                and (b.scenebot_pre(b.active)[b.frame] == 1 or self.walk_on_from() != 'off'))
+
+    def rise_from(self, at, why, walk_in=False):
+        """The bend is cancelled: the tag flips, and the robot rises at `at` (rise_frame). No search in this update,
+        so a robot that is upright already is in the rising state first. walk_in: back in Locomotion it walks in again,
+        as after leaveMoved."""
+        b = self.backend
+        self.why = why
+        self.risesFrom = self.boxTag
+        self.boxTag = 'place' if self.boxTag == 'pick' else 'pick'
+        self.transition(b.match_pose(at, self.curr.rootPos, self.curr.rootRot, self.dt, self.clip_speed(at['name'], at['frame'])))
+        b.commit(at)
+        self.forceSearch = self.leaveBox = self.missed = False
+        self.searchTimer = self.p['searchTime'] / self.clip_speed(b.active)
+        self.riseWalkIn = walk_in
+
+    def bend_of(self):
+        """The bend ('pick' or 'place') whose height and manual edit both SceneBot clips are solved for
+        (Sim.sync_pick_motion): the bend that goes down, and the one that ended without its grasp or release while
+        the robot rises from it with the other clip. So a cancelled bend rises at a frame with the same joints, also
+        for a box on a table or a put down with palms of its own."""
+        if self.bend_out_by() != 'cancel':
+            return None
+        ph, frm = self.box_phase(), self.risesFrom
+        if ph == 'pick-pre':
+            return 'pick'
+        if ph == 'place-pre':
+            return 'place'
+        return frm if ph == ('place-post' if frm == 'pick' else 'pick-post') else None
+
     def call_off(self):
         self.calledOff = True
         self.forceSearch = True
@@ -702,6 +774,7 @@ class Controller:
         dt, p, b = self.dt, self.p, self.backend
         if self.holding and not inp['holding'] and self.mode == 'box' and self.boxTag == 'pick':
             self.boxTag = 'place'
+            self.risesFrom = 'pick'
         self.holding = inp['holding']
         self.events = {'grasp': False, 'release': False}
         ss = p['slowScale'] if inp.get('slow') else 1.0
@@ -772,17 +845,24 @@ class Controller:
         if self.walkIn and (not activity or (self.mode == 'box' and (not pre or self.after_last_step()))):
             self.walkIn = False
 
+        # With a frame to rise at (rise_frame), from where the clip goes down, and also by what else ends the bend
+        # without its event.
+        at = self.rise_frame()
         abort = False
-        if pre and not rising and not self.is_upright() and (self.commit or self.target):
+        if pre and (at or (not rising and not self.is_upright())) and (self.commit or self.target):
             t = self.target
             c = self.commit or {'boxId': pick_box['id'] if phase == 'pick-pre' and pick_box else None,
                                 'side': t['side'], 'pos': list(t['pos']), 'yaw': t['yaw'], 'dir': list(t['dir'])}
             want = 'pick' if phase == 'pick-pre' else 'place'
             moved = lambda: hypot(sides[c['side']]['pos'][0] - c['pos'][0], sides[c['side']]['pos'][1] - c['pos'][1])
             turn = lambda: abs(wrap_angle(sides[c['side']]['yaw'] - c['yaw']))
+            bent = not self.is_upright()
             cause = ('check' if self.calledOff else 'cleared' if activity != want else 'stick' if user
                      else 'other' if pick_box and phase == 'pick-pre' and c['boxId'] != pick_box['id']
-                     else 'moved' if moved() > p['movedTolerance'] else 'turned' if turn() > p['movedAngle'] else None)
+                     else 'missed' if at and b.after_event(b.active)[b.frame] == 1
+                     else 'moved' if bent and moved() > p['movedTolerance']
+                     else 'turned' if bent and turn() > p['movedAngle']
+                     else 'far' if at and self.leaveBox else None)
             abort = cause is not None
             if abort and not self.commit:
                 self.commit = c
@@ -792,19 +872,23 @@ class Controller:
                     self.why.update(moved=moved(), limit=p['movedTolerance'])
                 if cause == 'turned':
                     self.why.update(turned=turn(), limit=p['movedAngle'])
+                if cause == 'far':
+                    self.why.update(moved=hypot(goal['pos'][0] - self.engaged['pos'][0], goal['pos'][1] - self.engaged['pos'][1]),
+                                    limit=p['leaveMoved'])
+            if abort and at:
+                self.rise_from(at, self.why, cause in ('missed', 'far'))
+            elif abort:
+                self.boxTag = 'place' if self.boxTag == 'pick' else 'pick'
+                self.forceSearch = True
         self.calledOff = False
-        if abort:
-            self.boxTag = 'place' if self.boxTag == 'pick' else 'pick'
-            self.forceSearch = True
 
-        hold = self.anim_hold()
-        self.holdSwitchTime = self.holdSwitchTime + dt if (self.bent_for_event() and hold is not None and 0.1 < hold[1] < 0.9) else 0.0
         finishing = rising and not self.risen() and not b.end_of_anim()
         self.finishing = finishing
+        self.hand_over()
         search_due = not finishing and (self.forceSearch or self.searchTimer <= 0 or b.end_of_anim())
         if search_due:
             self.searchAt = self.clock
-            self.search(inp, sides, activity, goal, self.forceSearch, obstacles)
+            self.search(inp, sides, activity, goal, obstacles)
             self.searchTimer = p['searchTime'] / self.clip_speed(b.active)
             self.forceSearch = False
         self.searchTimer -= dt
@@ -850,7 +934,7 @@ class Controller:
             self.sim['rot'] = list(self.pose.rootRot)
             self.sim['ang'] = [0.0, 0.0, 0.0]
             self.desiredRot = list(self.pose.rootRot)
-        self.semantics = (self.box_phase() if self.mode != 'loco' else 'arrive' if self.arriving
+        self.semantics = (self.box_state() if self.mode != 'loco' else 'arrive' if self.arriving
                           else 'navigate' if navigating else 'locomotion')
         self.clock += dt
         self.trace(bool(goal))
@@ -859,7 +943,7 @@ class Controller:
 
     def trace(self, has_goal):
         """Each change of state with its cause, noted where the decision was made (why) or told from the two states. A
-        state is the semantics and what plays it: 'navigate:loco', 'navigate:carry', 'pick-pre:pick'."""
+        state is the semantics and what plays it: 'navigate:loco', 'navigate:carry', 'pick-step:pick', 'pick-pre:pick'."""
         f, s = self.fsm, self.semantics
         key = f'{s}:pick' if s.startswith('pick') else f'{s}:place' if s.startswith('place') else f"{s}:{'carry' if self.holding else 'loco'}"
         if key == f['state']:
@@ -876,9 +960,15 @@ class Controller:
         ts, tk = to.split(':')
         walks = lambda x: x in ('locomotion', 'navigate', 'arrive')
         togo = hypot(self.nav['pos'][0] - self.sim['pos'][0], self.nav['pos'][1] - self.sim['pos'][1]) if self.nav else None
-        if fs == 'pick-pre' and ts == 'pick-post':
+        pre = lambda x: x.endswith('-pre') or x.endswith('-step')
+        if pre(fs) and pre(ts) and fk == tk:
+            b = self.backend
+            w = b.walk_ranges(b.active) if b.active != 'loco' else []
+            return ({'by': 'bend', 'sceneBot': any(x['a'] <= b.frame < x['b'] for x in w)} if ts.endswith('-pre')
+                    else {'by': 'jump-back'})
+        if fk == 'pick' and pre(fs) and ts == 'pick-post':
             return {'by': 'grasp'}
-        if fs == 'place-pre' and ts == 'place-post':
+        if fk == 'place' and pre(fs) and ts == 'place-post':
             le = self.lastEvent
             return {'by': 'release'} if le and le['kind'] == 'release' and self.clock - le['t'] < 0.5 else {'by': 'drop', 'again': has_goal}
         if (fk == 'carry' and tk == 'loco') or (fs == 'pick-post' and ts == 'place-post'):
@@ -970,14 +1060,18 @@ class Controller:
         qn, gain = b.normalize(name, query), self.p['gains'][kind]
         sb_pre = (is_box_query(kind) and self.cfg.get('scenebot_entry_frames') and b.active == name
                   and b.scenebot_pre(name)[b.frame] == 1)
+        on = self.walk_on_from()
+        walk_on = is_box_query(kind) and on != 'off' and b.active == name and b.walk_on(name, on)[b.frame] == 1
+        plays = is_box_query(kind) and b.active == name and self.bend_plays()
         mask = None
         if is_box_query(kind) and self.p['boxEntry'] == 'walk':
-            mask = b.before_event_mask(name) if sb_pre else b.walk_in_mask(name) if self.walkIn else b.no_entry(name)
+            mask = (b.every_frame(name) if plays else b.before_event_mask(name) if sb_pre or walk_on
+                    else b.walk_in_mask(name) if self.walkIn else b.no_entry(name))
         m = b.match(name, qn, gain, entry=entry, mask=mask, transition_cost=self.p['transitionCost'])
         m.update(kind=kind, qn=qn, gain=gain)
         return m
 
-    def search(self, inp, sides, activity, goal, forced, obstacles):
+    def search(self, inp, sides, activity, goal, obstacles):
         b, p, P = self.backend, self.p, self.pose
         th = self.thresholds(activity or self.boxTag or 'pick')
         enter, leave, margin = th['enter'], th['leave'], th['margin']
@@ -989,8 +1083,10 @@ class Controller:
         user = inp.get('stick') or inp.get('face')
 
         if phase in ('pick-post', 'place-post'):
+            # A clip at its end has nothing left to play, so the rise ends there too. An edit of the pick motion can
+            # keep the torso tilted to the end.
             c = self.commit or self.target
-            if c and not self.risen():
+            if c and not self.risen() and not b.end_of_anim():
                 box_match = self.match(self.boxTag, self.box_query(c['pos'], c['dir'], self.boxTag))
         elif activity and sides:
             near = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1])
@@ -1041,6 +1137,11 @@ class Controller:
                 use_box = bool(box_match)
                 if not use_box:
                     self.why = {'by': 'upright', 'hip': self.hip_height(), 'tilt': self.torso_tilt()}
+                if not use_box and self.riseWalkIn:
+                    self.reapproach = 0.0
+                    self.walkIn = True
+                if not use_box:
+                    self.riseWalkIn = False
             elif not activity or user:
                 use_box = not self.is_upright() and bool(box_match)
                 if not use_box:
@@ -1048,6 +1149,10 @@ class Controller:
             else:
                 dist = hypot(goal['pos'][0] - P.rootPos[0], goal['pos'][1] - P.rootPos[1])
                 use_box = bool(box_match) and not (self.is_upright() and self.boxCost > leave and dist > engage + 0.3)
+                at = None if use_box else self.rise_frame()
+                if at:
+                    return self.rise_from(at, {'by': 'cancel-cost', 'cost': self.boxCost, 'leave': leave, 'dist': dist,
+                                               'radius': engage + 0.3} if box_match else {'by': 'cancel-noside'})
                 if not use_box:
                     self.why = ({'by': 'leave-cost', 'cost': self.boxCost, 'leave': leave, 'dist': dist, 'radius': engage + 0.3}
                                 if box_match else {'by': 'leave-nomatch'})
@@ -1071,6 +1176,7 @@ class Controller:
             if self.mode == 'box':
                 self.commit = None
                 self.boxTag = None
+                self.risesFrom = None
             self.mode = 'loco'
             if not activity:
                 self.target = None
@@ -1135,9 +1241,13 @@ class Controller:
         self.root_adjust([new_pos[0], new_pos[1], 0.0], qnorm(qmul(rq, P.rootRot)))
 
     def render_state(self):
-        P = self.pose
+        """unblended: the pelvis and the joints of the playing frame without the offset of a transition, at the same
+        root."""
+        P, C = self.pose, self.curr
         return {'hipPos': add(P.rootPos, qmul_vec(P.rootRot, P.hipPos)), 'hipRot': qmul(P.rootRot, P.hipRot),
-                'joints': P.joints, 'root': P.rootPos, 'rootRot': P.rootRot, 'contacts': P.contacts}
+                'joints': P.joints, 'root': P.rootPos, 'rootRot': P.rootRot, 'contacts': P.contacts,
+                'unblended': {'hipPos': add(P.rootPos, qmul_vec(P.rootRot, C.hipPos)), 'hipRot': qmul(P.rootRot, C.hipRot),
+                              'joints': C.joints}}
 
 
 def seq_mean(xs):

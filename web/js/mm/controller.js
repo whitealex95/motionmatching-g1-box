@@ -1,23 +1,22 @@
-// Learned Motion Matching controller for the G1 picking up, carrying and putting down a box, built like
-// the chair behaviour of Section 5 of the paper. A locomotion controller (27 features plus an
-// empty-handed or carrying tag) runs by default. Every search the system also tries to match the box
-// set (relative box position and direction, a pick or place tag and the hold state). A box match below a cost
-// threshold switches to the box controller, which keeps re-searching. Root warping makes the hands
-// arrive exactly at the box. Basic Motion Matching (exact search) is the reference.
+// Motion Matching controller for the G1 picking up, carrying and putting down a box, built like the chair behaviour
+// of Section 5 of Learned Motion Matching (Holden et al. 2020), with the exact search and no networks. A Locomotion
+// controller (27 features plus an empty-handed or carrying tag) runs by default. Every search the system also tries
+// to match the box set (relative box position and direction, a pick or place tag and the hold state). A box match
+// below a cost threshold switches to the box controller, which keeps searching. Root warping makes the hands arrive
+// exactly at the box.
 //
 // The box controller has four states, set by its tag and by whether the robot holds the box:
-//   pick, empty      walk in and bend down to the box. The Decompressor's held output rising is the grasp.
+//   pick, empty      walk in and bend down to the box. The held value of the playing frames rising is the grasp.
 //   pick, holding    rise with the box.
-//   place, holding   walk in and lower the box. The held output falling is the release.
+//   place, holding   walk in and lower the box. The held value falling is the release.
 //   place, empty     rise without the box.
-// If the box (or the place target) moves while the robot is bent, the robot switches to the other tag's
-// rising state: it stands up empty-handed (pick aborted) or still holding (place aborted).
+// A cancel while the robot is bent makes it rise: empty-handed (pick cancelled) or still holding (place cancelled).
 //
-// Ports controller.cpp / lmm.h / database.h of orangeduck/Motion-Matching, with Z-up and +X forward.
+// Ports controller.cpp and database.h of orangeduck/Motion-Matching, with Z-up and +X forward.
 
 import { v3, q, dampFactor, simpleSpringDamperQuat, decaySpringVec, decaySpringQuat, decaySpringScalar, wrapAngle } from './math.js';
 
-export const NDOF = 29;
+const NDOF = 29;
 const NPOSE_FEATURES = 15;
 
 export const DEFAULTS = {
@@ -29,31 +28,31 @@ export const DEFAULTS = {
   slowScale: 0.5,
   adjustPosHalflife: 0.1, adjustRotHalflife: 0.2, adjustPosMaxRatio: 0.5, adjustRotMaxRatio: 0.5,
   clampMaxDistance: 0.15, clampMaxAngle: 0.5 * Math.PI,
-  // The cost thresholds of a pick and of a place, for each backend (thresholds).
-  boxEnter: { pick: { lmm: 1.5, mm: 1.5 }, place: { lmm: 1.5, mm: 1.5 } },
-  boxLeave: { pick: { lmm: 2.0, mm: 2.0 }, place: { lmm: 2.0, mm: 2.0 } },
+  // The cost thresholds of a pick and of a place (thresholds).
+  boxEnter: { pick: 1.5, place: 1.5 },
+  boxLeave: { pick: 2.0, place: 2.0 },
   // Locomotion hands a pick to the box controller within this distance of the box even at a cost above boxEnter, and a
   // place within placeEngageRadius (variantDefaults) of the marker. 0: only by the cost.
   forceEngageRadius: 0.6,
   // Locomotion hands a pick or a place to the box controller, by the cost or by the distance above, only within this
   // distance of the box or marker centre. null: anywhere the box Matching Database is searched (engageRadius).
   takeOverRadius: 1.0,
-  sideMargin: { pick: { lmm: 0.25, mm: 0.25 }, place: { lmm: 0.25, mm: 0.25 } },
-  // Exact search only. 'different' searches the pick and the place frames as two Matching Databases.
+  sideMargin: { pick: 0.25, place: 0.25 },
+  // 'different' searches the pick and the place frames as two Matching Databases.
   boxDb: 'same',
-  // Exact search only. 'emm' searches the EMM locomotion takes instead of the empty-handed NSM frames, 'emmcarry' the
+  // 'emm' searches the EMM locomotion takes instead of the empty-handed NSM frames, 'emmcarry' the
   // carry spans of EMM's box take instead of the carrying frames, and 'emmboth' both (setLoco).
   loco: 'nsm',
   engageRadius: 3.0,
   boxQueryRadius: 3.0,
   warpHalflife: 0.2, warpMaxRatio: 0.8, warpMaxDist: 0.7, warpMaxAngle: 1.2,
-  // Exact search only: the box clips (walk in, bend, grasp or release, rise) play at this share of their speed.
+  // The box clips (walk in, bend, grasp or release, rise) play at this share of their speed.
   pickPlaceSpeed: 1,
   // 'clip': all frames of the box clips. 'step': only those from the last step before the grasp or the release to
   // the first step after it (lastSteps).
   pickPlaceSlow: 'clip',
   // 'always': root warping moves the root toward the target through the whole walk in and bend. 'step': not from the
-  // last step before the grasp or the release on (exact search only), where both feet of the clip stay down.
+  // last step before the grasp or the release on, where both feet of the clip stay down.
   // 'pickstep': as 'step' before a grasp, as 'always' before a release.
   // config.json's warp sets it for a variant.
   warp: 'always',
@@ -64,35 +63,44 @@ export const DEFAULTS = {
   // null: never.
   // config.json's leave_moved_m sets it for a variant.
   leaveMoved: null, reapproachTime: 1.0,
-  // Exact search only. 'walk': a box range that ends before its clip's grasp or release (the walk of an ApproachPick v4
-  // clip) is played on from entryLead before its last step (lastSteps) but never searched there. With config.json's
+  // 'walk': a box range that ends before its clip's grasp or release (the walk of an ApproachPick clip) is played on from entryLead before its last step (lastSteps) but never searched there. With config.json's
   // scenebot_entry_frames, a range of a SceneBot clip that holds its grasp or release is searched only in its first
   // scenebot_entry_frames frames and from the event on, and while a SceneBot pick or place plays before its grasp or
   // release the search jumps to no frame before a grasp or a release. 'any': every frame.
   boxEntry: 'walk', entryLead: 30,
-  // Exact search only. 'search': the box controller searches every searchTime while it rises. 'finish': once the
+  // For a walk that ends in a SceneBot pick or place (sceneBotStarts). 'step': from its last step on
+  // the search jumps to no frame before a grasp or a release, and from the frame where the SceneBot clip starts in it
+  // the SceneBot clip plays on at the frame the two share (MMBackend.handOff). 'start': both from the frame where the
+  // SceneBot clip starts. 'off': the search goes on to the end of the walk's range and finds the SceneBot clip itself.
+  walkOn: 'step',
+  // For a frame that has a frame to rise at (MMBackend.riseOf): a SceneBot pick or place that goes
+  // down, and a walk from the frame where the SceneBot clip starts in it. 'cancel': the bend ends by its grasp or
+  // release or by a cancel only. A cancel rises at that frame, which has the joints of the playing one, so no search
+  // chooses it. What sent the robot back to Locomotion while upright (the cost above Leave, a moved target, a cleared
+  // pick, a walk key) and a clip that went past its event without it cancel too, and the search jumps to no frame
+  // while the SceneBot clip goes down. 'leave': a cancel only while bent, at the frame the search finds.
+  bendOut: 'cancel',
+  // 'search': the box controller searches every searchTime while it rises. 'finish': once the
   // playing frame is at or past its clip's grasp (a pick range) or release (a place range), the robot rises without a
   // search until it is up (risen) or the range ends. A clip that went past the event without it (the box out of
   // reach, or the physical grip lost) then sends the robot back to Locomotion to walk in again, as leaveMoved does.
   // config.json's rise sets it for a variant.
   rise: 'search',
-  // Exact search only, in the variants whose Box Matching Database has the SceneBot pick (sceneBotStances). 'stance':
+  // In the variants whose Box Matching Database has the SceneBot pick (sceneBotStances). 'stance':
   // once the search has chosen a side of the box or the marker, Locomotion walks to where the SceneBot pick or place
   // of that side starts (the captured or the mirrored one, whichever is nearer, switching only for one stanceSwitch
   // nearer) along the axis of that side (axisPoint), so it arrives facing the box. 'arrive': the same, and within
   // arriveReach of the stance the robot turns to its facing and the query's last trajectory point, 1 s ahead, is the
   // stance (approach). 'centre': straight to the box or marker centre.
   locoTarget: 'arrive', stanceSwitch: 0.05, axisLead: 1.0, axisLook: 0.5, arriveReach: 0.75,
-  // Exact search only. transition_cost of motion_matching_search in Holden's Motion-Matching (database.h): added to the
-  // squared cost of every frame but the playing one, so a jump must beat staying on the clip by this much.
-  // config.json's transition_cost sets it for a variant.
+  // transition_cost of motion_matching_search in Holden's Motion-Matching (database.h): added to the squared cost of
+  // every frame but the playing one, so a jump must beat staying on the clip by this much.
   transitionCost: 0,
   zLow: 0.66, zUpright: 0.72,
   // The rise after a grasp or a release ends once the pelvis is above zUpright and, unless null, the torso is within
   // this tilt of vertical (deg). config.json's upright_tilt_deg sets it for a variant.
   uprightTilt: null,
   graspOn: 0.6, releaseOff: 0.4, graspReach: 0.25, floorBoxLift: 0.15,
-  boxTransitionCost: 1.0, holdSwitchMax: 0.5,
   movedTolerance: 0.12, movedAngle: 0.35,
   collisionRadius: 0.36,
   standOff: 0.36, approachClearance: 0.3, approachFallback: 0.6,
@@ -145,7 +153,7 @@ export function queryWeights(cfg, kind) {
   if (kind !== 'arrive') return c.weights.map((w, g) => (g === vel ? 0 : w));
   return [...ARRIVE_GROUPS.flatMap((g) => Array(3).fill(c.weights[c.groups.indexOf(g)])), ...(vel >= 0 ? [TRAJ_VEL.arrive] : [])];
 }
-// Weights given without the trajectory velocity (links and commands of before v3.4.1) get its default.
+// Weights given without the trajectory velocity (older links) get its default.
 export function fillWeights(cfg, kind, w) {
   const def = queryWeights(cfg, kind);
   return w.length === def.length - 1 && !isBoxQuery(kind) ? [...w, def[def.length - 1]] : w;
@@ -171,22 +179,38 @@ function copyPose(p) {
 
 // The n sides a box is picked up from (2 or 4, a setting of the page): the box X axis points away from the
 // carrier, and side k turns it by k / n of a full turn.
-export function targetSides(pos, yaw, n) {
+function targetSides(pos, yaw, n) {
   return Array.from({ length: n }, (_, side) => {
     const y = yaw + side * 2 * Math.PI / n;
     return { side, yaw: y, dir: [Math.cos(y), Math.sin(y)], pos: pos.slice(0, 2) };
   });
 }
 
-class Backend {
-  // Shared feature bookkeeping for both the learned and the exact backends.
-  constructor(cfg) {
+export class MMBackend {
+  constructor(cfg, data) {
     this.cfg = cfg;
     this.ctrl = {};
     for (const name of ['loco', 'box']) {
       const c = cfg.controllers[name];
       this.ctrl[name] = { ...c, offset: Float32Array.from(c.offset), scale: Float32Array.from(c.scale) };
     }
+    this.pose = data.pose;  // Float32Array (nframes * width)
+    this.width = cfg.pose_width;
+    this.L = cfg.pose_layout;
+    this.db = data.db;      // per controller: X, idx, ranges, rangeStop
+    this.stops = data.stops;  // per row of the variant's Animation Database: the row after its clip
+    for (const name in data.db) {
+      if (!this.ctrl[name]) this.ctrl[name] = { ...this.ctrl.box, offset: data.db[name].offset, scale: data.db[name].scale };
+    }
+    // The Locomotion Matching Databases by name: 'nsm' (the variant's) and those that loadLoco builds.
+    this.locos = { nsm: { ...data.db.loco, offset: this.ctrl.loco.offset, scale: this.ctrl.loco.scale } };
+    this.loco = 'nsm';
+    this.active = 'loco';
+    this.frame = 0;         // index into the active controller's matching database
+    this.frac = 0;          // how far the playhead is from frame toward frame + 1, at a speed below 1
+    this.steps = lastSteps(cfg, data.pose);
+    this.starts = sceneBotStarts(cfg, data.pose);
+    for (const name of ['box', 'pick', 'place']) if (this.db[name]) this.riseOf(name);
   }
   normalize(name, query) {
     const c = this.ctrl[name], out = new Float32Array(c.nfeatures);
@@ -206,89 +230,6 @@ class Backend {
     let c = 0;
     for (let j = 0; j < f.length; j++) c += gain[j] * (qn[j] - f[j]) ** 2;
     return Math.sqrt(c);
-  }
-}
-
-export class LMMBackend extends Backend {
-  constructor(cfg, nets) {
-    super(cfg);
-    this.kind = 'lmm';
-    this.nets = nets;
-    this.active = 'loco';
-    this.features = new Float32Array(cfg.controllers.loco.nfeatures);
-    this.latent = new Float32Array(cfg.nlatent);
-  }
-  currentFeatures() { return this.features; }
-  // query is normalized; returns the projected features, latent and the matching cost.
-  match(name, qn) {
-    const n = this.ctrl[name].nfeatures;
-    const out = this.nets[name].projector.evaluate(qn);
-    const features = Float32Array.from(out.subarray(0, n));
-    const latent = Float32Array.from(out.subarray(n, n + this.cfg.nlatent));
-    let cost = 0;
-    for (let i = 0; i < n; i++) cost += (qn[i] - features[i]) ** 2;
-    return { name, features, latent, cost: Math.sqrt(cost) };
-  }
-  commit(m) {
-    this.active = m.name;
-    this.features = m.features;
-    this.latent = m.latent;
-  }
-  matchPose(m, rootPos, rootRot, dt) {
-    return this.decode(m.name, m.features, m.latent, rootPos, rootRot, dt);
-  }
-  step(dt) {
-    const net = this.nets[this.active].stepper, n = this.features.length;
-    const inp = new Float32Array(n + this.latent.length);
-    inp.set(this.features); inp.set(this.latent, n);
-    const out = net.evaluate(inp);
-    for (let i = 0; i < n; i++) this.features[i] += dt * out[i];
-    for (let i = 0; i < this.latent.length; i++) this.latent[i] += dt * out[n + i];
-  }
-  currentPose(rootPos, rootRot, dt) {
-    return this.decode(this.active, this.features, this.latent, rootPos, rootRot, dt);
-  }
-  decode(name, features, latent, rootPos, rootRot, dt) {
-    const inp = new Float32Array(features.length + latent.length);
-    inp.set(features); inp.set(latent, features.length);
-    const o = this.nets[name].decompressor.evaluate(inp);
-    const p = makePose();
-    p.hipPos = [o[0], o[1], o[2]];
-    p.hipRot = q.fromXformXY([o[3], o[4], o[5], o[6], o[7], o[8]]);
-    p.hipVel = [o[9], o[10], o[11]];
-    p.hipAng = [o[12], o[13], o[14]];
-    for (let i = 0; i < NDOF; i++) { p.joints[i] = o[15 + i]; p.jointVel[i] = o[44 + i]; }
-    p.rootVel = q.mulVec(rootRot, [o[73], o[74], 0]);
-    p.rootAng = q.mulVec(rootRot, [0, 0, o[78]]);
-    p.rootPos = v3.add(rootPos, v3.scale(p.rootVel, dt));
-    p.rootRot = q.norm(q.mul(q.fromScaledAngleAxis(v3.scale(p.rootAng, dt)), rootRot));
-    p.contacts = [o[79] > 0.5, o[80] > 0.5];
-    p.held = o[81];
-    p.boxPos = [o[82], o[83], o[84]];
-    p.boxRot = q.fromXformXY([o[85], o[86], o[87], o[88], o[89], o[90]]);
-    return p;
-  }
-}
-
-export class MMBackend extends Backend {
-  constructor(cfg, data) {
-    super(cfg);
-    this.kind = 'mm';
-    this.pose = data.pose;  // Float32Array (nframes * width)
-    this.width = cfg.pose_width;
-    this.L = cfg.pose_layout;
-    this.db = data.db;      // per controller: X, idx, ranges, rangeStop
-    this.stops = data.stops;  // per row of the variant's Animation Database: the row after its clip
-    for (const name in data.db) {
-      if (!this.ctrl[name]) this.ctrl[name] = { ...this.ctrl.box, offset: data.db[name].offset, scale: data.db[name].scale };
-    }
-    // The Locomotion Matching Databases, 'nsm' (the variant's) and 'emm' once loadEmmLoco has run.
-    this.locos = { nsm: { ...data.db.loco, offset: this.ctrl.loco.offset, scale: this.ctrl.loco.scale } };
-    this.loco = 'nsm';
-    this.active = 'loco';
-    this.frame = 0;         // index into the active controller's matching database
-    this.frac = 0;          // how far the playhead is from frame toward frame + 1, at a speed below 1
-    this.steps = lastSteps(cfg, data.pose);
   }
   // [x, y, yaw] of the root where the SceneBot pick and place start, in the frame of the box side they work on (x
   // away from the robot): {pick: [...], place: [...]}, one per captured or mirrored clip that the Box Matching
@@ -444,6 +385,132 @@ export class MMBackend extends Backend {
     return (this.walkInOf[name] = out);
   }
 
+  // The ranges of a box Matching Database that are walks ending in a SceneBot clip. Such a range stops before its
+  // clip's grasp or release but not before frame `bend`, from which its clip has the SceneBot clip (sceneBotStarts),
+  // and a range of that SceneBot clip, of the same mirror when there is one, holds the event. { a, b }: its frames in the database, kind:
+  // 'pick' or 'place', start: its clip's first row, step: the clip's last step, to: the SceneBot range { a, b, first },
+  // first being the frame of the SceneBot clip at a.
+  walkRanges(name) {
+    this.walkRangesOf ??= {};
+    if (this.walkRangesOf[name]) return this.walkRangesOf[name];
+    const d = this.db[name], rows = this.cfg.clips.rows, all = [];
+    for (let r = 0; r < d.ranges.length / 2; r++) {
+      const a = d.ranges[2 * r], b = d.ranges[2 * r + 1], c = this.rangeClip(name, r);
+      if (d.idx[a] >= c.stop || !(c.event >= 0)) continue;
+      const kind = (d.rangeKind ? d.rangeKind[r] : name === 'place') ? 'place' : 'pick';
+      all.push({ a, b, kind, clip: c, mirror: rows[c.row][1], holds: d.idx[b - 1] - c.start >= c.event });
+    }
+    const out = [];
+    for (const w of all) {
+      const s = w.holds ? null : this.starts[w.clip.row].find((x) => x.kind === w.kind);
+      if (!s || d.idx[w.b - 1] - w.clip.start < s.start) continue;
+      const ends = all.filter((x) => x.holds && x.kind === w.kind && x.clip.name.startsWith('SceneBot') && x.clip.event === w.clip.event - s.start);
+      const to = ends.find((x) => x.mirror === w.mirror) ?? ends[0];
+      if (!to) continue;
+      const step = this.steps.clips[w.clip.row].find((x) => x.event === w.clip.event);
+      out.push({ a: w.a, b: w.b, kind: w.kind, start: w.clip.start, bend: s.start, step: step ? step.step : s.start,
+        to: { a: to.a, b: to.b, first: d.idx[to.a] - to.clip.start } });
+    }
+    return (this.walkRangesOf[name] = out);
+  }
+  // Per frame of a box Matching Database: 1 in a walk that ends in a SceneBot clip (walkRanges), from its last step on
+  // (from 'step') or from the frame where the SceneBot clip starts in it (from 'start').
+  walkOn(name, from) {
+    this.walkOnOf ??= {};
+    const key = `${name} ${from}`;
+    if (this.walkOnOf[key]) return this.walkOnOf[key];
+    const d = this.db[name], out = new Uint8Array(d.idx.length);
+    for (const w of this.walkRanges(name)) {
+      const f0 = from === 'step' ? Math.min(w.step, w.bend) : w.bend;
+      for (let i = w.a; i < w.b; i++) if (d.idx[i] - w.start >= f0) out[i] = 1;
+    }
+    return (this.walkOnOf[key] = out);
+  }
+  // Per frame of a box Matching Database: the frame of the SceneBot range that a walk ending in that SceneBot clip plays
+  // on at (walkRanges), or -1. It is the frame the two share, once the SceneBot range has it. A walk range that stops
+  // before the SceneBot range starts goes from its last frame to the first of the SceneBot range.
+  handOff(name) {
+    this.handOffOf ??= {};
+    if (this.handOffOf[name]) return this.handOffOf[name];
+    const d = this.db[name], out = new Int32Array(d.idx.length).fill(-1);
+    for (const w of this.walkRanges(name)) {
+      for (let i = w.a; i < w.b; i++) {
+        const f = d.idx[i] - w.start - w.bend;  // frame of the SceneBot clip
+        if (f < 0) continue;
+        const j = w.to.a + f - w.to.first;
+        if (j >= w.to.a && j < w.to.b) out[i] = j;
+        else if (j < w.to.a && i === w.b - 1) out[i] = w.to.a;
+      }
+    }
+    return (this.handOffOf[name] = out);
+  }
+  // The ranges of a box Matching Database that are a SceneBot pick or place with its grasp or release. first: the
+  // frame of the clip at a.
+  sceneBotRanges(name) {
+    const d = this.db[name], rows = this.cfg.clips.rows, out = [];
+    for (let r = 0; r < d.ranges.length / 2; r++) {
+      const a = d.ranges[2 * r], b = d.ranges[2 * r + 1], c = this.rangeClip(name, r);
+      if (d.idx[a] >= c.stop || !c.name.startsWith('SceneBot') || !(c.event >= 0) || d.idx[b - 1] - c.start < c.event) continue;
+      out.push({ a, b, clip: c, kind: (d.rangeKind ? d.rangeKind[r] : name === 'place') ? 'place' : 'pick', mirror: rows[c.row][1], first: d.idx[a] - c.start });
+    }
+    return out;
+  }
+  // The box Matching Database with the frames of riseOf(name): the other one of 'pick' and 'place'.
+  riseDb(name) { return name === 'pick' ? 'place' : name === 'place' ? 'pick' : name; }
+  // Per frame of a box Matching Database: the frame of riseDb(name) where the robot rises from the pose of that frame,
+  // or -1. The SceneBot place is the SceneBot pick backward, so a frame of one before its event has its joints again in
+  // the other after its event: the frame there with the nearest joints, of the same mirror when the database has it. A
+  // frame at or past the event has the event frame of the other. A walk that ends in a SceneBot clip (walkRanges) has
+  // the frames of that clip from where it starts in the walk. Made with the rows of the data, before any edit
+  // (pickmotion.js).
+  riseOf(name) {
+    this.riseOfs ??= {};
+    if (this.riseOfs[name]) return this.riseOfs[name];
+    const d = this.db[name], to = this.riseDb(name), out = new Int32Array(d.idx.length).fill(-1);
+    const W = this.width, J = this.L.joints[0], targets = this.db[to] ? this.sceneBotRanges(to) : [];
+    for (const s of this.sceneBotRanges(name)) {
+      const ends = targets.filter((x) => x.kind !== s.kind), t = ends.find((x) => x.mirror === s.mirror) ?? ends[0];
+      if (!t) continue;
+      const n = s.clip.stop - s.clip.start, m = t.clip.stop - t.clip.start, near = new Int32Array(n);  // (n,) frames of t's clip
+      for (let f = 0; f < n; f++) {
+        let best = t.clip.event, bestD = Infinity;
+        for (let k = t.clip.event; k < m && f < s.clip.event; k++) {
+          let e = 0;
+          for (let j = 0; j < NDOF && e < bestD; j++) e += (this.pose[(s.clip.start + f) * W + J + j] - this.pose[(t.clip.start + k) * W + J + j]) ** 2;
+          if (e < bestD) { bestD = e; best = k; }
+        }
+        near[f] = best;
+      }
+      // Not the last frame of the range, where the clip ends and a search is due at once.
+      const at = (f) => Math.max(t.a, Math.min(t.b - 2, t.a + near[f] - t.first));
+      for (let i = s.a; i < s.b; i++) out[i] = at(d.idx[i] - s.clip.start);
+      for (const w of this.walkRanges(name)) {
+        if (w.to.a !== s.a) continue;
+        for (let i = w.a; i < w.b; i++) { const f = d.idx[i] - w.start - w.bend; if (f >= 0 && f < n) out[i] = at(f); }
+      }
+    }
+    return (this.riseOfs[name] = out);
+  }
+  // Per frame of a box Matching Database: 1, the mask of a search that may jump to no frame.
+  everyFrame(name) {
+    this.everyFrameOf ??= {};
+    return (this.everyFrameOf[name] ??= new Uint8Array(this.db[name].idx.length).fill(1));
+  }
+  // Per frame of a box Matching Database: 1 from where its clip goes down for the grasp or the release. That is every
+  // frame of a SceneBot clip, the frame where the SceneBot clip starts in a walk that ends in one (walkRanges), and the
+  // last step in any other clip (fromLastStep).
+  fromBend(name) {
+    this.fromBendOf ??= {};
+    if (this.fromBendOf[name]) return this.fromBendOf[name];
+    const d = this.db[name], out = this.fromLastStep(name).slice();
+    for (let r = 0; r < d.ranges.length / 2; r++) {
+      const c = this.rangeClip(name, r);
+      if (d.idx[d.ranges[2 * r]] < c.stop && c.name.startsWith('SceneBot')) out.fill(1, d.ranges[2 * r], d.ranges[2 * r + 1]);
+    }
+    for (const w of this.walkRanges(name)) for (let i = w.a; i < w.b; i++) out[i] = d.idx[i] - w.start >= w.bend ? 1 : 0;
+    return (this.fromBendOf[name] = out);
+  }
+
   // entry > 0 searches only the first entry frames of the place ranges. mask: frames not to jump to.
   match(name, qn, gain, ignoreRangeEnd = 20, ignoreSurrounding = 20, entry = 0, mask = null, transitionCost = 0) {
     const d = this.db[name], n = d.nfeatures, X = d.X;
@@ -548,7 +615,7 @@ export class MMBackend extends Backend {
 // the first step after it. Per clip row: [{ kind, event, step, lift }] in frames of the clip. planted marks the
 // frames of the Animation Database from a last step to its first step after.
 const MIN_LIFT = 8, LATE_STEP = 30;
-export function lastSteps(cfg, pose) {
+function lastSteps(cfg, pose) {
   const W = cfg.pose_width, C = cfg.pose_layout.contacts[0];
   const planted = new Uint8Array(cfg.nframes);
   const clips = cfg.clips.rows.map(([, , start, stop, attach, release]) => {
@@ -577,6 +644,34 @@ export function lastSteps(cfg, pose) {
     return out;
   });
   return { clips, planted };
+}
+
+// A walk of the ApproachPick augmentation (approach_pick_augment.py of holosoma-jh) ends in the SceneBot pick or place
+// clip from that clip's first frame on, so its grasp or release is as long after that frame as in the SceneBot clip.
+// Per clip row: [{ kind, event, start }] in frames of the clip, start being the frame where the SceneBot clip of the
+// same mirror starts in it. Only a clip whose joints are the SceneBot clip's from there to the event is listed.
+const SAME_POSE = 0.02;
+function sceneBotStarts(cfg, pose) {
+  const { names, rows } = cfg.clips, W = cfg.pose_width, J = cfg.pose_layout.joints[0];
+  const sb = { pick: {}, place: {} };
+  for (const [n, mirror, start, , attach, release] of rows) {
+    if (names[n] === 'SceneBotPick') sb.pick[mirror] = { start, event: attach };
+    if (names[n] === 'SceneBotPlace') sb.place[mirror] = { start, event: release };
+  }
+  const same = (a, b) => {
+    for (let j = 0; j < NDOF; j++) if (Math.abs(pose[a * W + J + j] - pose[b * W + J + j]) > SAME_POSE) return false;
+    return true;
+  };
+  return rows.map(([, mirror, start, stop, attach, release]) => {
+    const out = [];
+    for (const [kind, e] of [['pick', attach], ['place', release]]) {
+      const s = sb[kind][mirror];
+      if (!s || !(e > s.event && e < stop - start)) continue;
+      const at = e - s.event;
+      if ([0, s.event >> 1, s.event].every((k) => same(start + at + k, s.start + k))) out.push({ kind, event: e, start: at });
+    }
+    return out;
+  });
 }
 
 const fetchOne = async (base, f) => { const r = await fetch(`${base}/${f}`); if (!r.ok) throw new Error(f); return r.arrayBuffer(); };
@@ -722,7 +817,7 @@ function buildLoco(cfg, backend, name) {
   const ahead = cfg.horizons[cfg.horizons.length - 1];
   // [frames, frame -> Animation Database row, (frame, j < n0) -> stored feature, frame -> the row after its clip]
   const parts = [];
-  // Carrying first, then empty-handed, the order of the 'emm' database before v2.11, so its sums stay the same.
+  // Carrying first, then empty-handed. The order fixes the float sums of the normalization.
   for (const held of [true, false]) {
     const extra = held ? (carry === 'emm' ? backend.emmCarry : null) : (empty === 'emm' ? backend.emm : null);
     if (extra) {
@@ -762,9 +857,6 @@ export async function loadLoco(name, cfg, backend, emmDir, carryDir) {
   if (!backend.locos[name]) buildLoco(cfg, backend, name);
 }
 
-// The EMM locomotion takes with the variant's carrying frames ('emm'), as before v2.11.
-export const loadEmmLoco = (dir, cfg, backend) => loadLoco('emm', cfg, backend, dir, null);
-
 // A Matching Database of raw features (len, n), normalized on its own frames as in normalize_groups of
 // lmm/database.py, with the weights of the variant's database c.
 function normalizedDb(raw, idx, ranges, c) {
@@ -793,9 +885,9 @@ function normalizedDb(raw, idx, ranges, c) {
   return { X, idx, ranges, rangeStop, nfeatures: n, offset, scale };
 }
 
-// A variant whose place clips do not walk in (holosoma-scenebot-place, sbplace) is put down from closer.
+// A variant whose place clips do not walk in (sbplace) is put down from closer.
 export const variantDefaults = (cfg) => ({ warp: cfg.warp ?? DEFAULTS.warp, leaveMoved: cfg.leave_moved_m !== undefined ? cfg.leave_moved_m : DEFAULTS.leaveMoved,
-  rise: cfg.rise ?? DEFAULTS.rise, transitionCost: cfg.transition_cost ?? DEFAULTS.transitionCost,
+  rise: cfg.rise ?? DEFAULTS.rise,
   placeEngageRadius: cfg.place_engage_radius ?? DEFAULTS.forceEngageRadius });
 
 export class Controller {
@@ -821,9 +913,8 @@ export class Controller {
     this.setBackend(backend, true);
   }
 
-  // Exact search only. The stored features carry the database weights, so a new weight w scales the squared
-  // error of its features by (w / w0)². The Projector learned the nearest neighbour under w0, so the learned
-  // backend ignores the gains.
+  // The stored features carry the database weights, so a new weight w scales the squared error of its features by
+  // (w / w0)².
   setWeights(kind, weights) {
     this.p.weights[kind] = weights.slice();
     if (kind === 'arrive') {
@@ -851,19 +942,19 @@ export class Controller {
     return gain;
   }
 
-  // boxEnter, boxLeave or sideMargin of exact search, for a pick or a place.
+  // boxEnter, boxLeave or sideMargin, for a pick or a place.
   setThreshold(name, act, value) {
-    this.p[name] = { ...this.p[name], [act]: { ...this.p[name][act], mm: value } };
+    this.p[name] = { ...this.p[name], [act]: value };
   }
   thresholds(act) {
-    const p = this.p, k = this.backend.kind;
-    return { enter: p.boxEnter[act][k], leave: p.boxLeave[act][k], margin: p.sideMargin[act][k] };
+    const p = this.p;
+    return { enter: p.boxEnter[act], leave: p.boxLeave[act], margin: p.sideMargin[act] };
   }
 
   setBackend(backend, reset = false) {
     const keep = this.pose ? { pos: this.pose.rootPos.slice(), rot: this.pose.rootRot.slice(), holding: this.holding } : null;
     this.backend = backend;
-    this.stances = backend.kind === 'mm' ? backend.sceneBotStances() : null;
+    this.stances = backend.sceneBotStances();
     if (reset || !keep) this.reset([0, 0, 0], 0, false);
     else this.reset(keep.pos, q.yaw(keep.rot), keep.holding);
   }
@@ -872,13 +963,13 @@ export class Controller {
     const rot = q.fromYaw(yaw);
     this.mode = 'loco';
     this.boxTag = null;
+    this.risesFrom = null;
     this.holding = holding;
     this.sim = { pos: pos.slice(), vel: [0, 0, 0], acc: [0, 0, 0], rot: rot.slice(), ang: [0, 0, 0] };
     this.desiredRot = rot.slice();
     this.desiredVel = [0, 0, 0];
     this.searchTimer = 0;
     this.forceSearch = true;
-    this.holdSwitchTime = 0;
     this.commit = null;
     this.target = null;
     this.navSide = null;
@@ -896,6 +987,8 @@ export class Controller {
     this.leaveBox = false;
     this.missed = false;
     this.walkIn = false;
+    this.riseWalkIn = false;
+    this.risesFrom = null;
     this.arriving = false;
     this.semantics = 'none';
     // For the page only (trace, status): the controller's time, the cause noted during an update for a change of state,
@@ -1292,9 +1385,9 @@ export class Controller {
     qy[NPOSE_FEATURES + 2] = td[0]; qy[NPOSE_FEATURES + 3] = td[1];
     qy[NPOSE_FEATURES + 4] = tag === 'pick' ? 1 : 0; qy[NPOSE_FEATURES + 5] = tag === 'place' ? 1 : 0;
     qy[NPOSE_FEATURES + 6] = this.holding ? 0 : 1; qy[NPOSE_FEATURES + 7] = this.holding ? 1 : 0;
-    // While bent for the grasp or the release, the hold state comes from the playing animation. The Stepper
-    // switches it a few frames before the Decompressor's held output fires the event, and a query with the
-    // scene's hold state would project the robot back to a frame before the event.
+    // While bent for the grasp or the release, the hold state comes from the playing frame. Its features can switch
+    // a few frames before the pose's held value fires the event, and a query with the scene's hold state would then
+    // match a frame before the event.
     const hold = this.animHold();
     if (this.bentForEvent() && hold) { qy[NPOSE_FEATURES + 6] = hold[0]; qy[NPOSE_FEATURES + 7] = hold[1]; }
     return qy;
@@ -1337,8 +1430,8 @@ export class Controller {
     return { pos: [w.pos[0], w.pos[1], at[2]], dir: [w.dir[0], w.dir[1], 0] };
   }
 
-  // The held box in world coordinates, from the Decompressor's box outputs, boxAhead farther along its X axis, which
-  // points away from the carrier.
+  // The held box in world coordinates, from the box pose of the playing frames, boxAhead farther along its X axis,
+  // which points away from the carrier.
   heldBoxWorld() {
     const P = this.pose, ahead = q.mulVec(P.boxRot, [this.p.boxAhead, 0, 0]);
     return { pos: v3.add(P.rootPos, q.mulVec(P.rootRot, v3.add(P.boxPos, ahead))), rot: q.norm(q.mul(P.rootRot, P.boxRot)) };
@@ -1346,20 +1439,20 @@ export class Controller {
 
   // The pelvis height the data has at the playing frame: an edited pick or place keeps the data's moments for bent and
   // upright.
-  hipHeight() { return this.pose.hipPos[2] - (this.backend.editLift ? this.backend.editLift() : 0); }
+  hipHeight() { return this.pose.hipPos[2] - this.backend.editLift(); }
   isLow() { return this.hipHeight() < this.p.zLow; }
-  // The clip of the box controller is at or past its last step (fromLastStep). The learned backend has no steps.
+  // The clip of the box controller is at or past its last step (fromLastStep).
   pastLastStep() {
     const b = this.backend;
-    return b.kind !== 'mm' || b.active === 'loco' || b.fromLastStep(b.active)[b.frame] === 1;
+    return b.active === 'loco' || b.fromLastStep(b.active)[b.frame] === 1;
   }
   afterLastStep() {
     const b = this.backend;
-    return this.mode === 'box' && b.kind === 'mm' && b.planted(b.active, b.frame);
+    return this.mode === 'box' && b.planted(b.active, b.frame);
   }
   clipSpeed(name, frame = this.backend.frame) {
     const b = this.backend;
-    if (b.kind !== 'mm' || name === 'loco') return 1;
+    if (name === 'loco') return 1;
     return this.p.pickPlaceSlow === 'step' && !b.planted(name, frame) ? 1 : this.p.pickPlaceSpeed;
   }
   isUpright() { return this.hipHeight() > this.p.zUpright; }
@@ -1368,7 +1461,7 @@ export class Controller {
   // rise 'finish': the playing box clip is at or past its grasp or release.
   rising() {
     const b = this.backend;
-    return this.p.rise === 'finish' && this.mode === 'box' && b.kind === 'mm' && b.active !== 'loco' && b.afterEvent(b.active)[b.frame] === 1;
+    return this.p.rise === 'finish' && this.mode === 'box' && b.active !== 'loco' && b.afterEvent(b.active)[b.frame] === 1;
   }
 
   // State of the box controller: pre (going for the event) or post (rising after it).
@@ -1376,6 +1469,67 @@ export class Controller {
     if (this.mode !== 'box') return null;
     if (this.boxTag === 'pick') return this.holding ? 'pick-post' : 'pick-pre';
     return this.holding ? 'place-pre' : 'place-post';
+  }
+  // The state of the box controller for the page: boxPhase, with the part before the event split in two. 'pick-step'
+  // and 'place-step' are the steps to the target, and 'pick-pre' and 'place-pre' start where the clip goes down for
+  // the event (MMBackend.fromBend).
+  boxState() {
+    const ph = this.boxPhase(), b = this.backend;
+    if ((ph !== 'pick-pre' && ph !== 'place-pre') || b.active === 'loco' || b.fromBend(b.active)[b.frame] === 1) return ph;
+    return ph === 'pick-pre' ? 'pick-step' : 'place-step';
+  }
+  // walkOn belongs to the 'walk' rule of boxEntry.
+  walkOnFrom() { return this.p.boxEntry === 'walk' ? this.p.walkOn : 'off'; }
+  // A walk that ends in a SceneBot clip plays on in that clip, at the frame the two share (MMBackend.handOff). The
+  // two have the same poses there, so the transition blends nothing unless the pick motion is edited.
+  handOver() {
+    const b = this.backend, ph = this.boxPhase();
+    if ((ph !== 'pick-pre' && ph !== 'place-pre') || this.walkOnFrom() === 'off' || b.active === 'loco') return;
+    const frame = b.handOff(b.active)[b.frame];
+    if (frame < 0) return;
+    const m = { name: b.active, frame };
+    this.transition(b.matchPose(m, this.curr.rootPos, this.curr.rootRot, this.dt, this.clipSpeed(m.name, m.frame)));
+    b.commit(m);
+  }
+
+  // bendOut belongs to the 'walk' rule of boxEntry.
+  bendOutBy() { return this.p.boxEntry === 'walk' ? this.p.bendOut : 'leave'; }
+  // Where the robot rises when the bend of now is cancelled: { name, frame } of MMBackend.riseOf, or null when the
+  // clip does not go down for a grasp or a release, has no such frame, or bendOut is 'leave'.
+  riseFrame() {
+    const b = this.backend, ph = this.boxPhase();
+    if ((ph !== 'pick-pre' && ph !== 'place-pre') || this.bendOutBy() !== 'cancel' || b.active === 'loco') return null;
+    const frame = b.riseOf(b.active)[b.frame];
+    return frame < 0 ? null : { name: b.riseDb(b.active), frame };
+  }
+  // A SceneBot pick or place that goes down plays with no jump of the search, and so does a walk that plays on in one.
+  bendPlays() {
+    const b = this.backend;
+    return !!this.riseFrame() && !b.endOfAnim() && (b.sceneBotPre(b.active)[b.frame] === 1 || this.walkOnFrom() !== 'off');
+  }
+  // The bend is cancelled: the tag flips, and the robot rises at `at` (riseFrame). No search in this update, so a
+  // robot that is upright already is in the rising state first. walkIn: back in Locomotion it walks in again, as after
+  // leaveMoved.
+  riseFrom(at, why, walkIn = false) {
+    const b = this.backend;
+    this.why = why;
+    this.risesFrom = this.boxTag;
+    this.boxTag = this.boxTag === 'pick' ? 'place' : 'pick';
+    this.transition(b.matchPose(at, this.curr.rootPos, this.curr.rootRot, this.dt, this.clipSpeed(at.name, at.frame)));
+    b.commit(at);
+    this.forceSearch = this.leaveBox = this.missed = false;
+    this.searchTimer = this.p.searchTime / this.clipSpeed(b.active);
+    this.riseWalkIn = walkIn;
+  }
+
+  // The bend ('pick' or 'place') whose height and manual edit both SceneBot clips are solved for (Sim.syncPickMotion):
+  // the bend that goes down, and the one that ended without its grasp or release while the robot rises from it with the
+  // other clip. So a cancelled bend rises at a frame with the same joints, also for a box on a table or a put down
+  // with palms of its own.
+  bendOf() {
+    if (this.bendOutBy() !== 'cancel') return null;
+    const ph = this.boxPhase(), from = this.risesFrom;
+    return ph === 'pick-pre' ? 'pick' : ph === 'place-pre' ? 'place' : ph === (from === 'pick' ? 'place-post' : 'pick-post') ? from : null;
   }
 
   // The physical mode's pick and place check: the robot is not where the reference bends down, so the pick or
@@ -1395,7 +1549,7 @@ export class Controller {
     const dt = this.dt, p = this.p, b = this.backend;
     // The box left the hands while the robot rises with it (the physical grip lost, or the box removed): the tag flips
     // to place, so the robot rises with empty hands, as after a pick cancelled while bent.
-    if (this.holding && !input.holding && this.mode === 'box' && this.boxTag === 'pick') this.boxTag = 'place';
+    if (this.holding && !input.holding && this.mode === 'box' && this.boxTag === 'pick') { this.boxTag = 'place'; this.risesFrom = 'pick'; }
     this.holding = input.holding;
     this.events = { grasp: false, release: false };
     const speedScale = input.slow ? p.slowScale : 1;
@@ -1457,39 +1611,44 @@ export class Controller {
     if (this.leaveBox || this.missed) this.forceSearch = true;
     if (this.walkIn && (!activity || (this.mode === 'box' && (!pre || this.afterLastStep())))) this.walkIn = false;
 
-    // Abort: the target moved, vanished or the user steers while the robot is bent for the event.
+    // Abort: the target moved, vanished or the user steers while the robot is bent for the event. With a frame to
+    // rise at (riseFrame), from where the clip goes down, and also by what else ends the bend without its event.
+    const at = this.riseFrame();
     let abort = false;
-    if ((phase === 'pick-pre' || phase === 'place-pre') && !rising && !this.isUpright() && (this.commit || this.target)) {
+    if (pre && (at || (!rising && !this.isUpright())) && (this.commit || this.target)) {
       const t = this.target;
       const c = this.commit || { boxId: phase === 'pick-pre' && input.pickBox ? input.pickBox.id : null,
                                  side: t.side, pos: t.pos.slice(), yaw: t.yaw, dir: t.dir.slice() };
       const want = phase === 'pick-pre' ? 'pick' : 'place';
       const moved = () => Math.hypot(sides[c.side].pos[0] - c.pos[0], sides[c.side].pos[1] - c.pos[1]);
       const turned = () => Math.abs(wrapAngle(sides[c.side].yaw - c.yaw));
+      const bent = !this.isUpright();
       const cause = this.calledOff ? 'check' : activity !== want ? 'cleared' : input.stick ? 'stick'
         : input.pickBox && phase === 'pick-pre' && c.boxId !== input.pickBox.id ? 'other'
-          : moved() > p.movedTolerance ? 'moved' : turned() > p.movedAngle ? 'turned' : null;
+          : at && b.afterEvent(b.active)[b.frame] === 1 ? 'missed'
+            : bent && moved() > p.movedTolerance ? 'moved' : bent && turned() > p.movedAngle ? 'turned' : at && this.leaveBox ? 'far' : null;
       abort = cause !== null;
       if (abort && !this.commit) this.commit = c;
       if (abort) {
         this.why = { by: `cancel-${cause}`, ...(cause === 'moved' ? { moved: moved(), limit: p.movedTolerance } : {}),
-          ...(cause === 'turned' ? { turned: turned(), limit: p.movedAngle } : {}) };
+          ...(cause === 'turned' ? { turned: turned(), limit: p.movedAngle } : {}),
+          ...(cause === 'far' ? { moved: Math.hypot(goal.pos[0] - this.engaged.pos[0], goal.pos[1] - this.engaged.pos[1]), limit: p.leaveMoved } : {}) };
+      }
+      if (abort && at) this.riseFrom(at, this.why, cause === 'missed' || cause === 'far');
+      else if (abort) {
+        this.boxTag = this.boxTag === 'pick' ? 'place' : 'pick';
+        this.forceSearch = true;
       }
     }
     this.calledOff = false;
-    if (abort) {
-      this.boxTag = this.boxTag === 'pick' ? 'place' : 'pick';
-      this.forceSearch = true;
-    }
 
-    const hold = this.animHold();
-    this.holdSwitchTime = this.bentForEvent() && hold && hold[1] > 0.1 && hold[1] < 0.9 ? this.holdSwitchTime + dt : 0;
     const finishing = rising && !this.risen() && !b.endOfAnim();
     this.finishing = finishing;
-    const searchDue = !finishing && (this.forceSearch || this.searchTimer <= 0 || (b.kind === 'mm' && b.endOfAnim()));
+    this.handOver();
+    const searchDue = !finishing && (this.forceSearch || this.searchTimer <= 0 || b.endOfAnim());
     if (searchDue) {
       this.searchAt = this.clock;
-      this.search(input, sides, activity, goal, this.forceSearch, obstacles);
+      this.search(input, sides, activity, goal, obstacles);
       this.searchTimer = p.searchTime / this.clipSpeed(b.active);
       this.forceSearch = false;
     }
@@ -1506,8 +1665,8 @@ export class Controller {
     this.curr = next;
     this.inertializeUpdate();
 
-    // Grasp and release come from the Decompressor's held output, but only where its box pose output
-    // agrees: over the real box for a grasp, and down at floor level for a release.
+    // Grasp and release come from the pose's held value, but only where its box pose agrees: over the real box for a
+    // grasp, and down at floor level for a release.
     const held = this.curr.held;
     const hb = this.heldBoxWorld();
     if (ph === 'pick-pre' && held >= p.graspOn && input.pickBox &&
@@ -1537,14 +1696,14 @@ export class Controller {
       this.sim.ang = [0, 0, 0];
       this.desiredRot = this.pose.rootRot.slice();
     }
-    this.semantics = this.mode !== 'loco' ? this.boxPhase() : this.arriving ? 'arrive' : navigating ? 'navigate' : 'locomotion';
+    this.semantics = this.mode !== 'loco' ? this.boxState() : this.arriving ? 'arrive' : navigating ? 'navigate' : 'locomotion';
     this.clock += dt;
     this.trace(!!goal);
   }
 
   // The page's record of the state machine: each change of state with its cause, which is noted where the decision was
   // made (why), or else told from the two states. A state is the semantics and what plays it: 'navigate:loco',
-  // 'navigate:carry', 'pick-pre:pick' (stateOf of states.js).
+  // 'navigate:carry', 'pick-step:pick', 'pick-pre:pick' (stateOf of states.js).
   trace(hasGoal) {
     const f = this.fsm, s = this.semantics;
     const key = s.startsWith('pick') ? `${s}:pick` : s.startsWith('place') ? `${s}:place` : `${s}:${this.holding ? 'carry' : 'loco'}`;
@@ -1561,8 +1720,13 @@ export class Controller {
     const [fs, fk] = from.split(':'), [ts, tk] = to.split(':');
     const walks = (x) => x === 'locomotion' || x === 'navigate' || x === 'arrive';
     const togo = this.nav ? Math.hypot(this.nav.pos[0] - this.sim.pos[0], this.nav.pos[1] - this.sim.pos[1]) : null;
-    if (fs === 'pick-pre' && ts === 'pick-post') return { by: 'grasp' };
-    if (fs === 'place-pre' && ts === 'place-post') {
+    const pre = (x) => x.endsWith('-pre') || x.endsWith('-step');
+    if (pre(fs) && pre(ts) && fk === tk) {
+      const b = this.backend, w = b.active !== 'loco' ? b.walkRanges(b.active) : [];
+      return ts.endsWith('-pre') ? { by: 'bend', sceneBot: w.some((x) => b.frame >= x.a && b.frame < x.b) } : { by: 'jump-back' };
+    }
+    if (fk === 'pick' && pre(fs) && ts === 'pick-post') return { by: 'grasp' };
+    if (fk === 'place' && pre(fs) && ts === 'place-post') {
       return this.lastEvent && this.lastEvent.kind === 'release' && this.clock - this.lastEvent.t < 0.5 ? { by: 'release' } : { by: 'drop', again: hasGoal };
     }
     if ((fk === 'carry' && tk === 'loco') || (fs === 'pick-post' && ts === 'place-post')) return { by: 'drop', again: hasGoal };
@@ -1632,11 +1796,11 @@ export class Controller {
     });
   }
 
-  // Exact search only: the Locomotion Matching Database, 'nsm', 'emm', 'emmcarry' or 'emmboth' (loadLoco). Its frame index means nothing
-  // in the other database, so a robot in Locomotion is matched again at once.
+  // The Locomotion Matching Database, 'nsm', 'emm', 'emmcarry' or 'emmboth' (loadLoco). Its frame index means
+  // nothing in the other database, so a robot in Locomotion is matched again at once.
   setLoco(name) {
     const b = this.backend;
-    if (!b.locos?.[name] || b.loco === name) return;
+    if (!b.locos[name] || b.loco === name) return;
     const qy = b.active === 'loco' ? this.locoQuery(this.holding) : null;
     b.useLoco(name);
     this.p.loco = name;
@@ -1646,20 +1810,23 @@ export class Controller {
     b.commit(m);
   }
 
-  // The learned backend has one box Projector, so only exact search can use different box databases.
+  // The Matching Database a query searches: the pick or the place database of its own with boxDb 'different'.
   dbOf(kind) {
-    return isBoxQuery(kind) && this.p.boxDb === 'different' && this.backend.db?.[kind] ? kind : QUERY_DB[kind];
+    return isBoxQuery(kind) && this.p.boxDb === 'different' && this.backend.db[kind] ? kind : QUERY_DB[kind];
   }
 
   match(kind, query, entry = 0) {
     const b = this.backend, name = this.dbOf(kind), qn = b.normalize(name, query), gain = this.p.gains[kind];
-    const sbPre = isBoxQuery(kind) && this.cfg.scenebot_entry_frames && b.sceneBotPre && b.active === name && b.sceneBotPre(name)[b.frame] === 1;
+    const sbPre = isBoxQuery(kind) && this.cfg.scenebot_entry_frames && b.active === name && b.sceneBotPre(name)[b.frame] === 1;
+    const on = this.walkOnFrom();
+    const walkOn = isBoxQuery(kind) && on !== 'off' && b.active === name && b.walkOn(name, on)[b.frame] === 1;
+    const plays = isBoxQuery(kind) && b.active === name && this.bendPlays();
     const mask = isBoxQuery(kind) && this.p.boxEntry === 'walk' && b.noEntry
-      ? (sbPre ? b.beforeEventMask(name) : this.walkIn ? b.walkInMask(name) : b.noEntry(name)) : null;
+      ? (plays ? b.everyFrame(name) : sbPre || walkOn ? b.beforeEventMask(name) : this.walkIn ? b.walkInMask(name) : b.noEntry(name)) : null;
     return { ...b.match(name, qn, gain, undefined, undefined, entry, mask, this.p.transitionCost), kind, qn, gain };
   }
 
-  search(input, sides, activity, goal, forced, obstacles) {
+  search(input, sides, activity, goal, obstacles) {
     const b = this.backend, p = this.p, P = this.pose;
     const { enter, leave, margin } = this.thresholds(activity || this.boxTag || 'pick');
     this.lastCosts = [];
@@ -1668,9 +1835,10 @@ export class Controller {
     const phase = this.boxPhase();
 
     if (phase === 'pick-post' || phase === 'place-post') {
-      // Rising after the event (or after an abort): the target stays where the event happened.
+      // Rising after the event (or after an abort): the target stays where the event happened. A clip at its end has
+      // nothing left to play, so the rise ends there too. An edit of the pick motion can keep the torso tilted to the end.
       const c = this.commit || this.target;
-      if (c && !this.risen()) {
+      if (c && !this.risen() && !b.endOfAnim()) {
         boxMatch = this.match(this.boxTag, this.boxQuery(c.pos, c.dir, this.boxTag));
       }
     } else if (activity && sides.length) {
@@ -1713,6 +1881,11 @@ export class Controller {
       if (phase === 'pick-post' || phase === 'place-post') {
         useBox = !!boxMatch;
         if (!useBox) this.why = { by: 'upright', hip: this.hipHeight(), tilt: this.torsoTilt() };
+        if (!useBox && this.riseWalkIn) {
+          this.reapproach = 0;
+          this.walkIn = true;
+        }
+        if (!useBox) this.riseWalkIn = false;
       } else if (!activity || input.stick) {
         useBox = !this.isUpright() && !!boxMatch;
         if (!useBox) this.why = { by: !activity ? 'leave-cleared' : 'leave-stick' };
@@ -1720,6 +1893,8 @@ export class Controller {
         // Near the target the robot stays in the box controller even at a high cost, as it entered it.
         const dist = Math.hypot(goal.pos[0] - P.rootPos[0], goal.pos[1] - P.rootPos[1]);
         useBox = !!boxMatch && !(this.isUpright() && this.boxCost > leave && dist > engage + 0.3);
+        const at = useBox ? null : this.riseFrame();
+        if (at) return this.riseFrom(at, boxMatch ? { by: 'cancel-cost', cost: this.boxCost, leave, dist, radius: engage + 0.3 } : { by: 'cancel-noside' });
         if (!useBox) this.why = boxMatch ? { by: 'leave-cost', cost: this.boxCost, leave, dist, radius: engage + 0.3 } : { by: 'leave-nomatch' };
       }
     } else if (boxMatch && !input.stick) {
@@ -1740,7 +1915,7 @@ export class Controller {
       m = boxMatch;
       this.mode = 'box';
     } else {
-      if (this.mode === 'box') { this.commit = null; this.boxTag = null; }
+      if (this.mode === 'box') { this.commit = null; this.boxTag = null; this.risesFrom = null; }
       this.mode = 'loco';
       if (!activity) this.target = null;
       const kind = this.arriving ? 'arrive' : 'loco';
@@ -1748,19 +1923,7 @@ export class Controller {
       this.lastMatch[kind] = m;
       this.matchAt[kind] = this.clock;
     }
-    if (b.kind === 'mm' && m.same) return;
-    // The transition cost of projector_evaluate in lmm.h. Near the box the query hardly changes, and the
-    // Projector maps a still robot back to the first still frame before the pick or the rise every 0.1 s,
-    // so the robot would never get going. A projection close to the current features is skipped unless
-    // the search was forced, for example because the box or the marker moved.
-    if (b.kind === 'lmm' && useBox && !forced && b.active !== 'loco') {
-      let d = 0;
-      for (let i = 0; i < m.features.length; i++) d += (m.features[i] - b.features[i]) ** 2;
-      if (Math.sqrt(d) < p.boxTransitionCost) return;
-      // The Projector only knows one-hot hold states, so while the Stepper switches the hold state during the
-      // grasp or the release, any projection sends the robot back to a frame before the event.
-      if (this.holdSwitchTime > 0 && this.holdSwitchTime < p.holdSwitchMax) return;
-    }
+    if (m.same) return;
     const dst = b.matchPose(m, this.curr.rootPos, this.curr.rootRot, this.dt, this.clipSpeed(m.name, m.frame));
     this.transition(dst);
     b.commit(m);
@@ -1814,10 +1977,12 @@ export class Controller {
     this.rootAdjust([newPos[0], newPos[1], 0], q.norm(q.mul(rq, P.rootRot)));
   }
 
+  // unblended: the pelvis and the joints of the playing frame without the offset of a transition, at the same root.
   renderState() {
-    const P = this.pose;
+    const P = this.pose, C = this.curr;
     const hipWorld = v3.add(P.rootPos, q.mulVec(P.rootRot, P.hipPos));
     const hipRotWorld = q.mul(P.rootRot, P.hipRot);
-    return { hipPos: hipWorld, hipRot: hipRotWorld, joints: P.joints, root: P.rootPos, rootRot: P.rootRot, contacts: P.contacts };
+    return { hipPos: hipWorld, hipRot: hipRotWorld, joints: P.joints, root: P.rootPos, rootRot: P.rootRot, contacts: P.contacts,
+      unblended: { hipPos: v3.add(P.rootPos, q.mulVec(P.rootRot, C.hipPos)), hipRot: q.mul(P.rootRot, C.hipRot), joints: C.joints } };
   }
 }
