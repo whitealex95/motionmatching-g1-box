@@ -127,7 +127,8 @@ snap) and how often each rule skipped one (`seed_rules` in the driver's state).
 | in POSE, the heading sent leaves out the seeds' turns | `--strip-seed-turns off`: the robot turns with each seed | on |
 
 The squeezes turn the shoulder roll and wrist yaw targets inward through the node's `arm_tau` (q_target += tau / kp),
-so `--shoulder-kp` and `--wrist-kp` must be the node's kps: 40 and 20 on the robot (`--debug-arm-pd-gains`). Not
+so `--shoulder-kp` and `--wrist-kp` must be the node's kps: the defaults are the node's own, in the sim and on the robot,
+and 40 and 20 go with the lab's `--debug-arm-pd-gains` on the node (the deploy repo's README_REAL.md, "Run SONIC"). Not
 ported: the tracker choice (the node runs SONIC), the other anchoring modes, the pick and place check, the box mass
 and the number of sides.
 
