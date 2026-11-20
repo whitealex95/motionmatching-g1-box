@@ -156,6 +156,22 @@ export function queryWeights(cfg, kind) {
   if (kind !== 'arrive') return c.weights.map((w, g) => (g === vel ? 0 : w));
   return [...ARRIVE_GROUPS.flatMap((g) => Array(3).fill(c.weights[c.groups.indexOf(g)])), ...(vel >= 0 ? [TRAJ_VEL.arrive] : [])];
 }
+// The groups of the box queries that can take one weight for x and one for y, in the robot's root frame (x ahead, y
+// to the left). A pick or place weight list is then longer by one for each of them: [.., x, y, ..] in place of the
+// one weight of the group. The features of a group are normalized together, so equal x and y weights are the one weight.
+export const AXIS_GROUPS = ['box_pos', 'box_dir'];
+const axisGroupCount = (cfg, kind) => (isBoxQuery(kind) ? cfg.controllers[QUERY_DB[kind]].groups.filter((g) => AXIS_GROUPS.includes(g)).length : 0);
+export const hasAxisWeights = (cfg, kind, w) => axisGroupCount(cfg, kind) > 0 && w.length === cfg.controllers[QUERY_DB[kind]].groups.length + axisGroupCount(cfg, kind);
+export function axisWeights(cfg, kind, w) {
+  if (hasAxisWeights(cfg, kind, w)) return w.slice();
+  return cfg.controllers[QUERY_DB[kind]].groups.flatMap((g, i) => (AXIS_GROUPS.includes(g) ? [w[i], w[i]] : [w[i]]));
+}
+// Back to one weight for each group: the mean of its x and y weights.
+export function groupWeights(cfg, kind, w) {
+  if (!hasAxisWeights(cfg, kind, w)) return w.slice();
+  let k = 0;
+  return cfg.controllers[QUERY_DB[kind]].groups.map((g) => (AXIS_GROUPS.includes(g) ? (w[k++] + w[k++]) / 2 : w[k++]));
+}
 // Weights given without the trajectory velocity (older links) get its default.
 export function fillWeights(cfg, kind, w) {
   const def = queryWeights(cfg, kind);
@@ -926,8 +942,13 @@ export class Controller {
     }
     const c = this.cfg.controllers[QUERY_DB[kind]];
     const gain = new Float64Array(c.nfeatures);  // (nfeatures,)
-    let i = 0;
-    c.group_sizes.forEach((n, g) => { gain.fill((weights[g] / c.weights[g]) ** 2, i, i + n); i += n; });
+    const axes = hasAxisWeights(this.cfg, kind, weights);
+    let i = 0, k = 0;
+    c.group_sizes.forEach((n, g) => {
+      if (axes && AXIS_GROUPS.includes(c.groups[g])) for (let a = 0; a < n; a++) gain[i + a] = (weights[k++] / c.weights[g]) ** 2;
+      else gain.fill((weights[k++] / c.weights[g]) ** 2, i, i + n);
+      i += n;
+    });
     this.p.gains[kind] = gain;
     if (kind === 'loco' && this.p.weights.arrive) this.p.gains.arrive = this.arriveGains();
   }

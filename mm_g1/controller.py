@@ -69,6 +69,42 @@ def fill_weights(cfg, kind, w):
     return [*w, d[-1]] if len(w) == len(d) - 1 and not is_box_query(kind) else list(w)
 
 
+# The groups of the box queries that can take one weight for x and one for y, in the robot's root frame (x ahead, y to
+# the left). A pick or place weight list is then longer by one for each of them: [.., x, y, ..] in place of the one
+# weight of the group. The features of a group are normalized together, so equal x and y weights are the one weight.
+AXIS_GROUPS = ('box_pos', 'box_dir')
+
+
+def axis_group_count(cfg, kind):
+    return sum(g in AXIS_GROUPS for g in cfg['controllers'][QUERY_DB[kind]]['groups']) if is_box_query(kind) else 0
+
+
+def has_axis_weights(cfg, kind, w):
+    n = axis_group_count(cfg, kind)
+    return n > 0 and len(w) == len(cfg['controllers'][QUERY_DB[kind]]['groups']) + n
+
+
+def axis_weights(cfg, kind, w):
+    if has_axis_weights(cfg, kind, w):
+        return list(w)
+    return [x for g, x in zip(cfg['controllers'][QUERY_DB[kind]]['groups'], w) for _ in range(2 if g in AXIS_GROUPS else 1)]
+
+
+def group_weights(cfg, kind, w):
+    """Back to one weight for each group: the mean of its x and y weights."""
+    if not has_axis_weights(cfg, kind, w):
+        return list(w)
+    out, k = [], 0
+    for g in cfg['controllers'][QUERY_DB[kind]]['groups']:
+        if g in AXIS_GROUPS:
+            out.append((w[k] + w[k + 1]) / 2)
+            k += 2
+        else:
+            out.append(w[k])
+            k += 1
+    return out
+
+
 def turned(d, a):
     return [math.cos(a) * d[0] - math.sin(a) * d[1], math.sin(a) * d[0] + math.cos(a) * d[1]]
 
@@ -153,9 +189,16 @@ class Controller:
             return
         c = self.cfg['controllers'][QUERY_DB[kind]]
         gain = np.zeros(c['nfeatures'])  # (nfeatures,)
-        i = 0
+        axes = has_axis_weights(self.cfg, kind, weights)
+        i = k = 0
         for g, n in enumerate(c['group_sizes']):
-            gain[i:i + n] = (weights[g] / c['weights'][g]) ** 2
+            if axes and c['groups'][g] in AXIS_GROUPS:
+                for a in range(n):
+                    gain[i + a] = (weights[k] / c['weights'][g]) ** 2
+                    k += 1
+            else:
+                gain[i:i + n] = (weights[k] / c['weights'][g]) ** 2
+                k += 1
             i += n
         self.p['gains'][kind] = gain
         if kind == 'loco' and 'arrive' in self.p['weights']:

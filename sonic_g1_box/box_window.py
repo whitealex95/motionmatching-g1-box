@@ -594,7 +594,7 @@ def run_window(br, args):
                      + (f", {br.skips['jump']} jumps" if br.skips['jump'] else ''))
             robot = 'LIVE' if live else ('no g1_debug' if br.robot.get() is None else 'NOT LOCALIZED')
             rows = [('mode', mode), ('task', task), ('box', boxl), ('reports', objl), ('target', targ),
-                    ('grip check', grip), ('box moves', f'{br.syncs} taken from the reports'), ('palm force', palm),
+                    ('grip check', grip), ('box moves', f'{br.syncs} taken from the reports'), (f'{br.grasp.at} force', palm),
                     ('robot (SLAM)', locl), ('ref vs robot', sync), ('robot state', robot), ('link', br.link.endpoint),
                     ('trajectory', br.route_follow.text(self.auto))]
             return fit_overlay(rows)

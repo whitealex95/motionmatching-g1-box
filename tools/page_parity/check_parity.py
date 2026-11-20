@@ -11,7 +11,9 @@ A free run follows the page bit for bit only until V8's sin, exp or atan2 rounds
 itself, with a lateral offset of zero up to rounding. --forced loads the page's whole state before every frame,
 steps once and compares with the page's state after it, so every frame is checked from the same state.
 
---foot-land M: the foot lock's land height of a trace made with js_trace.mjs --foot-land M."""
+--foot-land M: the foot lock's land height of a trace made with js_trace.mjs --foot-land M.
+--w-pick W, --w-place W: the weights of the Pick up and the Put down query of a trace made with js_trace.mjs's same
+options, for the check of a weight for x and one for y of the box position and direction (9 values)."""
 import argparse
 import copy
 import json
@@ -117,10 +119,18 @@ def py_state(sim):
     return flat('', S, {})
 
 
-def forced(states_path, tol, foot_land=None):
+def setup(sim, a):
+    if a.foot_land is not None:
+        sim.foot_lock.land_height = a.foot_land
+    for kind in ('pick', 'place'):
+        w = getattr(a, f'w_{kind}')
+        if w:
+            sim.controller.set_weights(kind, [float(x) for x in w.split(',')])
+
+
+def forced(states_path, tol, a):
     sim = Sim.build(loco='emmboth')
-    if foot_land is not None:
-        sim.foot_lock.land_height = foot_land
+    setup(sim, a)
     sim.box_size = [sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][2]]
     sim.start_scripted()
     with open(states_path) as f:
@@ -198,16 +208,17 @@ def main():
     ap.add_argument('--forced', metavar='STATES', help="js_trace.mjs --states output: step from the page's state each frame")
     ap.add_argument('--cases', action='store_true', help="the trace is js_match_cases.mjs's output: compare Controller.match")
     ap.add_argument('--foot-land', type=float, default=None, help="m: the foot lock's land height the trace was made with")
+    ap.add_argument('--w-pick', help='the Pick up weights the trace was made with, comma separated')
+    ap.add_argument('--w-place', help='the Put down weights the trace was made with, comma separated')
     a = ap.parse_args()
     if a.cases:
         return cases(a.trace, 1e-9)
     if a.forced:
-        return forced(a.forced, 1e-9, a.foot_land)
+        return forced(a.forced, 1e-9, a)
     js = [json.loads(l) for l in open(a.trace)]
     t0 = time.time()
     sim = Sim.build(loco='emmboth')
-    if a.foot_land is not None:
-        sim.foot_lock.land_height = a.foot_land
+    setup(sim, a)
     sim.box_size = [sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][1], sim.cfg['data_box_size'][2]]
     print(f'loaded in {time.time() - t0:.1f} s')
     sim.start_scripted()

@@ -2,7 +2,7 @@
 pose) and live.sam3box's boxes (the map server's objects), on the real G1 or the deploy repo's sim.
 
 It runs the way of lmm-g1-box's page (variant holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60, Play tab,
-physical mode with the SONIC release tracker: the page's defaults of its tag v4.2.2), ported in mm_g1:
+physical mode with the SONIC release tracker: the page's defaults of its tag v4.2.3), ported in mm_g1:
   controller   exact Motion Matching over data/ (the Locomotion Matching Database 'emmboth', the page's default,
                and the Box Matching Database of sbplace), inertialization, foot locking, root warping, the arrive
                state and the moving-target rules. Before a grasp and before a release the task has two states
@@ -66,7 +66,7 @@ What differs from the page, because the robot is measured, not simulated:
 The page's Play panel settings are flags with the page's defaults (the data variant's config.json where the page takes
 them from it), set live from UI 3's Settings tab:
   anchoring        --yaw-gain, --hold
-  grasp heuristic  --palm-force, --palm-target, --shoulder-squeeze, --wrist-squeeze, --shoulder-open
+  grasp heuristic  --palm-force, --force-at, --palm-target, --shoulder-squeeze, --wrist-squeeze, --shoulder-open
   pick and place   --pick-speed, --pick-slow, --warp, --leave-moved, --box-entry, --walk-on, --bend-out, --rise,
                    --transition-cost, --upright-tilt, --box-db, --foot-lock, --foot-land
   walk to the box  --loco-target, --box-ahead
@@ -160,7 +160,8 @@ import zmq
 import operator_link as OP
 from db_page import DbPage
 from deploy_link import BUS_PUB, MODE_IDLE, MODE_PLANNER, MODE_POSE, MODE_STOPPED, BusPublisher, DeployLink, RobotState
-from mm_g1.controller import ARRIVE_GROUPS, QUERY_DB, fill_weights, query_weights, torso_tilt
+from mm_g1.controller import (ARRIVE_GROUPS, AXIS_GROUPS, QUERY_DB, fill_weights, has_axis_weights, query_weights,
+                              torso_tilt)
 from mm_g1.database import DATA, TRAJ_VEL
 from mm_g1.pickmotion import PickMotion
 from mm_g1.mathq import hypot, qyaw
@@ -189,7 +190,7 @@ CONTROLLER_FLAGS = {'pick_speed': 'pickPlaceSpeed', 'pick_slow': 'pickPlaceSlow'
 THRESHOLD_FLAGS = {f'{name}_{act}': (key, act) for name, key in (('box_enter', 'boxEnter'), ('box_leave', 'boxLeave'),
                                                                  ('side_margin', 'sideMargin')) for act in ('pick', 'place')}
 WEIGHT_FLAGS = {'weights_loco': 'loco', 'weights_arrive': 'arrive', 'weights_pick': 'pick', 'weights_place': 'place'}
-GRASP_FLAGS = {'palm_force': 'force', 'palm_target': 'target', 'shoulder_squeeze': 'squeeze_rad',
+GRASP_FLAGS = {'palm_force': 'force', 'force_at': 'at', 'palm_target': 'target', 'shoulder_squeeze': 'squeeze_rad',
                'wrist_squeeze': 'wrist_rad', 'shoulder_open': 'open_rad', 'shoulder_kp': 'kp', 'wrist_kp': 'wrist_kp'}
 # The Pick motion tab: its two switches (PickMotion.settings) and its manual edit (PickMotion.manual).
 PICK_FLAGS = {'pick_height': 'autoHeight', 'pick_size': 'autoSize'}
@@ -367,11 +368,12 @@ class PalmGrasp:
 
     PALM = np.array([0.10, 0.007, 0.0])        # the page's palm sites on the wrist yaw links, y mirrored on the right
 
-    def __init__(self, box_half_z, force=40.0, target='box', squeeze_rad=0.0, wrist_rad=0.0, open_rad=0.4,
+    def __init__(self, box_half_z, force=40.0, at='palm', target='box', squeeze_rad=0.0, wrist_rad=0.0, open_rad=0.4,
                  kp=SHOULDER_ROLL_KP, wrist_kp=WRIST_YAW_KP):
         import mujoco
         self.mj = mujoco
-        self.force, self.target, self.open_rad, self.kp = float(force), target, float(open_rad), float(kp)
+        self.force, self.at, self.target = float(force), at, target
+        self.open_rad, self.kp = float(open_rad), float(kp)
         self.squeeze_rad, self.wrist_rad, self.wrist_kp = float(squeeze_rad), float(wrist_rad), float(wrist_kp)
         self.unlifted_z = box_half_z + 0.05
         m = self.model = mujoco.MjModel.from_xml_path(G1_XML)
@@ -452,19 +454,23 @@ class PalmGrasp:
         # The page pulls each palm toward the physical box. A report of the box on the floor is late but still right,
         # as the box rests until the hands lift it, so it is the target until the reference's box rises. Then the
         # box moves and its reports lag, and the target is the box where the reference holds it.
+        # The force acts on the palms, or on the origins of the wrist yaw links, 10 cm before the palm sites (the
+        # page's forceAt). It comes on by the palms' midpoint above wherever it acts.
+        mj, m, d = self.mj, self.model, self.data
+        at = palms if self.at == 'palm' else [d.xpos[b].copy() for b in self.wrist]               # 2 x (3,)
+        between = 0.5 * (at[0] + at[1])
         if self.target == 'mid':
-            target = mid
+            target = between
         elif floor_box is not None and (held_box is None or held_box[2] < self.unlifted_z):
             target = floor_box
         else:
-            target = mid if held_box is None else held_box
-        mj, m, d = self.mj, self.model, self.data
+            target = between if held_box is None else held_box
         for h in range(2):
-            n = target - palms[h]
+            n = target - at[h]
             L = float(np.linalg.norm(n))
             if L < 1e-6:
                 continue
-            mj.mj_jac(m, d, self.jacp, None, palms[h], self.wrist[h])
+            mj.mj_jac(m, d, self.jacp, None, at[h], self.wrist[h])
             arm = slice(7 * h, 7 * h + 7)
             tau[arm] += self.jacp[:, self.dof[arm]].T @ ((self.ramp * self.force / L) * n)
         return tau
@@ -1077,9 +1083,9 @@ class BoxDriver:
             return self.say(f'UI 3: {e}')
         if name in WEIGHT_FLAGS:
             v = fill_weights(self.sim.cfg, WEIGHT_FLAGS[name], v)
-            n = len(self.sim.controller.p['weights'][WEIGHT_FLAGS[name]])
-            if len(v) != n:
-                return self.say(f'UI 3: {fl.flag(name)} takes {n} weights, not {len(v)}')
+            bad = weights_error(self.sim.cfg, WEIGHT_FLAGS[name], v)
+            if bad:
+                return self.say(f'UI 3: {fl.flag(name)} {bad}')
         old = getattr(self.args, name)
         setattr(self.args, name, v)
         if name in BOX_LOCK_FLAGS:
@@ -1118,7 +1124,11 @@ class BoxDriver:
             if getattr(a, name) is None:
                 setattr(a, name, list(c.p['weights'][kind]))
             else:
-                c.set_weights(kind, fill_weights(self.sim.cfg, kind, getattr(a, name)))
+                v = fill_weights(self.sim.cfg, kind, getattr(a, name))
+                bad = weights_error(self.sim.cfg, kind, v)
+                if bad:
+                    raise SystemExit(f'--{name.replace("_", "-")} {bad}')
+                c.set_weights(kind, v)
         if only in (None, 'retry_lift'):
             self.sim.retry_lift = a.retry_lift == 'on'
         pm = self.sim.pick_motion
@@ -1144,7 +1154,7 @@ class BoxDriver:
                       else getattr(a, name)) for name, key in PLACE_MANUAL.items()}
         for name, key in GRASP_FLAGS.items():
             if only in (None, name):
-                setattr(self.grasp, key, getattr(a, name) if name == 'palm_target' else float(getattr(a, name)))
+                setattr(self.grasp, key, getattr(a, name) if name in ('palm_target', 'force_at') else float(getattr(a, name)))
         if only in (None, 'foot_lock'):
             self.sim.foot_lock.enabled = a.foot_lock == 'on'
         if only in (None, 'foot_land'):
@@ -2372,14 +2382,34 @@ FEATURES = {'foot_pos': 'Foot positions', 'foot_vel': 'Foot velocities', 'hip_ve
 ARRIVE_FEATURES = {'traj_pos': 'Trajectory position', 'traj_dir': 'Trajectory direction'}
 
 
+AXIS_PARTS = (('x', ', x (ahead of the robot)'), ('y', ', y (to its left)'))
+
+
+def weights_error(cfg, kind, v):
+    """None when v is a weight list of the query: one weight for each feature group, or for a box query also one
+    for x and one for y of the box position and of the box direction."""
+    n = len(query_weights(cfg, kind))
+    if len(v) == n or has_axis_weights(cfg, kind, v):
+        return None
+    extra = sum(g in AXIS_GROUPS for g in cfg['controllers'][QUERY_DB[kind]]['groups']) if QUERY_DB[kind] == 'box' else 0
+    return f'takes {n} weights' + (f', or {n + extra} with x and y of the box position and direction' if extra else '') + f', not {len(v)}'
+
+
 def weight_rows(cfg, c, kind):
     """The page's rows of the Weights tab (App.weightRows): label, the features it covers (size), the flag and index
     that set it (None: Locomotion's, not set here), its value and default."""
     db, p = cfg['controllers'][QUERY_DB[kind]], c.p
     dflt = query_weights(cfg, kind)
     if kind != 'arrive':
-        return [{'label': FEATURES.get(g, g), 'size': n, 'flag': f'weights_{kind}', 'i': i, 'value': p['weights'][kind][i],
-                 'default': dflt[i]} for i, (g, n) in enumerate(zip(db['groups'], db['group_sizes']))]
+        # with a weight for x and one for y, a row for each of a group's two features (the page's AXIS_LABELS)
+        axes, out = has_axis_weights(cfg, kind, p['weights'][kind]), []
+        for i, (g, n) in enumerate(zip(db['groups'], db['group_sizes'])):
+            parts = AXIS_PARTS if axes and g in AXIS_GROUPS else ((None, ''),)
+            for axis, text in parts:
+                out.append({'label': FEATURES.get(g, g) + text, 'size': n // len(parts), 'flag': f'weights_{kind}',
+                            'i': len(out), 'value': p['weights'][kind][len(out)], 'default': dflt[i], 'group': g,
+                            'axis': axis, 'axes': g in AXIS_GROUPS})
+        return out
     vel, out = 3 * len(ARRIVE_GROUPS), []
     fps = cfg['fps']
     for i, (g, n) in enumerate(zip(db['groups'], db['group_sizes'])):
@@ -2518,7 +2548,8 @@ def main():
                          'its tracker does not wait, and here 25 left the robot 0.3-0.7 s behind the driver')
     ap.add_argument('--box-size', type=size3, default=[0.335, 0.335, 0.36],
                     help="m, the box the controller avoids and puts down (the page's box of the variant)")
-    ap.add_argument('--palm-force', type=float, default=40.0, help='N per palm toward the box (the page: 40)')
+    ap.add_argument('--palm-force', type=float, default=40.0,
+                    help='N on each palm (or wrist, --force-at) toward the box (the page: 40)')
     ap.add_argument('--shoulder-open', type=float, default=0.4,
                     help='rad of outward shoulder roll while the box controller reaches with empty hands (the page: 0.4)')
     ap.add_argument('--shoulder-kp', type=float, default=SHOULDER_ROLL_KP,
@@ -2533,8 +2564,12 @@ def main():
                          f'is dropped {HANDS_EMPTY_S:g} s later (default {EMPTY_GAP:g}: the box held is about 0.44 m, '
                          'the hands touch at about 0.11 m). Set live from the Palm gap card of UI 1 and UI 3')
     g = ap.add_argument_group("lmm-g1-box's settings", "the page's Play panel (UI 3's Settings tab), each with its default")
+    g.add_argument('--force-at', choices=('palm', 'wrist'), default='palm',
+                   help='the force of --palm-force acts on the palms, or on the wrists: the origin of each wrist yaw '
+                        'link, the last wrist joint, 10 cm before the palm')
     g.add_argument('--palm-target', choices=('box', 'mid'), default='box',
-                   help='the palm force pulls toward the box centre or toward each other (the midpoint of the palms)')
+                   help='the force pulls toward the box centre or toward each other (the midpoint of the palms, or of '
+                        'the wrists with --force-at wrist)')
     g.add_argument('--shoulder-squeeze', type=float, default=0.0,
                    help='rad the shoulder rolls turn inward while the reference holds the box')
     g.add_argument('--wrist-squeeze', type=float, default=0.0,
@@ -2580,7 +2615,10 @@ def main():
                    help='one Box Matching Database for pick up and put down (with the tag), or one for each')
     for kind, what in (('loco', 'Locomotion'), ('arrive', 'Arriving'), ('pick', 'pick up'), ('place', 'put down')):
         g.add_argument(f'--weights-{kind}', type=weights, default=None,
-                       help=f"the {what} query's feature group weights, comma separated (default: the variant's)")
+                       help=f"the {what} query's feature group weights, comma separated (default: the variant's)" + (
+                           '. Two values longer, the box position and the box direction have a weight for x (ahead of '
+                           'the robot) and one for y (to its left), each in the place of the one weight: 9 values for '
+                           'the 7 groups' if kind in ('pick', 'place') else ''))
     for act, what in (('pick', 'pick up'), ('place', 'put down')):
         g.add_argument(f'--box-enter-{act}', type=float, default=None,
                        help=f"the box controller takes over a {what} below this cost (default: the variant's)")

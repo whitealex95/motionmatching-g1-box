@@ -9,7 +9,10 @@
 // 0.02 m, so a small height (0.002) is the way to check that rule: give check_parity.py the same --foot-land.
 //
 // Run: node tools/page_parity/js_trace.mjs <lmm-g1-box checkout> <out.jsonl> [--frames N] [--states states.jsonl]
-//                                           [--foot-land M]
+//                                           [--foot-land M] [--w-pick W] [--w-place W]
+//
+// --w-pick W, --w-place W: the weights of the Pick up and the Put down query, comma separated. With 9 values the box
+// position and the box direction have a weight for x and one for y (give check_parity.py the same).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -40,6 +43,10 @@ const backend = new MMBackend(cfg, await loadMMData(DATA, cfg, VARIANTS[variant]
 const controller = new Controller(cfg, backend, { bodies: robot.bodies });
 await loadLoco('emmboth', cfg, backend, cfg.emm_loco.dir, 'data/emm_carry');
 controller.setLoco('emmboth');
+for (const kind of ['pick', 'place']) {
+  const wi = process.argv.indexOf(`--w-${kind}`);
+  if (wi > 0) controller.setWeights(kind, process.argv[wi + 1].split(',').map(Number));
+}
 const sim = new Sim(controller, new FootLock(robot.bodies, footLand), cfg);
 sim.startScripted();
 

@@ -3,7 +3,7 @@
 The G1 walks to a box, picks it up, carries it and puts it down, the way of lmm-g1-box's page
 ([jhkim.me/lmm-g1-box](https://jhkim.me/lmm-g1-box/?physics=1&tracker=sonic_release&variant=holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60&tab=play):
 the variant `holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60`, the Play tab, physics on, the tracker
-`sonic_release`, the page's defaults of its tag `v4.2.2`, `3d599cf`). The page's controller and its pick motion (the pick
+`sonic_release`, the page's defaults of its tag `v4.2.3`, `9c45ac7`). The page's controller and its pick motion (the pick
 editor's whole-body IK, which solves the pick and the put-down again for the height under the box) are ported here
 from its JavaScript (lmm-g1-box `web/js/`) to Python in `mm_g1/`, and the page's motion data is copied into `data/`
 (`data/README.md` lists each file, its SHA-256 and its terms). Nothing here reads lmm-g1-box.
@@ -76,7 +76,7 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restar
 | page setting | flag | default |
 |---|---|---|
 | Anchoring | `--yaw-gain` (snap-xyyaw: 1, snap-xy: 0), `--hold` | 1, `low` |
-| Grasp heuristic (and its nine presets) | `--palm-force`, `--palm-target`, `--shoulder-squeeze`, `--wrist-squeeze`, `--shoulder-open` | 40 N, `box`, 0, 0, 0.4 rad |
+| Grasp heuristic (and its nine presets) | `--palm-force`, `--force-at` (the force on the palms or on the wrists), `--palm-target`, `--shoulder-squeeze`, `--wrist-squeeze`, `--shoulder-open` | 40 N, `palm`, `box`, 0, 0, 0.4 rad |
 | Pick and place speed, slowed down | `--pick-speed`, `--pick-slow` | 1, `clip` |
 | Root warping, leave when moved | `--warp`, `--leave-moved` | `pickstep`, 0.5 m |
 | Box search, rising, transition cost | `--box-entry`, `--rise`, `--transition-cost` | `walk`, `finish`, 0 |
@@ -86,7 +86,7 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restar
 | Foot locking, a foot still in the air when its contact starts | `--foot-lock`, `--foot-land` (m above the playing frame's foot, `off`: locked at once) | `on`, 0.02 m |
 | Walk to, box farther than in the data | `--loco-target` (`arrive`: the stance, arriving there in 1 s; `stance`; `centre`), `--box-ahead` | `arrive`, 0 |
 | Turning in Locomotion: turn speed limit, rotation halflife | `--turn-rate` (deg/s the simulation object of Locomotion turns at most, `0`: no limit), `--rot-halflife` (s, the halflife of the spring that turns it) | 60 deg/s (no limit until v4.2.1), 0.27 s |
-| Matching weights | `--weights-loco`, `--weights-arrive`, `--weights-pick`, `--weights-place` | the variant's; Arriving: trajectory positions 1, directions 1.5, velocity 0 |
+| Matching weights | `--weights-loco`, `--weights-arrive`, `--weights-pick`, `--weights-place` (pick and place: 7 values, or 9 with a weight for x and one for y of the box position and of the box direction) | the variant's; Arriving: trajectory positions 1, directions 1.5, velocity 0 |
 | Transitions: by cost | `--box-enter-pick`, `--box-enter-place`, `--box-leave-pick`, `--box-leave-place` | 1.5, 1.5, 2.0, 2.0 (2.5, 2.5, 4.0, 4.0 until v4.0.1) |
 | Transitions: side margin, only within | `--side-margin-pick`, `--side-margin-place`, `--take-over` | 0.25, 0.25, 1 m |
 | Transitions: a box that leaves the hands while lifting | `--retry-lift` | `on` |
@@ -213,9 +213,20 @@ The forced check loads the page's whole state before each frame of the page's sc
 compares the state after it. A free run follows the page until rounding decides a near tie in the search, and from
 there it takes another path of the same controller. In one test the costs were 4.1112789 and 4.1112797 at frame 484.
 
-All checks pass against lmm-g1-box `v4.2.2` (`3d599cf`, 2026-11-20), as they did against `v4.2.1` (`121379f`), `v4.2` (`b2a0a84`),
-`v4.0.1` (`114dcef`) and `v4.0` (`51f3eae`) and the first two against `v3.0`. What each release changed for this port:
+All checks pass against lmm-g1-box `v4.2.3` (`9c45ac7`, 2026-11-20), as they did against `v4.2.2` (`3d599cf`), `v4.2.1`
+(`121379f`), `v4.2` (`b2a0a84`), `v4.0.1` (`114dcef`) and `v4.0` (`51f3eae`) and the first two against `v3.0`. What each
+release changed for this port:
 
+- `v4.2.3` brought two settings and changed no default, so the robot moves as with `v4.2.2`. The Pick up and the Put
+  down query can take a weight for x and one for y of the box position and of the box direction, in the robot's root
+  frame (x ahead of the robot, y to its left): a weight list of 9 values in place of 7, `[.., x, y, ..]` where the one
+  weight of the group was (`AXIS_GROUPS`, `has_axis_weights`, `axis_weights`, `group_weights` in
+  `mm_g1/controller.py`). The two values of a group are normalized together, so equal x and y weights are the one
+  weight. And the force of the grasp heuristic can act on the wrists in place of the palms (`--force-at wrist`: the
+  origin of each wrist yaw link, 10 cm before the palm site. `--palm-target mid` is then the midpoint of the two
+  wrists). It still comes on by the midpoint of the palms. The force is the driver's (`PalmGrasp`), on the measured
+  robot, so no parity check covers it: its torque on the left arm agrees with MuJoCo's `mj_jacBody` to 0 in a unit
+  check, and with the force on the wrists the wrist yaw joints get no torque.
 - `v4.2.2` brought the turn speed limit: the simulation object of Locomotion turns at most 60 deg/s
   (`simMaxTurnRate`, the driver's `--turn-rate`). It turns to the direction asked for with a spring, and a spring
   turns faster the larger the angle, so a turn to a target behind the robot turned the pelvis at about 300 deg/s on
@@ -236,7 +247,8 @@ All checks pass against lmm-g1-box `v4.2.2` (`3d599cf`, 2026-11-20), as they did
   networks' latent size, is gone).
 - `v4.0.1` changed only the controller's defaults (the enter and leave thresholds and the pick's engage radius).
 
-The numbers against `v4.2.2` (with the limit the sequence is 43 frames longer than `v4.2.1`'s, 4,923 frames then):
+The numbers against `v4.2.3`, the same as against `v4.2.2` (with the turn speed limit the sequence is 43 frames longer
+than `v4.2.1`'s, 4,923 frames then):
 
 - The forced check: 4,966 frames, no discrete difference, the largest gap 5.3e-14 (the feet). The sequence
   plays *Stepping to the box* for 292 frames and *Bending down* for 594, and one pick and one put-down are cancelled
@@ -245,7 +257,11 @@ The numbers against `v4.2.2` (with the limit the sequence is 43 frames longer th
   runs the pick motion too. The free run follows the page for all of its 4,966 frames.
 - Two feet wait in that sequence at the page's 0.02 m, 0.13 s in all (none with `v4.2.1`). With `--foot-land 0.002`
   on both sides 13 feet waited with `v4.2.1`, 0.90 s in all, and the forced check passed the same way (not run
-  again with `v4.2.2`).
+  again since).
+- A weight for x and one for y: the same sequence with `--w-pick 0.75,1,1,3,1,1.5,2.5,3,3 --w-place` the same on
+  both sides (`js_trace.mjs` and `check_parity.py` take the two options) is another sequence, 4,982 frames. The
+  forced check passes on it with no discrete difference and the largest gap 1.1e-13 (the feet), and the free run
+  follows the page for all of its frames.
 - `--cases` checks `Controller.match` alone on 5,408 searches made around the SceneBot pick and place, each one as
   Locomotion and as the box controller before its event (2,704 with `v4.0.1`, which had one rule for both). The
   playing frame is every 5th frame of each SceneBot range plus 60 random frames, and each query is a database
