@@ -24,6 +24,9 @@ export const DEFAULTS = {
   inertializeHalflife: 0.1,
   simVelocityHalflife: 0.27,
   simRotationHalflife: 0.27,
+  // The simulation object turns at most this fast (rad/s, null: no limit). Without it a turn of 180 deg asked at once,
+  // by a walk key or by a box, a marker or a clicked point behind the robot, turned the pelvis at about 300 deg/s.
+  simMaxTurnRate: 60 * Math.PI / 180,
   walkFwd: 0.8, walkSide: 0.45, walkBack: 0.4,
   slowScale: 0.5,
   adjustPosHalflife: 0.1, adjustRotHalflife: 0.2, adjustPosMaxRatio: 0.5, adjustRotMaxRatio: 0.5,
@@ -1318,12 +1321,20 @@ export class Controller {
     const rots = [sim.rot.slice()], drot = [this.desiredRot.slice()];
     const dvel = [this.desiredVel.slice()];
     const faceRot = face ? q.fromYaw(Math.atan2(face[1], face[0])) : null;
+    const maxRate = this.p.simMaxTurnRate, turn = { x: sim.rot.slice(), v: sim.ang.slice() };
     for (let i = 1; i < 4; i++) {
       const dv = this.desiredVelocity(stick, rots[i - 1], speed);
       drot.push(faceRot || (stick ? q.fromYaw(Math.atan2(dv[1], dv[0])) : drot[i - 1]));
-      const st = { x: sim.rot.slice(), v: sim.ang.slice() };
-      simpleSpringDamperQuat(st, drot[i], this.p.simRotationHalflife, i * dt);
-      rots.push(st.x);
+      if (maxRate) {
+        // The limit depends on the angle left at each frame, so the limited spring is stepped frame by frame, as the
+        // simulation object will be.
+        for (let k = 0; k < 20; k++) simpleSpringDamperQuat(turn, drot[i], this.p.simRotationHalflife, this.dt, maxRate);
+        rots.push(turn.x.slice());
+      } else {
+        const st = { x: sim.rot.slice(), v: sim.ang.slice() };
+        simpleSpringDamperQuat(st, drot[i], this.p.simRotationHalflife, i * dt);
+        rots.push(st.x);
+      }
       dvel.push(this.desiredVelocity(stick, rots[i], speed));
     }
     const pos = [sim.pos.slice()];
@@ -1684,7 +1695,7 @@ export class Controller {
     if (this.mode === 'loco') {
       this.simPositionUpdate(this.sim, this.desiredVel, p.simVelocityHalflife, dt, blocking);
       const st = { x: this.sim.rot, v: this.sim.ang };
-      simpleSpringDamperQuat(st, this.desiredRot, p.simRotationHalflife, dt);
+      simpleSpringDamperQuat(st, this.desiredRot, p.simRotationHalflife, dt, p.simMaxTurnRate);
       this.sim.rot = st.x; this.sim.ang = st.v;
       this.adjustToSimulation();
     } else {

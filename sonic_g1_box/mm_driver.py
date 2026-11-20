@@ -2,7 +2,7 @@
 pose) and live.sam3box's boxes (the map server's objects), on the real G1 or the deploy repo's sim.
 
 It runs the way of lmm-g1-box's page (variant holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60, Play tab,
-physical mode with the SONIC release tracker: the page's defaults of its tag v4.2.1), ported in mm_g1:
+physical mode with the SONIC release tracker: the page's defaults of its tag v4.2.2), ported in mm_g1:
   controller   exact Motion Matching over data/ (the Locomotion Matching Database 'emmboth', the page's default,
                and the Box Matching Database of sbplace), inertialization, foot locking, root warping, the arrive
                state and the moving-target rules. Before a grasp and before a release the task has two states
@@ -70,6 +70,8 @@ them from it), set live from UI 3's Settings tab:
   pick and place   --pick-speed, --pick-slow, --warp, --leave-moved, --box-entry, --walk-on, --bend-out, --rise,
                    --transition-cost, --upright-tilt, --box-db, --foot-lock, --foot-land
   walk to the box  --loco-target, --box-ahead
+  turning          --turn-rate (deg/s the simulation object of Locomotion turns at most, 0: no limit),
+                   --rot-halflife
   pick motion      --pick-height, --pick-size, --pick-box, --pick-forward, --pick-left, --pick-up, --pick-yaw,
                    --pick-palms, --pick-grip-keep, --place-edit and its --place-edit-forward to
                    --place-edit-grip-keep (the driver's own: --table-min)
@@ -180,6 +182,7 @@ CONTROLLER_FLAGS = {'pick_speed': 'pickPlaceSpeed', 'pick_slow': 'pickPlaceSlow'
                     'rise': 'rise',
                     'transition_cost': 'transitionCost', 'upright_tilt': 'uprightTilt', 'box_db': 'boxDb',
                     'loco_target': 'locoTarget', 'box_ahead': 'boxAhead', 'take_over': 'takeOverRadius',
+                    'turn_rate': 'simMaxTurnRate', 'rot_halflife': 'simRotationHalflife',
                     'engage_radius': 'engageRadius', 'force_engage_radius': 'forceEngageRadius',
                     'place_engage_radius': 'placeEngageRadius', 'reapproach_time': 'reapproachTime'}
 # The page's cost thresholds, one for a pick and one for a place (Controller.thresholds).
@@ -2411,6 +2414,10 @@ def page_value(name, v):
     """A page setting's flag value as the controller keeps it: 'off' is None, the menus' numbers are numbers."""
     if name in ('leave_moved', 'upright_tilt', 'take_over'):
         return None if v == 'off' else float(v)
+    if name == 'turn_rate':                 # deg/s on the flag, 0: no limit
+        return math.radians(v) if v > 0 else None
+    if name == 'rot_halflife':
+        return max(float(v), 0.01)
     return v
 
 
@@ -2448,6 +2455,8 @@ def engage_view(e, reapproach_time):
 def page_choice(name, pv):
     if name in ('leave_moved', 'upright_tilt', 'take_over'):
         return 'off' if pv is None else f'{pv:g}'
+    if name == 'turn_rate':
+        return 0.0 if pv is None else round(math.degrees(pv), 6)
     return pv
 
 
@@ -2587,6 +2596,11 @@ def main():
                         'along its axis, or to the box or marker centre')
     g.add_argument('--box-ahead', type=float, default=0.0,
                    help='m: the pick and place motions take the box this much farther from the robot than the data (0-0.1)')
+    g.add_argument('--turn-rate', type=float, default=60.0,
+                   help='deg/s: the simulation object of Locomotion turns at most this fast, so a turn to a target '
+                        'behind the robot is no faster than a small one (0: no limit, the rule up to lmm-g1-box v4.2.1)')
+    g.add_argument('--rot-halflife', type=float, default=0.27,
+                   help='s: the halflife of the spring that turns the simulation object of Locomotion')
     g.add_argument('--retry-lift', choices=('on', 'off'), default='on',
                    help='a box that leaves the hands while the robot rises with it (Lifting the box) is picked up again. '
                         'Off: every drop ends the task')

@@ -87,9 +87,19 @@ export const q = {
 const halflifeToDamping = (h, eps = 1e-5) => (4 * LN2) / (h + eps);
 export const dampFactor = (h, dt, eps = 1e-5) => 1 - Math.exp(-(LN2 * dt) / (h + eps));
 
-export function simpleSpringDamperQuat(state, goal, halflife, dt) {
+// maxRate (rad/s, or null for none): a spring turns faster the larger the angle to the goal. A spring that follows a
+// goal a fixed angle ahead settles at y / 2 times that angle per second, so the goal is brought back to within
+// 2 * maxRate / y of the state, and the speed stays at or under maxRate. A smaller angle is the plain spring.
+export function simpleSpringDamperQuat(state, goal, halflife, dt, maxRate = null) {
   const y = halflifeToDamping(halflife) / 2;
-  const j0 = q.toScaledAngleAxis(q.abs(q.mul(state.x, q.inv(goal))));
+  let j0 = q.toScaledAngleAxis(q.abs(q.mul(state.x, q.inv(goal))));
+  if (maxRate) {
+    const angle = v3.len(j0), cap = 2 * maxRate / y;
+    if (angle > cap) {
+      j0 = v3.scale(j0, cap / angle);
+      goal = q.mul(q.inv(q.fromScaledAngleAxis(j0)), state.x);
+    }
+  }
   const j1 = v3.add(state.v, v3.scale(j0, y));
   const e = Math.exp(-y * dt);
   state.x = q.mul(q.fromScaledAngleAxis(v3.scale(v3.add(j0, v3.scale(j1, dt)), e)), goal);

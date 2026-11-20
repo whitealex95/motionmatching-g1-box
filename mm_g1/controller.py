@@ -21,6 +21,7 @@ from .mathq import (add, hypot, damp_factor, decay_spring_quat, decay_spring_sca
 
 DEFAULTS = dict(
     searchTime=0.1, inertializeHalflife=0.1, simVelocityHalflife=0.27, simRotationHalflife=0.27,
+    simMaxTurnRate=60 * math.pi / 180,      # rad/s the simulation object turns at most, None: no limit
     walkFwd=0.8, walkSide=0.45, walkBack=0.4, slowScale=0.5,
     adjustPosHalflife=0.1, adjustRotHalflife=0.2, adjustPosMaxRatio=0.5, adjustRotMaxRatio=0.5,
     clampMaxDistance=0.15, clampMaxAngle=0.5 * math.pi,
@@ -539,10 +540,17 @@ class Controller:
         sim, dt = self.sim, 20 * self.dt
         rots, drot, dvel = [list(sim['rot'])], [list(self.desiredRot)], [list(self.desiredVel)]
         face_rot = qfrom_yaw(math.atan2(face[1], face[0])) if face else None
+        max_rate, tx, tv = self.p['simMaxTurnRate'], list(sim['rot']), list(sim['ang'])
         for i in range(1, 4):
             dv = self.desired_velocity(stick, rots[i - 1], speed)
             drot.append(face_rot if face_rot else qfrom_yaw(math.atan2(dv[1], dv[0])) if stick else drot[i - 1])
-            x, _ = simple_spring_damper_quat(list(sim['rot']), list(sim['ang']), drot[i], self.p['simRotationHalflife'], i * dt)
+            if max_rate:
+                # the limit depends on the angle left at each frame: stepped frame by frame, as the simulation object
+                for _ in range(20):
+                    tx, tv = simple_spring_damper_quat(tx, tv, drot[i], self.p['simRotationHalflife'], self.dt, max_rate)
+                x = list(tx)
+            else:
+                x, _ = simple_spring_damper_quat(list(sim['rot']), list(sim['ang']), drot[i], self.p['simRotationHalflife'], i * dt)
             rots.append(x)
             dvel.append(self.desired_velocity(stick, rots[i], speed))
         pos = [list(sim['pos'])]
@@ -922,7 +930,7 @@ class Controller:
         if self.mode == 'loco':
             self.sim_position_update(self.sim, self.desiredVel, p['simVelocityHalflife'], dt, blocking)
             self.sim['rot'], self.sim['ang'] = simple_spring_damper_quat(self.sim['rot'], self.sim['ang'], self.desiredRot,
-                                                                         p['simRotationHalflife'], dt)
+                                                                         p['simRotationHalflife'], dt, p['simMaxTurnRate'])
             self.adjust_to_simulation()
         else:
             if ph in ('pick-pre', 'place-pre') and not ((p['warp'] == 'step' or (p['warp'] == 'pickstep' and ph == 'pick-pre'))

@@ -174,10 +174,17 @@ def damp_factor(h, dt, eps=1e-5):
     return 1 - math.exp(-(LN2 * dt) / (h + eps))
 
 
-def simple_spring_damper_quat(x, v, goal, halflife, dt):
-    """Returns the new (x, v)."""
+def simple_spring_damper_quat(x, v, goal, halflife, dt, max_rate=None):
+    """Returns the new (x, v). max_rate (rad/s, None for none): a spring that follows a goal a fixed angle ahead
+    settles at y / 2 times that angle per second, so the goal is brought back to within 2 * max_rate / y of x and
+    the speed stays at or under max_rate. A smaller angle is the plain spring."""
     y = halflife_to_damping(halflife) / 2
     j0 = qto_scaled_angle_axis(qabs(qmul(x, qinv(goal))))
+    if max_rate:
+        angle, cap = math.sqrt(j0[0] * j0[0] + j0[1] * j0[1] + j0[2] * j0[2]), 2 * max_rate / y
+        if angle > cap:
+            j0 = scale(j0, cap / angle)
+            goal = qmul(qinv(qfrom_scaled_angle_axis(j0)), x)
     j1 = add(v, scale(j0, y))
     e = math.exp(-y * dt)
     return (qmul(qfrom_scaled_angle_axis(scale(add(j0, scale(j1, dt)), e)), goal),

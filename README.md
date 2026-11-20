@@ -3,7 +3,7 @@
 The G1 walks to a box, picks it up, carries it and puts it down, the way of lmm-g1-box's page
 ([jhkim.me/lmm-g1-box](https://jhkim.me/lmm-g1-box/?physics=1&tracker=sonic_release&variant=holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60&tab=play):
 the variant `holosoma-v3-box338x335x360-apv5-good2-sbplace-angle60`, the Play tab, physics on, the tracker
-`sonic_release`, the page's defaults of its tag `v4.2.1`, `121379f`). The page's controller and its pick motion (the pick
+`sonic_release`, the page's defaults of its tag `v4.2.2`, `3d599cf`). The page's controller and its pick motion (the pick
 editor's whole-body IK, which solves the pick and the put-down again for the height under the box) are ported here
 from its JavaScript (lmm-g1-box `web/js/`) to Python in `mm_g1/`, and the page's motion data is copied into `data/`
 (`data/README.md` lists each file, its SHA-256 and its terms). Nothing here reads lmm-g1-box.
@@ -85,6 +85,7 @@ repo, `README_BOX_SIM.md`, *UI 3*) sets them while the driver runs, and a restar
 | Upright tilt, box database | `--upright-tilt`, `--box-db` | 30 deg, `same` |
 | Foot locking, a foot still in the air when its contact starts | `--foot-lock`, `--foot-land` (m above the playing frame's foot, `off`: locked at once) | `on`, 0.02 m |
 | Walk to, box farther than in the data | `--loco-target` (`arrive`: the stance, arriving there in 1 s; `stance`; `centre`), `--box-ahead` | `arrive`, 0 |
+| Turning in Locomotion: turn speed limit, rotation halflife | `--turn-rate` (deg/s the simulation object of Locomotion turns at most, `0`: no limit), `--rot-halflife` (s, the halflife of the spring that turns it) | 60 deg/s (no limit until v4.2.1), 0.27 s |
 | Matching weights | `--weights-loco`, `--weights-arrive`, `--weights-pick`, `--weights-place` | the variant's; Arriving: trajectory positions 1, directions 1.5, velocity 0 |
 | Transitions: by cost | `--box-enter-pick`, `--box-enter-place`, `--box-leave-pick`, `--box-leave-place` | 1.5, 1.5, 2.0, 2.0 (2.5, 2.5, 4.0, 4.0 until v4.0.1) |
 | Transitions: side margin, only within | `--side-margin-pick`, `--side-margin-place`, `--take-over` | 0.25, 0.25, 1 m |
@@ -212,9 +213,18 @@ The forced check loads the page's whole state before each frame of the page's sc
 compares the state after it. A free run follows the page until rounding decides a near tie in the search, and from
 there it takes another path of the same controller. In one test the costs were 4.1112789 and 4.1112797 at frame 484.
 
-All checks pass against lmm-g1-box `v4.2.1` (`121379f`, 2026-11-18), as they did against `v4.2` (`b2a0a84`),
+All checks pass against lmm-g1-box `v4.2.2` (`3d599cf`, 2026-11-20), as they did against `v4.2.1` (`121379f`), `v4.2` (`b2a0a84`),
 `v4.0.1` (`114dcef`) and `v4.0` (`51f3eae`) and the first two against `v3.0`. What each release changed for this port:
 
+- `v4.2.2` brought the turn speed limit: the simulation object of Locomotion turns at most 60 deg/s
+  (`simMaxTurnRate`, the driver's `--turn-rate`). It turns to the direction asked for with a spring, and a spring
+  turns faster the larger the angle, so a turn to a target behind the robot turned the pelvis at about 300 deg/s on
+  the page. The spring now sees at most `2 * limit / y` of the angle to its goal (`y`: its damping), and the
+  trajectory of the query is stepped with the same limit. A smaller turn is the spring of before, and the box
+  controller, which has no simulation object, is not changed. `--turn-rate 0` is the rule before. The rotation
+  halflife of that spring (`simRotationHalflife`, 0.27 s as before) is the flag `--rot-halflife` now. No data
+  changed. `mm_g1/mathq.py`'s limited spring agrees with the page's `math.js` within 9.3e-15 on 400 random
+  springs of 30 steps (165 of them start above the limit's angle).
 - `v4.2.1` changed only the data of the empty-handed Locomotion: the EMM takes `strafe` and `turn_in_place` are left
   out (`data/README.md`). No rule and no default changed, so the port's code is the same.
 - `v4.1` (`a59750d`, 2026-11-17) is the release with new rules: the two states before a grasp and before a release,
@@ -226,15 +236,16 @@ All checks pass against lmm-g1-box `v4.2.1` (`121379f`, 2026-11-18), as they did
   networks' latent size, is gone).
 - `v4.0.1` changed only the controller's defaults (the enter and leave thresholds and the pick's engage radius).
 
-The numbers against `v4.2.1` (the sequence is 42 frames longer than with the data of `v4.2`, 4,881 frames then):
+The numbers against `v4.2.2` (with the limit the sequence is 43 frames longer than `v4.2.1`'s, 4,923 frames then):
 
-- The forced check: 4,923 frames, no discrete difference, the largest gap 6.1e-14 (the box cost). The sequence
-  plays *Stepping to the box* for 292 frames and *Bending down* for 593, and one pick and one put-down are cancelled
+- The forced check: 4,966 frames, no discrete difference, the largest gap 5.3e-14 (the feet). The sequence
+  plays *Stepping to the box* for 292 frames and *Bending down* for 594, and one pick and one put-down are cancelled
   in it (`cancel-moved`: the pick rises as a put-down rises, the put-down as a pick). Each of its put-downs is taken
   by distance inside the bend, so *Stepping to the marker* does not play. It takes box C from the page's table, so it
-  runs the pick motion too.
-- No foot waits in that sequence at the page's 0.02 m. With `--foot-land 0.002` on both sides 13 feet wait, 0.90 s
-  in all, and the forced check passes the same way.
+  runs the pick motion too. The free run follows the page for all of its 4,966 frames.
+- Two feet wait in that sequence at the page's 0.02 m, 0.13 s in all (none with `v4.2.1`). With `--foot-land 0.002`
+  on both sides 13 feet waited with `v4.2.1`, 0.90 s in all, and the forced check passed the same way (not run
+  again with `v4.2.2`).
 - `--cases` checks `Controller.match` alone on 5,408 searches made around the SceneBot pick and place, each one as
   Locomotion and as the box controller before its event (2,704 with `v4.0.1`, which had one rule for both). The
   playing frame is every 5th frame of each SceneBot range plus 60 random frames, and each query is a database
